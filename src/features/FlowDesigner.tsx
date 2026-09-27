@@ -11,14 +11,17 @@ import {
   FileOutput,
   ListPlus,
   Plus,
+  RefreshCw,
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
+import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
 import { scenes } from "../data/scenes";
 import { loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesProfiles } from "../lib/api";
 import type {
   ComfyUIBinding,
+  ComfyUIWorkflowDetail,
   ComfyUIWorkflowNode,
   ComfyUIWorkflowSummary,
   HermesProfile,
@@ -46,6 +49,59 @@ interface FlowDesignerProps {
 
 type Selection = { kind: "inputs" } | { kind: "step"; stepId: string } | { kind: "outputs" };
 type ReferenceOption = { value: string; label: string; type?: WorkflowVariableType };
+
+type DeferredInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "onBlur"> & {
+  value: string;
+  onCommit: (value: string) => void;
+};
+
+type DeferredTextareaProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange" | "onBlur"> & {
+  value: string;
+  onCommit: (value: string) => void;
+};
+
+function useDeferredTextValue(value: string, onCommit: (nextValue: string) => void) {
+  const [draft, setDraft] = useState(value);
+  const draftRef = useRef(value);
+  const focusedRef = useRef(false);
+  const lastPropRef = useRef(value);
+
+  useEffect(() => {
+    if (value === lastPropRef.current) return;
+    lastPropRef.current = value;
+    if (!focusedRef.current) {
+      draftRef.current = value;
+      setDraft(value);
+    }
+  }, [value]);
+
+  function change(nextValue: string) {
+    draftRef.current = nextValue;
+    setDraft(nextValue);
+  }
+
+  function commit() {
+    focusedRef.current = false;
+    if (draftRef.current !== value) onCommit(draftRef.current);
+  }
+
+  return {
+    draft,
+    change,
+    focus: () => { focusedRef.current = true; },
+    commit,
+  };
+}
+
+function DeferredInput({ value, onCommit, ...props }: DeferredInputProps) {
+  const deferred = useDeferredTextValue(value, onCommit);
+  return <input {...props} value={deferred.draft} onFocus={deferred.focus} onChange={(event) => deferred.change(event.target.value)} onBlur={deferred.commit} />;
+}
+
+const DeferredTextarea = forwardRef<HTMLTextAreaElement, DeferredTextareaProps>(function DeferredTextarea({ value, onCommit, ...props }, ref) {
+  const deferred = useDeferredTextValue(value, onCommit);
+  return <textarea {...props} ref={ref} value={deferred.draft} onFocus={deferred.focus} onChange={(event) => deferred.change(event.target.value)} onBlur={deferred.commit} />;
+});
 
 const fieldTypeLabels: Record<WorkflowFieldType, string> = {
   text: "单行文本",
@@ -209,8 +265,11 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
   const [profileError, setProfileError] = useState("");
   const [comfyWorkflows, setComfyWorkflows] = useState<ComfyUIWorkflowSummary[]>([]);
   const [comfyNodes, setComfyNodes] = useState<ComfyUIWorkflowNode[]>([]);
+  const [comfyFormat, setComfyFormat] = useState<ComfyUIWorkflowDetail["format"] | null>(null);
   const [comfyLoading, setComfyLoading] = useState(false);
   const [comfyError, setComfyError] = useState("");
+  const [comfyNodeError, setComfyNodeError] = useState("");
+  const [loadedComfyNodeIds, setLoadedComfyNodeIds] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [referenceToInsert, setReferenceToInsert] = useState("");
@@ -255,13 +314,19 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
   useEffect(() => {
     if (!selectedStep || selectedStep.kind !== "comfyui" || !selectedStep.comfyui?.workflowFile) {
       setComfyNodes([]);
+      setComfyFormat(null);
+      setLoadedComfyNodeIds([]);
+      setComfyNodeError("");
       return;
     }
     let active = true;
     setComfyLoading(true);
     setComfyError("");
+    setComfyNodeError("");
+    setComfyFormat(null);
+    setLoadedComfyNodeIds([]);
     loadComfyUIWorkflow(selectedStep.comfyui.workflowFile)
-      .then((detail) => { if (active) setComfyNodes(detail.nodes); })
+      .then((detail) => { if (active) { setComfyNodes(detail.nodes); setComfyFormat(detail.format); } })
       .catch((error: unknown) => { if (active) setComfyError(error instanceof Error ? error.message : "无法读取工作流节点"); })
       .finally(() => { if (active) setComfyLoading(false); });
     return () => { active = false; };
@@ -355,6 +420,23 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
       ...step,
       comfyui: { workflowFile, bindings: comfyBindings(step) },
     }));
+  }
+
+  function loadComfyNodeProperties(nodeId: string) {
+    const normalizedId = nodeId.trim();
+    if (!normalizedId) {
+      setComfyNodeError("请先填写节点 ID，再加载属性。");
+      return;
+    }
+    const node = comfyNodes.find((item) => item.id === normalizedId);
+    if (!node) {
+      setComfyNodeError(`工作流中没有找到节点 ID：${normalizedId}`);
+      return;
+    }
+    setLoadedComfyNodeIds((current) => current.includes(node.id) ? current : [...current, node.id]);
+    setComfyNodeError("");
+    setNotice(`已加载节点 ${node.id} 的属性`);
+    window.setTimeout(() => setNotice(""), 1600);
   }
 
   function changeStepKind(stepId: string, kind: WorkflowStepKind) {
@@ -514,27 +596,27 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
 
           {selection.kind === "inputs" && <section className="schema-editor">
             <div className="designer-field-explainer"><Braces size={15} /><span>每个输入都会成为可引用变量，例如 <code>input.story_seed</code>。</span></div>
-            {workflow.inputs.map((field, index) => <div className="schema-row" key={`${field.key}-${index}`}>
+            {workflow.inputs.map((field, index) => <div className="schema-row" key={`schema-input-${index}`}>
               <span className="schema-row-index">{String(index + 1).padStart(2, "0")}</span>
               <div className="schema-row-main">
-                <input className="text-input schema-label-input" value={field.label} onChange={(event) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) })} aria-label="输入名称" placeholder="输入名称" />
-                <input className="text-input schema-key-input" value={field.key} onChange={(event) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value.replace(/[^a-zA-Z0-9_]/g, "_") } : item) })} aria-label="输入 key" placeholder="field_key" />
+                <DeferredInput className="text-input schema-label-input" value={field.label} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, label: value } : item) })} aria-label="输入名称" placeholder="输入名称" />
+                <DeferredInput className="text-input schema-key-input" value={field.key} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, key: value.replace(/[^a-zA-Z0-9_]/g, "_") } : item) })} aria-label="输入 key" placeholder="field_key" />
                 <div className="select-wrap schema-type-select"><select value={field.type} onChange={(event) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value as WorkflowFieldType } : item) })} aria-label="输入类型">{Object.entries(fieldTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
                 <label className="required-toggle"><input type="checkbox" checked={field.required} onChange={(event) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, required: event.target.checked } : item) })} /><span>必填</span></label>
                 <button className="icon-button schema-delete" onClick={() => update({ ...workflow, inputs: workflow.inputs.filter((_, itemIndex) => itemIndex !== index) })} title="删除输入" aria-label={`删除${field.label}`}><Trash2 size={14} /></button>
               </div>
-              {field.type === "select" && <input className="text-input schema-options-input" value={(field.options ?? []).join(", ")} onChange={(event) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, options: event.target.value.split(",").map((option) => option.trim()).filter(Boolean) } : item) })} placeholder="选项用逗号分隔" aria-label={`${field.label} 的选项`} />}
-              <input className="text-input schema-placeholder-input" value={field.placeholder ?? ""} onChange={(event) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, placeholder: event.target.value } : item) })} placeholder="填写提示（可选）" aria-label={`${field.label} 的填写提示`} />
+              {field.type === "select" && <DeferredInput className="text-input schema-options-input" value={(field.options ?? []).join(", ")} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, options: value.split(",").map((option) => option.trim()).filter(Boolean) } : item) })} placeholder="选项用逗号分隔" aria-label={`${field.label} 的选项`} />}
+              <DeferredInput className="text-input schema-placeholder-input" value={field.placeholder ?? ""} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, placeholder: value } : item) })} placeholder="填写提示（可选）" aria-label={`${field.label} 的填写提示`} />
             </div>)}
             <button className="designer-add-field" onClick={() => update({ ...workflow, inputs: [...workflow.inputs, newInputField(workflow.inputs.length + 1)] })}><ListPlus size={15} />添加场景输入</button>
           </section>}
 
           {selection.kind === "outputs" && <section className="schema-editor">
             <div className="designer-field-explainer output-explainer"><Braces size={15} /><span>最终结果可引用场景输入或任意步骤的输出。</span></div>
-            {workflow.outputs.map((field, index) => <div className="final-output-row" key={`${field.key}-${index}`}>
+            {workflow.outputs.map((field, index) => <div className="final-output-row" key={`schema-output-${index}`}>
               <span className="schema-row-index">{String(index + 1).padStart(2, "0")}</span>
-              <input className="text-input" value={field.label} onChange={(event) => update({ ...workflow, outputs: workflow.outputs.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) })} placeholder="结果名称" aria-label="最终输出名称" />
-              <input className="text-input output-key-input" value={field.key} onChange={(event) => update({ ...workflow, outputs: workflow.outputs.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value.replace(/[^a-zA-Z0-9_]/g, "_") } : item) })} placeholder="output_key" aria-label="最终输出 key" />
+              <DeferredInput className="text-input" value={field.label} onCommit={(value) => update({ ...workflow, outputs: workflow.outputs.map((item, itemIndex) => itemIndex === index ? { ...item, label: value } : item) })} placeholder="结果名称" aria-label="最终输出名称" />
+              <DeferredInput className="text-input output-key-input" value={field.key} onCommit={(value) => update({ ...workflow, outputs: workflow.outputs.map((item, itemIndex) => itemIndex === index ? { ...item, key: value.replace(/[^a-zA-Z0-9_]/g, "_") } : item) })} placeholder="output_key" aria-label="最终输出 key" />
               <div className="select-wrap schema-type-select"><select value={field.type} onChange={(event) => update({ ...workflow, outputs: workflow.outputs.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value as WorkflowOutputField["type"] } : item) })} aria-label="输出类型">{Object.entries(outputTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
               <button className="icon-button schema-delete" onClick={() => update({ ...workflow, outputs: workflow.outputs.filter((_, itemIndex) => itemIndex !== index) })} title="删除输出" aria-label={`删除${field.label}`}><Trash2 size={14} /></button>
               <ReferenceSelect value={field.sourceRef} options={sourceOptions} onChange={(sourceRef) => update({ ...workflow, outputs: workflow.outputs.map((item, itemIndex) => itemIndex === index ? { ...item, sourceRef } : item) })} />
@@ -544,7 +626,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
 
           {selection.kind === "step" && selectedStep && <section className="step-editor">
             <div className="designer-form-row">
-              <div className="field-group"><label className="field-label">步骤名称</label><input className="text-input" value={selectedStep.name} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, name: event.target.value }))} /></div>
+              <div className="field-group"><label className="field-label">步骤名称</label><DeferredInput className="text-input" value={selectedStep.name} onCommit={(value) => updateStep(selectedStep.id, (step) => ({ ...step, name: value }))} /></div>
               <div className="field-group"><label className="field-label">执行方式</label><div className="select-wrap"><select value={selectedStep.kind} onChange={(event) => changeStepKind(selectedStep.id, event.target.value as WorkflowStepKind)}><option value="hermes">Hermes Agent</option><option value="comfyui">ComfyUI</option><option value="manual">人工处理</option><option value="control">控制节点 · 条件判断</option></select><ChevronDown size={14} /></div></div>
             </div>
             {(priorConditionSteps.length > 0 || selectedStep.runCondition) && <div className="designer-subsection run-condition-section">
@@ -573,7 +655,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
                   </div>
                   {needsRightValue ? <div className="condition-rule-value">
                     <div className="select-wrap condition-value-source"><select value={rule.valueSource} onChange={(event) => updateConditionRule(index, { valueSource: event.target.value as WorkflowConditionRule["valueSource"] })} aria-label="比较值来源"><option value="literal">常量</option><option value="reference">引用变量</option></select><ChevronDown size={13} /></div>
-                    {rule.valueSource === "reference" ? <ReferenceSelect value={rule.rightRef} options={priorReferenceOptions} onChange={(rightRef) => updateConditionRule(index, { rightRef })} /> : leftType === "boolean" ? <div className="select-wrap"><select value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} aria-label="比较布尔值"><option value="">选择真假</option><option value="true">真</option><option value="false">假</option></select><ChevronDown size={14} /></div> : leftType === "json" ? <textarea className="text-input condition-literal-textarea" value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} placeholder="输入有效 JSON" aria-label="比较常量" /> : <input className="text-input condition-literal-input" type={leftType === "number" ? "number" : "text"} step={leftType === "number" ? "any" : undefined} value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} placeholder={leftType === "number" ? "输入数字" : "输入比较值"} aria-label="比较常量" />}
+                    {rule.valueSource === "reference" ? <ReferenceSelect value={rule.rightRef} options={priorReferenceOptions} onChange={(rightRef) => updateConditionRule(index, { rightRef })} /> : leftType === "boolean" ? <div className="select-wrap"><select value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} aria-label="比较布尔值"><option value="">选择真假</option><option value="true">真</option><option value="false">假</option></select><ChevronDown size={14} /></div> : leftType === "json" ? <DeferredTextarea className="text-input condition-literal-textarea" value={rule.rightValue} onCommit={(value) => updateConditionRule(index, { rightValue: value })} placeholder="输入有效 JSON" aria-label="比较常量" /> : <DeferredInput className="text-input condition-literal-input" type={leftType === "number" ? "number" : "text"} step={leftType === "number" ? "any" : undefined} value={rule.rightValue} onCommit={(value) => updateConditionRule(index, { rightValue: value })} placeholder={leftType === "number" ? "输入数字" : "输入比较值"} aria-label="比较常量" />}
                   </div> : <div className="condition-no-value">无需比较值</div>}
                 </div>;
               })}
@@ -584,6 +666,9 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
               <div className="designer-subsection-heading"><div><h3>ComfyUI 工作流</h3><p>选择本机工作流，再把变量映射到节点 ID 和属性</p></div><span>{comfyLoading ? "读取中" : comfyNodes.length ? `${comfyNodes.length} 个节点` : "节点绑定"}</span></div>
               <div className="field-group comfy-workflow-picker"><label className="field-label" htmlFor="comfy-workflow-select">工作流文件</label><div className="select-wrap"><select id="comfy-workflow-select" value={selectedStep.comfyui?.workflowFile ?? ""} onChange={(event) => changeComfyWorkflow(selectedStep.id, event.target.value)}><option value="">选择 ComfyUI 工作流</option>{comfyWorkflows.map((item) => <option value={item.filename} key={item.filename}>{item.filename}</option>)}</select><ChevronDown size={14} /></div></div>
               {comfyError && <div className="designer-profile-error">{comfyError}</div>}
+              {comfyNodeError && <div className="designer-profile-error">{comfyNodeError}</div>}
+              {comfyFormat === "ui" && <div className="designer-profile-error" role="status">这是 ComfyUI 画布工作流，当前不能直接运行。请导出为 API 格式 JSON 后再选择。</div>}
+              {comfyFormat === "unknown" && <div className="designer-profile-error" role="status">无法识别此工作流格式，请选择 ComfyUI API 格式 JSON。</div>}
               {!comfyWorkflows.length && !comfyError && <div className="comfy-workflow-empty">ComfyUI 暂无可读取的 JSON 工作流</div>}
               {selectedStep.comfyui?.workflowFile && <div className="comfy-binding-groups">
                 {(["input", "output"] as const).map((direction) => {
@@ -616,21 +701,23 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
                     }} title={`添加${inputDirection ? "输入" : "输出"}绑定`} aria-label={`添加${inputDirection ? "输入" : "输出"}绑定`}><Plus size={15} /></button></div></div>
                     {bindings.map((binding) => {
                       const index = selectedComfyBindings.indexOf(binding);
-                      const node = comfyNodes.find((item) => item.id === binding.nodeId);
+                      const normalizedNodeId = binding.nodeId.trim();
+                      const node = comfyNodes.find((item) => item.id === normalizedNodeId);
                       const suffix = `${selectedStep.id}-${direction}-${index}`.replace(/[^a-zA-Z0-9_-]/g, "-");
                       const nodeListId = `comfy-node-options-${suffix}`;
                       const propertyListId = `comfy-property-options-${suffix}`;
                       const propertyOptions = inputDirection ? node?.inputProperties ?? [] : node?.outputProperties ?? [];
-                      return <div className={`comfy-binding-row ${inputDirection ? "input-binding" : "output-binding"}`} key={`${binding.direction}-${binding.key}-${index}`}>
-                        <div className="comfy-binding-variable"><input className="text-input" value={binding.label} onChange={(event) => updateComfyBinding(selectedStep.id, index, { label: event.target.value })} placeholder="变量名称" aria-label="变量名称" /><input className="text-input output-key-input" value={binding.key} onChange={(event) => updateComfyBinding(selectedStep.id, index, { key: event.target.value.replace(/[^a-zA-Z0-9_]/g, "_") })} placeholder="variable_key" aria-label="变量 key" /></div>
+                      const nodePropertiesLoaded = loadedComfyNodeIds.includes(normalizedNodeId);
+                      return <div className={`comfy-binding-row ${inputDirection ? "input-binding" : "output-binding"}`} key={`comfy-binding-${direction}-${index}`}>
+                        <div className="comfy-binding-variable"><DeferredInput className="text-input" value={binding.label} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { label: value })} placeholder="变量名称" aria-label="变量名称" /><DeferredInput className="text-input output-key-input" value={binding.key} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { key: value.replace(/[^a-zA-Z0-9_]/g, "_") })} placeholder="variable_key" aria-label="变量 key" /></div>
                         {inputDirection && <ReferenceSelect value={binding.sourceRef ?? ""} options={outputReferenceOptions(workflow, Math.max(0, selectedStepIndex)).concat(inputReferenceOptions(workflow))} onChange={(sourceRef) => updateComfyBinding(selectedStep.id, index, { sourceRef })} />}
-                        <input className="text-input comfy-node-input" value={binding.nodeId} onChange={(event) => updateComfyBinding(selectedStep.id, index, { nodeId: event.target.value })} list={nodeListId} placeholder="节点 ID" aria-label="ComfyUI 节点 ID" />
+                        <div className="comfy-node-loader"><DeferredInput className="text-input comfy-node-input" value={binding.nodeId} onCommit={(value) => { updateComfyBinding(selectedStep.id, index, { nodeId: value }); setComfyNodeError(""); }} list={nodeListId} placeholder="节点 ID" aria-label="ComfyUI 节点 ID" /><button className="icon-button comfy-node-load-button" onClick={() => loadComfyNodeProperties(binding.nodeId)} title="加载节点属性" aria-label={`加载节点 ${binding.nodeId || ""} 的属性`} disabled={comfyLoading}><RefreshCw size={13} /></button></div>
                         <datalist id={nodeListId}>{comfyNodes.map((item) => <option value={item.id} key={item.id}>{item.type}</option>)}</datalist>
-                        <input className="text-input comfy-property-input" value={binding.property} onChange={(event) => updateComfyBinding(selectedStep.id, index, { property: event.target.value })} list={propertyListId} placeholder="节点属性" aria-label="ComfyUI 节点属性" />
-                        <datalist id={propertyListId}>{propertyOptions.map((property) => <option value={property} key={property} />)}</datalist>
+                        <DeferredInput className="text-input comfy-property-input" value={binding.property} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { property: value })} list={propertyListId} placeholder={inputDirection ? "节点输入属性" : "输出属性，如 images"} aria-label="ComfyUI 节点属性" />
+                        <datalist id={propertyListId}>{nodePropertiesLoaded && propertyOptions.map((property) => <option value={property} key={property} />)}</datalist>
                         <div className="select-wrap schema-type-select"><select value={binding.type} onChange={(event) => updateComfyBinding(selectedStep.id, index, { type: event.target.value as WorkflowVariableType })} aria-label="变量类型">{Object.entries(inputDirection ? variableTypeLabels : outputTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
                         <button className="icon-button schema-delete" onClick={() => updateComfyBindings(selectedStep.id, selectedComfyBindings.filter((_, itemIndex) => itemIndex !== index))} title="删除绑定" aria-label={`删除${binding.label}绑定`}><Trash2 size={14} /></button>
-                        {node && <small className="comfy-node-type">{node.type}</small>}
+                        {node && <small className="comfy-node-type">{node.type}{nodePropertiesLoaded ? ` · 已加载 ${propertyOptions.length} 个${inputDirection ? "输入" : "输出"}属性` : " · 点击加载属性"}</small>}
                       </div>;
                     })}
                     {!bindings.length && <div className="comfy-workflow-empty">还没有定义变量绑定</div>}
@@ -641,8 +728,8 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
 
             {selectedStep.kind !== "comfyui" && selectedStep.kind !== "control" && <div className="designer-subsection">
               <div className="designer-subsection-heading"><div><h3>步骤输入</h3><p>为当前步骤选择场景输入或前序输出</p></div><span>{selectedStep.inputs.length} 项映射</span></div>
-              {selectedStep.inputs.map((input, index) => <div className="step-input-row" key={`${input.key}-${index}`}>
-                <div className="step-input-labels"><input className="text-input" value={input.label} onChange={(event) => setStepInput(index, "label", event.target.value)} aria-label="输入标签" placeholder="输入名称" /><input className="text-input" value={input.key} onChange={(event) => setStepInput(index, "key", event.target.value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输入 key" placeholder="step_input" /></div>
+              {selectedStep.inputs.map((input, index) => <div className="step-input-row" key={`step-input-${index}`}>
+                <div className="step-input-labels"><DeferredInput className="text-input" value={input.label} onCommit={(value) => setStepInput(index, "label", value)} aria-label="输入标签" placeholder="输入名称" /><DeferredInput className="text-input" value={input.key} onCommit={(value) => setStepInput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输入 key" placeholder="step_input" /></div>
                 <ReferenceSelect value={input.sourceRef} options={outputReferenceOptions(workflow, Math.max(0, selectedStepIndex)).concat(inputReferenceOptions(workflow))} onChange={(value) => setStepInput(index, "sourceRef", value)} />
                 <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, inputs: step.inputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除输入映射" aria-label={`删除${input.label}映射`}><Trash2 size={14} /></button>
               </div>)}
@@ -651,9 +738,9 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
 
             {selectedStep.kind !== "comfyui" && selectedStep.kind !== "control" && <div className="designer-subsection">
               <div className="designer-subsection-heading"><div><h3>步骤输出</h3><p>声明此步骤提供给后续步骤的结果</p></div><span>{selectedStep.outputs.length} 项结果</span></div>
-              {selectedStep.outputs.map((output, index) => <div className="step-output-row" key={`${output.key}-${index}`}>
-                <input className="text-input" value={output.label} onChange={(event) => setStepOutput(index, "label", event.target.value)} aria-label="输出标签" placeholder="输出名称" />
-                <input className="text-input output-key-input" value={output.key} onChange={(event) => setStepOutput(index, "key", event.target.value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输出 key" placeholder="output_key" />
+              {selectedStep.outputs.map((output, index) => <div className="step-output-row" key={`step-output-${index}`}>
+                <DeferredInput className="text-input" value={output.label} onCommit={(value) => setStepOutput(index, "label", value)} aria-label="输出标签" placeholder="输出名称" />
+                <DeferredInput className="text-input output-key-input" value={output.key} onCommit={(value) => setStepOutput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输出 key" placeholder="output_key" />
                 <div className="select-wrap schema-type-select"><select value={output.type} onChange={(event) => setStepOutput(index, "type", event.target.value)} aria-label="步骤输出类型">{Object.entries(outputTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
                 <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: step.outputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除步骤输出" aria-label={`删除${output.label}`}><Trash2 size={14} /></button>
               </div>)}
@@ -663,7 +750,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
             {selectedStep.kind === "hermes" && <div className="designer-subsection prompt-subsection">
               <div className="designer-subsection-heading"><div><h3>提示词模板</h3><p>使用上方步骤输入，也可直接插入场景变量引用</p></div><span><Braces size={13} />变量引用</span></div>
               <div className="prompt-reference-tools"><div className="select-wrap"><select value={referenceToInsert} onChange={(event) => setReferenceToInsert(event.target.value)} aria-label="选择要插入的引用"><option value="">选择输入或前序输出</option>{promptSourceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}（{option.value}）</option>)}</select><ChevronDown size={14} /></div><button type="button" className="button button-outline" onClick={insertReference} disabled={!referenceToInsert}>插入引用</button></div>
-              <textarea ref={promptRef} className="text-input prompt-textarea" value={selectedStep.promptTemplate} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, promptTemplate: event.target.value }))} placeholder="编写此步骤交给 Hermes 的任务描述……" />
+              <DeferredTextarea ref={promptRef} className="text-input prompt-textarea" value={selectedStep.promptTemplate} onCommit={(value) => updateStep(selectedStep.id, (step) => ({ ...step, promptTemplate: value }))} placeholder="编写此步骤交给 Hermes 的任务描述……" />
             </div>}
           </section>}
 

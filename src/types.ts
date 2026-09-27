@@ -21,7 +21,8 @@ export interface WorkflowDraft {
   summary: string;
   inputValues?: Record<string, JsonValue>;
   createdAt: string;
-  status: "draft";
+  status: "draft" | "completed" | "failed";
+  runResult?: WorkflowRunResult;
 }
 
 export type ConnectionStatus = "connected" | "not_configured" | "disconnected";
@@ -144,6 +145,29 @@ export interface WorkflowDefinition {
   inputs: WorkflowInputField[];
   steps: WorkflowStepDefinition[];
   outputs: WorkflowOutputField[];
+}
+
+export interface WorkflowRunStepResult {
+  stepId: string;
+  name: string;
+  status: "completed" | "skipped" | "failed";
+  message?: string;
+  outputs?: Record<string, JsonValue>;
+}
+
+export interface WorkflowRunOutput {
+  key: string;
+  label: string;
+  type: WorkflowVariableType;
+  value: JsonValue;
+}
+
+export interface WorkflowRunResult {
+  runId: string;
+  status: "completed" | "failed";
+  steps: WorkflowRunStepResult[];
+  outputs: WorkflowRunOutput[];
+  error?: string;
 }
 
 export interface ComfyUIWorkflowSummary {

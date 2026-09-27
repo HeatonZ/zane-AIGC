@@ -84,7 +84,7 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
                   <button className="draft-row" key={draft.id} onClick={() => onOpenScene(draft.sceneId)}>
                     <span className={`draft-thumb ${scene.accent}`}><Sparkles size={16} /></span>
                     <span className="draft-info"><strong>{draft.title}</strong><small>{scene.shortTitle}制作 · {formatDate(draft.createdAt)}</small></span>
-                    <span className="draft-status">草稿</span>
+                    <span className={`draft-status ${draft.status}`}>{draft.status === "completed" ? "已完成" : draft.status === "failed" ? "失败" : "草稿"}</span>
                     <ArrowRight className="draft-arrow" size={15} />
                   </button>
                 );

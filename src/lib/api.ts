@@ -4,6 +4,9 @@ import type {
   ConnectionSettings,
   ConnectorState,
   HermesProfile,
+  JsonValue,
+  WorkflowDefinition,
+  WorkflowRunResult,
 } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -51,4 +54,11 @@ export function loadComfyUIWorkflows() {
 
 export function loadComfyUIWorkflow(filename: string) {
   return request<ComfyUIWorkflowDetail>(`/api/comfyui/workflow?filename=${encodeURIComponent(filename)}`);
+}
+
+export function runWorkflow(workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>) {
+  return request<WorkflowRunResult>("/api/workflows/run", {
+    method: "POST",
+    body: JSON.stringify({ workflow, inputValues }),
+  });
 }
