@@ -174,6 +174,10 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .studio-dynamic-control { display: block; }
 .studio-dynamic-field .select-wrap select { min-height: 37px; }
 .studio-dynamic-field .select-wrap > svg { top: 11px; }
+.json-input-control { min-height: 105px; font-family: Consolas, "DM Sans", sans-serif; line-height: 1.6; resize: vertical; }
+.boolean-options { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; min-height: 37px; }
+.boolean-options label { display: inline-flex; align-items: center; gap: 6px; color: #60695c; font-size: 10px; cursor: pointer; }
+.boolean-options input { width: 14px; height: 14px; margin: 0; accent-color: #6c895d; }
 .studio-empty-outputs { display: flex; align-items: center; gap: 6px; padding: 11px 0; color: #979e94; font-size: 9px; }
 .form-intro { display: flex; align-items: center; gap: 11px; padding-bottom: 18px; margin-bottom: 19px; border-bottom: 1px solid #eef0eb; }
 .scene-icon-box { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 auto; color: #567a4b; background: #edf2e7; border-radius: 6px; }
@@ -212,7 +216,8 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .workflow-step.current strong { color: #45583d; font-weight: 600; }
 .workflow-step.current.coral-current strong { color: #9a5e4c; }
 .step-line { position: absolute; top: 10px; left: 27px; width: calc(100% - 32px); height: 1px; background: #dfe4d9; }
-.form-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 64px; margin-top: 18px; border-top: 1px solid #eef0eb; }
+.form-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; min-height: 64px; margin-top: 18px; border-top: 1px solid #eef0eb; }
+.studio-form-error { width: 100%; padding: 8px 10px; margin-top: 10px; color: #9c5f4f; font-size: 9px; background: #fbf4f0; border-radius: 4px; }
 .form-save-hint { color: #9ca399; font-size: 9px; }
 .studio-aside { display: flex; min-width: 0; flex-direction: column; padding-top: 1px; }
 .studio-aside-image { position: relative; height: 133px; overflow: hidden; background: #3d483e; border-radius: 6px; }
@@ -504,6 +509,44 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .step-input-row { display: grid; grid-template-columns: minmax(160px, .75fr) minmax(240px, 1.25fr) 25px; align-items: center; gap: 7px; padding: 8px; margin-bottom: 7px; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
 .step-input-labels { display: grid; grid-template-columns: 1fr .8fr; gap: 6px; min-width: 0; }
 .step-output-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(90px, .75fr) 126px 25px; align-items: center; gap: 7px; padding: 8px; margin-bottom: 7px; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
+.run-condition-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 650px; }
+.run-condition-row .select-wrap select { min-height: 35px; }
+.run-condition-row .select-wrap > svg { top: 10px; }
+.condition-match-row { display: grid; grid-template-columns: 80px minmax(190px, 330px); align-items: center; gap: 8px; margin-bottom: 9px; color: #737c70; font-size: 9px; }
+.condition-match-row .select-wrap select { min-height: 34px; }
+.condition-match-row .select-wrap > svg { top: 10px; }
+.condition-rule-row { padding: 9px; margin-bottom: 7px; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
+.condition-rule-main { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(120px, .7fr) 25px; align-items: center; gap: 7px; }
+.condition-rule-main .select-wrap select { min-height: 34px; }
+.condition-rule-main .select-wrap > svg { top: 10px; }
+.condition-rule-value { display: grid; grid-template-columns: minmax(105px, .4fr) minmax(200px, 1fr); align-items: center; gap: 7px; margin: 7px 32px 0 0; }
+.condition-value-source .select-wrap select, .condition-rule-value > .select-wrap select { min-height: 34px; }
+.condition-rule-value > .select-wrap > svg { top: 10px; }
+.condition-rule-value .text-input { min-height: 34px; padding: 7px 8px; font-size: 9px; }
+.condition-literal-textarea { min-height: 54px !important; resize: vertical; }
+.condition-no-value { margin: 7px 32px 0 0; color: #969e93; font-size: 8px; }
+.comfy-workflow-picker { max-width: 560px; }
+.comfy-workflow-picker .field-label { margin-bottom: 6px; }
+.comfy-workflow-picker .select-wrap select { min-height: 35px; }
+.comfy-workflow-picker .select-wrap > svg { top: 10px; }
+.comfy-workflow-empty { padding: 10px; color: #929a8e; font-size: 9px; background: #fafbf8; border: 1px dashed #e0e5dc; border-radius: 4px; }
+.comfy-binding-groups { display: grid; gap: 16px; margin-top: 14px; }
+.comfy-binding-group { min-width: 0; }
+.comfy-binding-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.comfy-binding-heading > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.comfy-binding-heading strong { color: #515b4d; font-size: 9px; font-weight: 600; }
+.comfy-binding-heading small { color: #9ba197; font-size: 8px; }
+.comfy-binding-actions { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+.comfy-import-button { min-height: 27px; padding: 0 7px; font-size: 8px; }
+.comfy-binding-heading .icon-button { width: 27px; height: 27px; flex: 0 0 auto; color: #637d58; background: #f5f8f1; }
+.comfy-binding-row { display: grid; align-items: center; gap: 6px; padding: 7px; margin-bottom: 6px; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
+.comfy-binding-row.input-binding { grid-template-columns: minmax(130px, 1fr) minmax(190px, 1.2fr) minmax(65px, .45fr) minmax(100px, .7fr) 110px 25px; }
+.comfy-binding-row.output-binding { grid-template-columns: minmax(140px, 1fr) minmax(65px, .45fr) minmax(110px, .75fr) 110px 25px; }
+.comfy-binding-row .text-input { min-width: 0; min-height: 32px; padding: 7px 8px; font-size: 9px; }
+.comfy-binding-variable { display: grid; min-width: 0; grid-template-columns: 1fr .85fr; gap: 5px; }
+.comfy-binding-row .select-wrap select { min-height: 32px; padding-left: 8px; font-size: 9px; }
+.comfy-binding-row .select-wrap > svg { top: 9px; right: 6px; width: 12px; }
+.comfy-node-type { grid-column: 3 / -2; margin-top: -3px; color: #8b9684; font-size: 8px; }
 .prompt-subsection { padding-bottom: 14px; }
 .prompt-reference-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-bottom: 8px; }
 .prompt-reference-tools .select-wrap select { min-height: 34px; }
@@ -524,6 +567,13 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
   .schema-row-main { grid-template-columns: minmax(90px,1fr) minmax(75px,.7fr) 108px auto 24px; gap: 4px; }
   .step-input-row { grid-template-columns: 1fr 25px; }
   .step-input-row > .ref-select { grid-column: 1 / -1; }
+  .condition-rule-main { grid-template-columns: minmax(0, 1fr) 25px; }
+  .condition-rule-main > .ref-select, .condition-rule-main > .select-wrap { grid-column: 1 / -1; }
+  .condition-rule-main > .schema-delete { grid-column: 2; grid-row: 1; }
+  .comfy-binding-row.input-binding, .comfy-binding-row.output-binding { grid-template-columns: minmax(0, 1fr) 25px; }
+  .comfy-binding-variable, .comfy-binding-row > .ref-select, .comfy-binding-row > .comfy-node-input, .comfy-binding-row > .comfy-property-input, .comfy-binding-row > .select-wrap { grid-column: 1 / -1; }
+  .comfy-binding-row > .schema-delete { grid-column: 2; grid-row: 1; }
+  .comfy-node-type { grid-column: 1 / -1; }
 }
 
 @media (max-width: 700px) {
@@ -542,6 +592,10 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
   .final-output-row { grid-template-columns: 22px minmax(90px,1fr) minmax(76px,.7fr) 98px 23px; gap: 4px; }
   .final-output-row > .ref-select { grid-column: 2 / -1; }
   .step-output-row { grid-template-columns: minmax(90px,1fr) minmax(74px,.7fr) 98px 23px; gap: 4px; }
+  .run-condition-row { grid-template-columns: 1fr; }
+  .condition-match-row { grid-template-columns: 1fr; }
+  .condition-rule-value { grid-template-columns: 1fr; margin-right: 0; }
+  .condition-no-value { margin-right: 0; }
 }
 
 @media (max-width: 470px) {

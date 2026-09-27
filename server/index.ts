@@ -15,6 +15,19 @@ interface HermesProfile {
   isDefault: boolean;
 }
 
+interface ComfyUIWorkflowSummary {
+  filename: string;
+  size?: number;
+  modified?: number;
+}
+
+interface ComfyUIWorkflowNode {
+  id: string;
+  type: string;
+  inputProperties: string[];
+  outputProperties: string[];
+}
+
 const app = express();
 const port = Number(process.env.API_PORT ?? 8799);
 const localDirectory = path.resolve(process.cwd(), ".local");
@@ -162,6 +175,71 @@ async function checkHermesProfiles(enabledIds: string[]) {
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function uniqueStrings(values: unknown[]) {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim()))];
+}
+
+function summarizeComfyUIWorkflow(payload: unknown, filename: string) {
+  const root = asRecord(payload);
+  const uiNodes = Array.isArray(root?.nodes) ? root.nodes : undefined;
+  if (uiNodes) {
+    const nodes: ComfyUIWorkflowNode[] = uiNodes.flatMap((value) => {
+      const node = asRecord(value);
+      if (!node || (typeof node.id !== "number" && typeof node.id !== "string")) return [];
+      const inputs = Array.isArray(node.inputs) ? node.inputs.flatMap((inputValue) => {
+        const input = asRecord(inputValue);
+        return input ? [input.name, asRecord(input.widget)?.name] : [];
+      }) : [];
+      const widgets = asRecord(node.widgets_values_named);
+      const outputs = Array.isArray(node.outputs) ? node.outputs.flatMap((outputValue) => {
+        const output = asRecord(outputValue);
+        return output ? [output.name] : [];
+      }) : [];
+      return [{
+        id: String(node.id),
+        type: typeof node.type === "string" ? node.type : "Unknown",
+        inputProperties: uniqueStrings([...inputs, ...Object.keys(widgets ?? {})]),
+        outputProperties: uniqueStrings(outputs),
+      }];
+    });
+    return { filename, format: "ui" as const, nodes };
+  }
+
+  if (root) {
+    const nodes: ComfyUIWorkflowNode[] = Object.entries(root).flatMap(([id, value]) => {
+      const node = asRecord(value);
+      if (!node || typeof node.class_type !== "string" || !asRecord(node.inputs)) return [];
+      return [{
+        id,
+        type: node.class_type,
+        inputProperties: Object.keys(asRecord(node.inputs) ?? {}),
+        outputProperties: [],
+      }];
+    });
+    if (nodes.length) return { filename, format: "api" as const, nodes };
+  }
+
+  return { filename, format: "unknown" as const, nodes: [] };
+}
+
+async function fetchComfyUIJson(url: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`ComfyUI 返回 ${response.status}`);
+    return await response.json() as unknown;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 app.get("/api/health", (_request, response) => {
   response.json({ status: "ok" });
 });
@@ -172,6 +250,58 @@ app.get("/api/settings", async (_request, response) => {
 
 app.get("/api/hermes/profiles", async (_request, response) => {
   response.json(await listHermesProfiles());
+});
+
+app.get("/api/comfyui/workflows", async (_request, response) => {
+  const settings = await readSettings();
+  if (!settings.comfyuiBaseUrl) {
+    response.status(400).json({ error: "尚未配置 ComfyUI 地址" });
+    return;
+  }
+
+  try {
+    const payload = await fetchComfyUIJson(`${settings.comfyuiBaseUrl}/api/userdata?dir=workflows&recurse=true&full_info=true`);
+    const workflows: ComfyUIWorkflowSummary[] = Array.isArray(payload)
+      ? payload.flatMap((entry) => {
+        if (typeof entry === "string") return [{ filename: entry }];
+        const item = asRecord(entry);
+        return typeof item?.path === "string" ? [{
+          filename: item.path,
+          size: typeof item.size === "number" ? item.size : undefined,
+          modified: typeof item.modified === "number" ? item.modified : undefined,
+        }] : [];
+      }).filter((workflow) => workflow.filename.toLowerCase().endsWith(".json") && !workflow.filename.includes(".bak-"))
+      : [];
+    response.json(workflows.sort((a, b) => a.filename.localeCompare(b.filename, "zh-CN")));
+  } catch (error) {
+    const message = error instanceof Error && error.name === "AbortError" ? "读取 ComfyUI 工作流超时" : "读取 ComfyUI 工作流失败";
+    response.status(502).json({ error: message });
+  }
+});
+
+app.get("/api/comfyui/workflow", async (request, response) => {
+  const settings = await readSettings();
+  const filename = typeof request.query.filename === "string" ? request.query.filename : "";
+  if (!settings.comfyuiBaseUrl || !filename) {
+    response.status(400).json({ error: "缺少 ComfyUI 地址或工作流文件名" });
+    return;
+  }
+
+  // Aiohttp decodes the path parameter once before ComfyUI unquotes it again.
+  // Encode each filename segment once and keep separators double encoded.
+  const encodedFilename = `workflows/${filename}`.split("/").map((segment) => encodeURIComponent(segment)).join("%252F");
+  try {
+    let payload: unknown;
+    try {
+      payload = await fetchComfyUIJson(`${settings.comfyuiBaseUrl}/api/userdata/${encodedFilename}`);
+    } catch {
+      payload = await fetchComfyUIJson(`${settings.comfyuiBaseUrl}/userdata/${encodedFilename}`);
+    }
+    response.json(summarizeComfyUIWorkflow(payload, filename));
+  } catch (error) {
+    const message = error instanceof Error && error.name === "AbortError" ? "读取 ComfyUI 工作流超时" : "读取 ComfyUI 工作流内容失败";
+    response.status(502).json({ error: message });
+  }
 });
 
 app.put("/api/settings", async (request, response) => {

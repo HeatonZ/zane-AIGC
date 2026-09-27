@@ -43,7 +43,8 @@ export const defaultWorkflows: Record<SceneId, WorkflowDefinition> = {
       {
         id: "keyframes",
         name: "关键帧生成",
-        kind: "comfyui_image",
+        kind: "comfyui",
+        comfyui: { workflowFile: "", bindings: [] },
         inputs: [{ key: "storyboard", label: "分镜脚本", sourceRef: "step.storyboard.outputs.storyboard" }],
         outputs: [{ key: "keyframes", label: "关键帧", type: "image" }],
         promptTemplate: "",
@@ -51,7 +52,8 @@ export const defaultWorkflows: Record<SceneId, WorkflowDefinition> = {
       {
         id: "video",
         name: "动态画面",
-        kind: "comfyui_video",
+        kind: "comfyui",
+        comfyui: { workflowFile: "", bindings: [] },
         inputs: [{ key: "keyframes", label: "关键帧", sourceRef: "step.keyframes.outputs.keyframes" }],
         outputs: [{ key: "video", label: "漫剧片段", type: "video" }],
         promptTemplate: "",
@@ -102,7 +104,8 @@ export const defaultWorkflows: Record<SceneId, WorkflowDefinition> = {
       {
         id: "product_images",
         name: "商品画面",
-        kind: "comfyui_image",
+        kind: "comfyui",
+        comfyui: { workflowFile: "", bindings: [] },
         inputs: [{ key: "shotlist", label: "展示镜头", sourceRef: "step.shotlist.outputs.shotlist" }],
         outputs: [{ key: "images", label: "商品画面", type: "image" }],
         promptTemplate: "",
@@ -110,7 +113,8 @@ export const defaultWorkflows: Record<SceneId, WorkflowDefinition> = {
       {
         id: "product_video",
         name: "展示视频",
-        kind: "comfyui_video",
+        kind: "comfyui",
+        comfyui: { workflowFile: "", bindings: [] },
         inputs: [{ key: "images", label: "商品画面", sourceRef: "step.product_images.outputs.images" }],
         outputs: [{ key: "video", label: "商品展示视频", type: "video" }],
         promptTemplate: "",
@@ -121,6 +125,29 @@ export const defaultWorkflows: Record<SceneId, WorkflowDefinition> = {
       { key: "shotlist", label: "展示镜头", type: "json", sourceRef: "step.shotlist.outputs.shotlist" },
       { key: "video", label: "商品展示视频", type: "video", sourceRef: "step.product_video.outputs.video" },
     ],
+  },
+  text_to_image: {
+    sceneId: "text_to_image",
+    name: "基础文生图流程",
+    inputs: [
+      { key: "prompt", label: "正向提示词", type: "textarea", required: true, placeholder: "描述主体、环境、风格和画面细节" },
+      { key: "negative_prompt", label: "反向提示词", type: "textarea", required: false, placeholder: "不希望出现的内容" },
+      { key: "width", label: "宽度", type: "number", required: true, placeholder: "1024" },
+      { key: "height", label: "高度", type: "number", required: true, placeholder: "1024" },
+      { key: "seed", label: "随机种子", type: "number", required: false, placeholder: "留空使用随机种子" },
+    ],
+    steps: [
+      {
+        id: "text_to_image",
+        name: "ComfyUI 文生图",
+        kind: "comfyui",
+        inputs: [],
+        outputs: [{ key: "image", label: "生成图像", type: "image" }],
+        promptTemplate: "",
+        comfyui: { workflowFile: "", bindings: [] },
+      },
+    ],
+    outputs: [{ key: "image", label: "生成图像", type: "image", sourceRef: "step.text_to_image.outputs.image" }],
   },
 };
 

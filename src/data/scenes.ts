@@ -2,6 +2,18 @@ import type { SceneModule } from "../types";
 
 export const scenes: SceneModule[] = [
   {
+    id: "text_to_image",
+    title: "基础文生图",
+    shortTitle: "文生图",
+    summary: "用 ComfyUI 工作流生成图像",
+    description: "选择本地工作流，绑定节点输入与输出",
+    cover:
+      "https://images.unsplash.com/photo-1547891654-e66ed7ebb968?auto=format&fit=crop&w=1200&q=85",
+    coverPosition: "center 48%",
+    accent: "green",
+    stages: ["提示词", "节点绑定", "参数设置", "图像生成"],
+  },
+  {
     id: "comic",
     title: "漫剧制作",
     shortTitle: "漫剧",
@@ -30,4 +42,3 @@ export const scenes: SceneModule[] = [
 export function getScene(sceneId: string | undefined): SceneModule {
   return scenes.find((scene) => scene.id === sceneId) ?? scenes[0];
 }
-

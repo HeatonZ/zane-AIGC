@@ -1,4 +1,4 @@
-export type SceneId = "comic" | "commerce";
+export type SceneId = "comic" | "commerce" | "text_to_image";
 
 export type PageId = "home" | "history" | "assets" | "connections" | "studio" | "flows";
 
@@ -19,7 +19,7 @@ export interface WorkflowDraft {
   sceneId: SceneId;
   title: string;
   summary: string;
-  inputValues?: Record<string, string | number>;
+  inputValues?: Record<string, JsonValue>;
   createdAt: string;
   status: "draft";
 }
@@ -44,8 +44,43 @@ export interface HermesProfile {
   isDefault: boolean;
 }
 
-export type WorkflowFieldType = "text" | "textarea" | "number" | "select";
-export type WorkflowStepKind = "hermes" | "comfyui_image" | "comfyui_video" | "manual";
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+export type WorkflowFieldType = "text" | "textarea" | "number" | "boolean" | "select" | "image" | "video" | "json";
+export type WorkflowStepKind = "hermes" | "comfyui" | "manual" | "control";
+export type WorkflowVariableType = Exclude<WorkflowFieldType, "textarea" | "select">;
+
+export type WorkflowConditionOperator =
+  | "equals"
+  | "not_equals"
+  | "greater_than"
+  | "greater_or_equal"
+  | "less_than"
+  | "less_or_equal"
+  | "contains"
+  | "not_contains"
+  | "is_empty"
+  | "is_not_empty";
+
+export interface WorkflowConditionRule {
+  id: string;
+  leftRef: string;
+  operator: WorkflowConditionOperator;
+  valueSource: "literal" | "reference";
+  rightValue: string;
+  rightRef: string;
+}
+
+export interface WorkflowControlConfig {
+  type: "condition";
+  match: "all" | "any";
+  rules: WorkflowConditionRule[];
+}
+
+export interface WorkflowRunCondition {
+  conditionStepId: string;
+  expectedResult: boolean;
+}
 
 export interface WorkflowInputField {
   key: string;
@@ -65,7 +100,7 @@ export interface WorkflowStepInput {
 export interface WorkflowStepOutput {
   key: string;
   label: string;
-  type: "text" | "image" | "video" | "json";
+  type: WorkflowVariableType;
 }
 
 export interface WorkflowStepDefinition {
@@ -76,12 +111,30 @@ export interface WorkflowStepDefinition {
   inputs: WorkflowStepInput[];
   outputs: WorkflowStepOutput[];
   promptTemplate: string;
+  comfyui?: ComfyUIWorkflowConfig;
+  control?: WorkflowControlConfig;
+  runCondition?: WorkflowRunCondition;
+}
+
+export interface ComfyUIBinding {
+  key: string;
+  label: string;
+  direction: "input" | "output";
+  nodeId: string;
+  property: string;
+  type: WorkflowVariableType;
+  sourceRef?: string;
+}
+
+export interface ComfyUIWorkflowConfig {
+  workflowFile: string;
+  bindings: ComfyUIBinding[];
 }
 
 export interface WorkflowOutputField {
   key: string;
   label: string;
-  type: "text" | "image" | "video" | "json";
+  type: WorkflowVariableType;
   sourceRef: string;
 }
 
@@ -91,4 +144,23 @@ export interface WorkflowDefinition {
   inputs: WorkflowInputField[];
   steps: WorkflowStepDefinition[];
   outputs: WorkflowOutputField[];
+}
+
+export interface ComfyUIWorkflowSummary {
+  filename: string;
+  size?: number;
+  modified?: number;
+}
+
+export interface ComfyUIWorkflowNode {
+  id: string;
+  type: string;
+  inputProperties: string[];
+  outputProperties: string[];
+}
+
+export interface ComfyUIWorkflowDetail {
+  filename: string;
+  format: "ui" | "api" | "unknown";
+  nodes: ComfyUIWorkflowNode[];
 }

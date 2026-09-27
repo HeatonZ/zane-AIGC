@@ -26,7 +26,7 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
           <h1>工作台</h1>
           <p className="page-subtitle">把想法带进每一个创作场景。</p>
         </div>
-        <button className="button button-dark" onClick={() => onOpenScene("comic")}>
+        <button className="button button-dark" onClick={() => onOpenScene("text_to_image")}>
           <Plus size={16} /> 新建创作
         </button>
       </div>
@@ -43,7 +43,7 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
                 <img src={scene.cover} alt="" style={{ objectPosition: scene.coverPosition }} />
                 <div className="scene-cover-shade" />
                 <span className="scene-number">0{index + 1}</span>
-                <span className="scene-category">{index === 0 ? "STORY & MOTION" : "PRODUCT VISUALS"}</span>
+                <span className="scene-category">{scene.id === "text_to_image" ? "IMAGE GENERATION" : scene.id === "comic" ? "STORY & MOTION" : "PRODUCT VISUALS"}</span>
                 <button className="scene-open" onClick={() => onOpenScene(scene.id)} aria-label={`打开${scene.title}`}>
                   <ArrowUpRight size={19} />
                 </button>

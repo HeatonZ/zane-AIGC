@@ -16,17 +16,24 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { scenes } from "../data/scenes";
-import { loadConnectionSettings, loadHermesProfiles } from "../lib/api";
+import { loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesProfiles } from "../lib/api";
 import type {
+  ComfyUIBinding,
+  ComfyUIWorkflowNode,
+  ComfyUIWorkflowSummary,
   HermesProfile,
   SceneId,
   WorkflowDefinition,
+  WorkflowConditionOperator,
+  WorkflowConditionRule,
+  WorkflowControlConfig,
   WorkflowFieldType,
   WorkflowInputField,
   WorkflowOutputField,
   WorkflowStepDefinition,
   WorkflowStepKind,
   WorkflowStepOutput,
+  WorkflowVariableType,
 } from "../types";
 
 interface FlowDesignerProps {
@@ -38,17 +45,23 @@ interface FlowDesignerProps {
 }
 
 type Selection = { kind: "inputs" } | { kind: "step"; stepId: string } | { kind: "outputs" };
-type ReferenceOption = { value: string; label: string };
+type ReferenceOption = { value: string; label: string; type?: WorkflowVariableType };
 
 const fieldTypeLabels: Record<WorkflowFieldType, string> = {
   text: "单行文本",
   textarea: "多行文本",
   number: "数字",
+  boolean: "布尔值",
   select: "选项",
+  image: "图像",
+  video: "视频",
+  json: "结构化数据",
 };
 
 const outputTypeLabels: Record<WorkflowStepOutput["type"], string> = {
   text: "文本",
+  number: "数字",
+  boolean: "布尔值",
   image: "图像",
   video: "视频",
   json: "结构化数据",
@@ -56,13 +69,61 @@ const outputTypeLabels: Record<WorkflowStepOutput["type"], string> = {
 
 const stepKindLabels: Record<WorkflowStepKind, string> = {
   hermes: "Hermes Agent",
-  comfyui_image: "ComfyUI 图像",
-  comfyui_video: "ComfyUI 视频",
+  comfyui: "ComfyUI",
   manual: "人工处理",
+  control: "控制节点",
 };
 
+const variableTypeLabels: Record<WorkflowVariableType, string> = {
+  text: "文本",
+  number: "数字",
+  boolean: "布尔值",
+  image: "图像",
+  video: "视频",
+  json: "结构化数据",
+};
+
+const conditionOperatorLabels: Record<WorkflowConditionOperator, string> = {
+  equals: "等于",
+  not_equals: "不等于",
+  greater_than: "大于",
+  greater_or_equal: "大于等于",
+  less_than: "小于",
+  less_or_equal: "小于等于",
+  contains: "包含",
+  not_contains: "不包含",
+  is_empty: "为空",
+  is_not_empty: "不为空",
+};
+
+function conditionOperators(type?: WorkflowVariableType): WorkflowConditionOperator[] {
+  const operators: WorkflowConditionOperator[] = ["equals", "not_equals", "is_empty", "is_not_empty"];
+  if (type === "number") operators.push("greater_than", "greater_or_equal", "less_than", "less_or_equal");
+  if (type === "text" || type === "json") operators.push("contains", "not_contains");
+  return operators;
+}
+
+function inputValueType(type: WorkflowFieldType): WorkflowVariableType {
+  return type === "textarea" || type === "select" ? "text" : type;
+}
+
+function newConditionRule(index: number): WorkflowConditionRule {
+  return {
+    id: `rule_${Date.now().toString(36)}_${index}`,
+    leftRef: "",
+    operator: "equals",
+    valueSource: "literal",
+    rightValue: "",
+    rightRef: "",
+  };
+}
+
+function defaultControlConfig(): WorkflowControlConfig {
+  return { type: "condition", match: "all", rules: [newConditionRule(1)] };
+}
+
 function inputReferenceOptions(workflow: WorkflowDefinition): ReferenceOption[] {
-  return workflow.inputs.map((field) => ({ value: `input.${field.key}`, label: `场景输入 · ${field.label}` }));
+  return workflow.inputs.map((field) => ({ value: `input.${field.key}`, label: `场景输入 · ${field.label}`, type: inputValueType(field.type) }));
 }
 
 function outputReferenceOptions(workflow: WorkflowDefinition, maxStepIndex = workflow.steps.length): ReferenceOption[] {
@@ -70,6 +131,7 @@ function outputReferenceOptions(workflow: WorkflowDefinition, maxStepIndex = wor
     step.outputs.map((field) => ({
       value: `step.${step.id}.outputs.${field.key}`,
       label: `${step.name} · ${field.label}`,
+      type: field.type,
     })),
   );
 }
@@ -83,7 +145,7 @@ function ReferenceSelect({ value, options, onChange }: { value: string; options:
   return <div className="select-wrap ref-select"><select value={value} onChange={(event) => onChange(event.target.value)}>
     {!valid && value && <option value={value}>失效引用：{value}</option>}
     <option value="">选择一个输入或上游输出</option>
-    {options.map((option) => <option value={option.value} key={option.value}>{option.label}（{option.value}）</option>)}
+    {options.map((option) => <option value={option.value} key={option.value}>{option.label}{option.type ? ` · ${variableTypeLabels[option.type]}` : ""}（{option.value}）</option>)}
   </select><ChevronDown size={14} /></div>;
 }
 
@@ -107,11 +169,48 @@ function newStep(index: number, profile: string): WorkflowStepDefinition {
   };
 }
 
+function bindingOutputType(type: WorkflowVariableType): WorkflowStepOutput["type"] {
+  return type;
+}
+
+function inferredComfyBindings(step: WorkflowStepDefinition): ComfyUIBinding[] {
+  return [
+    ...step.inputs.map((input) => ({
+      key: input.key,
+      label: input.label,
+      direction: "input" as const,
+      nodeId: "",
+      property: "",
+      type: "text" as const,
+      sourceRef: input.sourceRef,
+    })),
+    ...step.outputs.map((output) => ({
+      key: output.key,
+      label: output.label,
+      direction: "output" as const,
+      nodeId: "",
+      property: "",
+      type: output.type,
+    })),
+  ];
+}
+
+function comfyBindings(step: WorkflowStepDefinition): ComfyUIBinding[] {
+  const configured = step.comfyui?.bindings;
+  return configured?.length || (!step.inputs.length && !step.outputs.length)
+    ? configured ?? []
+    : inferredComfyBindings(step);
+}
+
 export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChange, onOpenConnections }: FlowDesignerProps) {
   const [selection, setSelection] = useState<Selection>({ kind: "inputs" });
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
   const [enabledProfiles, setEnabledProfiles] = useState<string[]>([]);
   const [profileError, setProfileError] = useState("");
+  const [comfyWorkflows, setComfyWorkflows] = useState<ComfyUIWorkflowSummary[]>([]);
+  const [comfyNodes, setComfyNodes] = useState<ComfyUIWorkflowNode[]>([]);
+  const [comfyLoading, setComfyLoading] = useState(false);
+  const [comfyError, setComfyError] = useState("");
   const [notice, setNotice] = useState("");
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [referenceToInsert, setReferenceToInsert] = useState("");
@@ -126,16 +225,47 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
   }, []);
 
   useEffect(() => {
+    let active = true;
+    loadComfyUIWorkflows()
+      .then((workflows) => { if (active) setComfyWorkflows(workflows); })
+      .catch((error: unknown) => { if (active) setComfyError(error instanceof Error ? error.message : "无法读取 ComfyUI 工作流"); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     setSelection({ kind: "inputs" });
     setNotice("");
   }, [sceneId]);
 
   const selectedStep = selection.kind === "step" ? workflow.steps.find((step) => step.id === selection.stepId) : undefined;
   const selectedStepIndex = selectedStep ? workflow.steps.findIndex((step) => step.id === selectedStep.id) : -1;
+  const selectedComfyBindings = selectedStep?.kind === "comfyui" ? comfyBindings(selectedStep) : [];
   const sourceOptions = useMemo(() => allReferenceOptions(workflow), [workflow]);
   const promptSourceOptions = selectedStep
     ? [...inputReferenceOptions(workflow), ...outputReferenceOptions(workflow, selectedStepIndex)]
     : inputReferenceOptions(workflow);
+  const priorReferenceOptions = selectedStep
+    ? [...inputReferenceOptions(workflow), ...outputReferenceOptions(workflow, selectedStepIndex)]
+    : [];
+  const priorConditionSteps = selectedStep
+    ? workflow.steps.slice(0, selectedStepIndex).filter((step) => step.kind === "control")
+    : [];
+  const selectedControl = selectedStep?.control ?? defaultControlConfig();
+
+  useEffect(() => {
+    if (!selectedStep || selectedStep.kind !== "comfyui" || !selectedStep.comfyui?.workflowFile) {
+      setComfyNodes([]);
+      return;
+    }
+    let active = true;
+    setComfyLoading(true);
+    setComfyError("");
+    loadComfyUIWorkflow(selectedStep.comfyui.workflowFile)
+      .then((detail) => { if (active) setComfyNodes(detail.nodes); })
+      .catch((error: unknown) => { if (active) setComfyError(error instanceof Error ? error.message : "无法读取工作流节点"); })
+      .finally(() => { if (active) setComfyLoading(false); });
+    return () => { active = false; };
+  }, [selectedStep?.id, selectedStep?.kind, selectedStep?.comfyui?.workflowFile]);
 
   function update(next: WorkflowDefinition) {
     onChange(next);
@@ -186,16 +316,145 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     updateStep(selectedStep.id, (step) => ({ ...step, outputs: step.outputs.map((output, itemIndex) => itemIndex === index ? { ...output, [key]: value } : output) }));
   }
 
+  function updateComfyBindings(stepId: string, bindings: ComfyUIBinding[]) {
+    updateStep(stepId, (step) => ({
+      ...step,
+      comfyui: { workflowFile: step.comfyui?.workflowFile ?? "", bindings },
+      inputs: bindings.filter((binding) => binding.direction === "input").map((binding) => ({
+        key: binding.key,
+        label: binding.label,
+        sourceRef: binding.sourceRef ?? "",
+      })),
+      outputs: bindings.filter((binding) => binding.direction === "output").map((binding) => ({
+        key: binding.key,
+        label: binding.label,
+        type: bindingOutputType(binding.type),
+      })),
+    }));
+  }
+
+  function updateComfyBinding(stepId: string, index: number, changes: Partial<ComfyUIBinding>) {
+    if (!selectedStep) return;
+    const bindings = comfyBindings(selectedStep);
+    updateComfyBindings(stepId, bindings.map((binding, itemIndex) => itemIndex === index ? { ...binding, ...changes } : binding));
+  }
+
+  function syncComfyBindingsFromVariables(stepId: string, variables: ComfyUIBinding[], direction: "input" | "output") {
+    if (!selectedStep) return;
+    const currentBindings = comfyBindings(selectedStep);
+    const otherBindings = currentBindings.filter((binding) => binding.direction !== direction);
+    const variableBindings = variables.map((variable) => {
+      const prior = currentBindings.find((binding) => binding.direction === direction && binding.key === variable.key);
+      return { ...prior, ...variable, direction } as ComfyUIBinding;
+    });
+    updateComfyBindings(stepId, [...variableBindings, ...otherBindings]);
+  }
+
+  function changeComfyWorkflow(stepId: string, workflowFile: string) {
+    updateStep(stepId, (step) => ({
+      ...step,
+      comfyui: { workflowFile, bindings: comfyBindings(step) },
+    }));
+  }
+
+  function changeStepKind(stepId: string, kind: WorkflowStepKind) {
+    updateStep(stepId, (step) => {
+      if (kind === "control") {
+        return {
+          ...step,
+          kind,
+          inputs: [],
+          outputs: [{ key: "result", label: "判断结果", type: "boolean" }],
+          promptTemplate: "",
+          control: step.control ?? defaultControlConfig(),
+          comfyui: undefined,
+          hermesProfile: undefined,
+        };
+      }
+      const { control: _control, ...withoutControl } = step;
+      const leavingControl = step.kind === "control";
+      return {
+        ...withoutControl,
+        kind,
+        outputs: leavingControl ? [] : step.outputs,
+        ...(kind === "comfyui" ? { comfyui: step.comfyui ?? { workflowFile: "", bindings: [] }, hermesProfile: undefined } : {}),
+        ...(kind === "hermes" ? { hermesProfile: step.hermesProfile ?? enabledProfiles[0] ?? profiles[0]?.id ?? "" } : {}),
+      };
+    });
+  }
+
+  function updateControl(stepId: string, mutate: (control: WorkflowControlConfig) => WorkflowControlConfig) {
+    updateStep(stepId, (step) => ({ ...step, control: mutate(step.control ?? defaultControlConfig()) }));
+  }
+
+  function updateConditionRule(index: number, changes: Partial<WorkflowConditionRule>) {
+    if (!selectedStep) return;
+    updateControl(selectedStep.id, (control) => ({
+      ...control,
+      rules: control.rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, ...changes } : rule),
+    }));
+  }
+
+  function setRunCondition(stepId: string, conditionStepId: string) {
+    updateStep(stepId, (step) => ({
+      ...step,
+      runCondition: conditionStepId
+        ? { conditionStepId, expectedResult: step.runCondition?.expectedResult ?? true }
+        : undefined,
+    }));
+  }
+
   function validationMessages() {
     const messages: string[] = [];
     const inputKeys = workflow.inputs.map((field) => field.key.trim());
     if (inputKeys.some((key) => !key)) messages.push("场景输入需要设置字段 key");
     if (new Set(inputKeys).size !== inputKeys.length) messages.push("场景输入 key 不能重复");
-    workflow.steps.forEach((step) => {
-      const prior = new Set(allReferenceOptions({ ...workflow, steps: workflow.steps.slice(0, workflow.steps.indexOf(step)) }).map((option) => option.value));
+    if (workflow.inputs.some((field) => field.type === "select" && !field.options?.length)) messages.push("下拉选项字段至少需要配置一个选项");
+    workflow.steps.forEach((step, index) => {
+      const priorOptions = allReferenceOptions({ ...workflow, steps: workflow.steps.slice(0, index) });
+      const prior = new Set(priorOptions.map((option) => option.value));
       if (step.inputs.some((input) => !prior.has(input.sourceRef))) messages.push(`${step.name} 存在未连接或失效的输入引用`);
       if (step.kind === "hermes" && !step.hermesProfile) messages.push(`${step.name} 还没有选择 Hermes Profile`);
       if (step.outputs.some((output) => !output.key.trim())) messages.push(`${step.name} 的输出需要设置字段 key`);
+      if (new Set(step.outputs.map((output) => output.key.trim())).size !== step.outputs.length) messages.push(`${step.name} 的输出 key 不能重复`);
+      if (step.runCondition && !workflow.steps.slice(0, index).some((candidate) => candidate.id === step.runCondition?.conditionStepId && candidate.kind === "control")) {
+        messages.push(`${step.name} 的执行条件需要引用前序条件节点`);
+      }
+      if (step.kind === "control") {
+        const control = step.control;
+        if (!control || control.type !== "condition" || control.rules.length === 0) {
+          messages.push(`${step.name} 至少需要配置一条判断规则`);
+        } else {
+          control.rules.forEach((rule) => {
+            const left = priorOptions.find((option) => option.value === rule.leftRef);
+            if (!left) messages.push(`${step.name} 存在未连接或失效的判断变量`);
+            if (rule.valueSource === "reference" && !prior.has(rule.rightRef)) messages.push(`${step.name} 存在未连接或失效的比较变量`);
+            const numericOperator = ["greater_than", "greater_or_equal", "less_than", "less_or_equal"].includes(rule.operator);
+            const right = priorOptions.find((option) => option.value === rule.rightRef);
+            const needsRightValue = rule.operator !== "is_empty" && rule.operator !== "is_not_empty";
+            if (needsRightValue && rule.valueSource === "literal" && !rule.rightValue.trim()) messages.push(`${step.name} 的判断条件需要填写比较值`);
+            if (numericOperator && left?.type !== "number") messages.push(`${step.name} 的大小比较只能用于数字变量`);
+            if (numericOperator && rule.valueSource === "reference" && right?.type !== "number") messages.push(`${step.name} 的大小比较需要引用数字变量`);
+            if (needsRightValue && rule.valueSource === "reference" && left && right && !numericOperator && left.type !== right.type) messages.push(`${step.name} 的左右引用类型不一致`);
+            if (rule.valueSource === "literal" && numericOperator && rule.rightValue.trim() && !Number.isFinite(Number(rule.rightValue))) messages.push(`${step.name} 的比较值需要填写有效数字`);
+            if (rule.valueSource === "literal" && left?.type === "boolean" && rule.rightValue !== "true" && rule.rightValue !== "false") messages.push(`${step.name} 需要选择真或假作为比较值`);
+            if (rule.valueSource === "literal" && left?.type === "json" && rule.operator !== "is_empty" && rule.operator !== "is_not_empty" && rule.rightValue.trim()) {
+              try { JSON.parse(rule.rightValue); } catch { messages.push(`${step.name} 的 JSON 比较值格式无效`); }
+            }
+          });
+        }
+      }
+      if (step.kind === "comfyui") {
+        const bindings = comfyBindings(step);
+        if (!step.comfyui?.workflowFile) messages.push(`${step.name} 还没有选择 ComfyUI 工作流`);
+        if (bindings.some((binding) => !binding.key.trim() || !binding.nodeId.trim() || !binding.property.trim())) {
+          messages.push(`${step.name} 的节点绑定还未完成`);
+        }
+        for (const direction of ["input", "output"] as const) {
+          const keys = bindings.filter((binding) => binding.direction === direction).map((binding) => binding.key.trim());
+          if (new Set(keys).size !== keys.length) messages.push(`${step.name} 的${direction === "input" ? "输入" : "输出"}变量 key 不能重复`);
+        }
+      }
     });
     const available = new Set(allReferenceOptions(workflow).map((option) => option.value));
     if (workflow.outputs.some((output) => !available.has(output.sourceRef))) messages.push("最终输出存在未连接或失效的引用");
@@ -286,12 +545,101 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
           {selection.kind === "step" && selectedStep && <section className="step-editor">
             <div className="designer-form-row">
               <div className="field-group"><label className="field-label">步骤名称</label><input className="text-input" value={selectedStep.name} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, name: event.target.value }))} /></div>
-              <div className="field-group"><label className="field-label">执行方式</label><div className="select-wrap"><select value={selectedStep.kind} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, kind: event.target.value as WorkflowStepKind }))}><option value="hermes">Hermes Agent</option><option value="comfyui_image">ComfyUI 图像</option><option value="comfyui_video">ComfyUI 视频</option><option value="manual">人工处理</option></select><ChevronDown size={14} /></div></div>
+              <div className="field-group"><label className="field-label">执行方式</label><div className="select-wrap"><select value={selectedStep.kind} onChange={(event) => changeStepKind(selectedStep.id, event.target.value as WorkflowStepKind)}><option value="hermes">Hermes Agent</option><option value="comfyui">ComfyUI</option><option value="manual">人工处理</option><option value="control">控制节点 · 条件判断</option></select><ChevronDown size={14} /></div></div>
             </div>
+            {(priorConditionSteps.length > 0 || selectedStep.runCondition) && <div className="designer-subsection run-condition-section">
+              <div className="designer-subsection-heading"><div><h3>执行条件</h3><p>此步骤仅在指定条件节点返回对应结果时执行</p></div></div>
+              <div className="run-condition-row">
+                <div className="select-wrap"><select value={selectedStep.runCondition?.conditionStepId ?? ""} onChange={(event) => setRunCondition(selectedStep.id, event.target.value)} aria-label="选择执行条件"><option value="">始终执行</option>{selectedStep.runCondition && !priorConditionSteps.some((step) => step.id === selectedStep.runCondition?.conditionStepId) && <option value={selectedStep.runCondition.conditionStepId}>失效条件：{selectedStep.runCondition.conditionStepId}</option>}{priorConditionSteps.map((step) => <option value={step.id} key={step.id}>{step.name} · 判断结果</option>)}</select><ChevronDown size={14} /></div>
+                {selectedStep.runCondition && <div className="select-wrap"><select value={String(selectedStep.runCondition.expectedResult)} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, runCondition: step.runCondition ? { ...step.runCondition, expectedResult: event.target.value === "true" } : undefined }))} aria-label="条件期望结果"><option value="true">结果为真时执行</option><option value="false">结果为假时执行</option></select><ChevronDown size={14} /></div>}
+              </div>
+            </div>}
             {selectedStep.kind === "hermes" && <div className="step-profile-row"><div className="field-group"><label className="field-label">Hermes Profile</label><div className="select-wrap"><select value={selectedStep.hermesProfile ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, hermesProfile: event.target.value }))}><option value="">选择 Profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id}{profile.isDefault ? "（默认）" : enabledProfiles.includes(profile.id) ? "（已启用）" : "（未启用）"}</option>)}</select><ChevronDown size={14} /></div></div><button className="text-button" onClick={onOpenConnections}>管理 Profile <ArrowRight size={13} /></button></div>}
             {profileError && <div className="designer-profile-error">{profileError}</div>}
 
-            <div className="designer-subsection">
+            {selectedStep.kind === "control" && <div className="designer-subsection condition-editor">
+              <div className="designer-subsection-heading"><div><h3>条件判断</h3><p>比较前序数据，按全部或任一规则输出真假结果</p></div><span>输出：result · 布尔值</span></div>
+              <div className="condition-match-row"><span>规则关系</span><div className="select-wrap"><select value={selectedControl.match} onChange={(event) => updateControl(selectedStep.id, (control) => ({ ...control, match: event.target.value as WorkflowControlConfig["match"] }))} aria-label="规则关系"><option value="all">满足全部条件（AND）</option><option value="any">满足任一条件（OR）</option></select><ChevronDown size={14} /></div></div>
+              {selectedControl.rules.map((rule, index) => {
+                const leftType = priorReferenceOptions.find((option) => option.value === rule.leftRef)?.type;
+                const operators = conditionOperators(leftType);
+                const availableOperators = operators.includes(rule.operator) ? operators : [rule.operator, ...operators];
+                const needsRightValue = rule.operator !== "is_empty" && rule.operator !== "is_not_empty";
+                return <div className="condition-rule-row" key={rule.id || index}>
+                  <div className="condition-rule-main">
+                    <ReferenceSelect value={rule.leftRef} options={priorReferenceOptions} onChange={(leftRef) => updateConditionRule(index, { leftRef, operator: "equals", valueSource: "literal", rightValue: "", rightRef: "" })} />
+                    <div className="select-wrap"><select value={rule.operator} onChange={(event) => updateConditionRule(index, { operator: event.target.value as WorkflowConditionOperator })} aria-label="判断运算符">{availableOperators.map((operator) => <option value={operator} key={operator}>{conditionOperatorLabels[operator]}</option>)}</select><ChevronDown size={14} /></div>
+                    <button className="icon-button schema-delete" onClick={() => updateControl(selectedStep.id, (control) => ({ ...control, rules: control.rules.filter((_, ruleIndex) => ruleIndex !== index) }))} title="删除判断规则" aria-label="删除判断规则"><Trash2 size={14} /></button>
+                  </div>
+                  {needsRightValue ? <div className="condition-rule-value">
+                    <div className="select-wrap condition-value-source"><select value={rule.valueSource} onChange={(event) => updateConditionRule(index, { valueSource: event.target.value as WorkflowConditionRule["valueSource"] })} aria-label="比较值来源"><option value="literal">常量</option><option value="reference">引用变量</option></select><ChevronDown size={13} /></div>
+                    {rule.valueSource === "reference" ? <ReferenceSelect value={rule.rightRef} options={priorReferenceOptions} onChange={(rightRef) => updateConditionRule(index, { rightRef })} /> : leftType === "boolean" ? <div className="select-wrap"><select value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} aria-label="比较布尔值"><option value="">选择真假</option><option value="true">真</option><option value="false">假</option></select><ChevronDown size={14} /></div> : leftType === "json" ? <textarea className="text-input condition-literal-textarea" value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} placeholder="输入有效 JSON" aria-label="比较常量" /> : <input className="text-input condition-literal-input" type={leftType === "number" ? "number" : "text"} step={leftType === "number" ? "any" : undefined} value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} placeholder={leftType === "number" ? "输入数字" : "输入比较值"} aria-label="比较常量" />}
+                  </div> : <div className="condition-no-value">无需比较值</div>}
+                </div>;
+              })}
+              <button className="designer-add-field" onClick={() => updateControl(selectedStep.id, (control) => ({ ...control, rules: [...control.rules, newConditionRule(control.rules.length + 1)] }))}><Plus size={14} />添加判断条件</button>
+            </div>}
+
+            {selectedStep.kind === "comfyui" && <div className="designer-subsection comfyui-subsection">
+              <div className="designer-subsection-heading"><div><h3>ComfyUI 工作流</h3><p>选择本机工作流，再把变量映射到节点 ID 和属性</p></div><span>{comfyLoading ? "读取中" : comfyNodes.length ? `${comfyNodes.length} 个节点` : "节点绑定"}</span></div>
+              <div className="field-group comfy-workflow-picker"><label className="field-label" htmlFor="comfy-workflow-select">工作流文件</label><div className="select-wrap"><select id="comfy-workflow-select" value={selectedStep.comfyui?.workflowFile ?? ""} onChange={(event) => changeComfyWorkflow(selectedStep.id, event.target.value)}><option value="">选择 ComfyUI 工作流</option>{comfyWorkflows.map((item) => <option value={item.filename} key={item.filename}>{item.filename}</option>)}</select><ChevronDown size={14} /></div></div>
+              {comfyError && <div className="designer-profile-error">{comfyError}</div>}
+              {!comfyWorkflows.length && !comfyError && <div className="comfy-workflow-empty">ComfyUI 暂无可读取的 JSON 工作流</div>}
+              {selectedStep.comfyui?.workflowFile && <div className="comfy-binding-groups">
+                {(["input", "output"] as const).map((direction) => {
+                  const bindings = selectedComfyBindings.filter((binding) => binding.direction === direction);
+                  const inputDirection = direction === "input";
+                  const importableInputs = inputDirection ? workflow.inputs.filter((field) => !bindings.some((binding) => binding.key === field.key)) : [];
+                  return <section className="comfy-binding-group" key={direction}>
+                    <div className="comfy-binding-heading"><div><strong>{inputDirection ? "输入变量" : "输出变量"}</strong><small>{inputDirection ? "场景或前序步骤变量写入节点属性" : "从节点属性读取，供后续步骤和最终结果引用"}</small></div><div className="comfy-binding-actions">{inputDirection && <button className="text-button comfy-import-button" onClick={() => {
+                      const additions: ComfyUIBinding[] = importableInputs.map((field) => ({
+                        key: field.key,
+                        label: field.label,
+                        direction: "input" as const,
+                        nodeId: "",
+                        property: "",
+                        type: inputValueType(field.type),
+                        sourceRef: `input.${field.key}`,
+                      }));
+                      updateComfyBindings(selectedStep.id, [...selectedComfyBindings, ...additions]);
+                    }} disabled={!importableInputs.length}>导入场景输入{importableInputs.length ? `（${importableInputs.length}）` : ""}</button>}<button className="icon-button" onClick={() => {
+                      const nextBinding: ComfyUIBinding = {
+                        key: `${inputDirection ? "input" : "output"}_${bindings.length + 1}`,
+                        label: inputDirection ? "新输入变量" : "新输出变量",
+                        direction,
+                        nodeId: "",
+                        property: "",
+                        type: inputDirection ? "text" : "image",
+                        ...(inputDirection ? { sourceRef: "" } : {}),
+                      };
+                      syncComfyBindingsFromVariables(selectedStep.id, [...bindings, nextBinding], direction);
+                    }} title={`添加${inputDirection ? "输入" : "输出"}绑定`} aria-label={`添加${inputDirection ? "输入" : "输出"}绑定`}><Plus size={15} /></button></div></div>
+                    {bindings.map((binding) => {
+                      const index = selectedComfyBindings.indexOf(binding);
+                      const node = comfyNodes.find((item) => item.id === binding.nodeId);
+                      const suffix = `${selectedStep.id}-${direction}-${index}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+                      const nodeListId = `comfy-node-options-${suffix}`;
+                      const propertyListId = `comfy-property-options-${suffix}`;
+                      const propertyOptions = inputDirection ? node?.inputProperties ?? [] : node?.outputProperties ?? [];
+                      return <div className={`comfy-binding-row ${inputDirection ? "input-binding" : "output-binding"}`} key={`${binding.direction}-${binding.key}-${index}`}>
+                        <div className="comfy-binding-variable"><input className="text-input" value={binding.label} onChange={(event) => updateComfyBinding(selectedStep.id, index, { label: event.target.value })} placeholder="变量名称" aria-label="变量名称" /><input className="text-input output-key-input" value={binding.key} onChange={(event) => updateComfyBinding(selectedStep.id, index, { key: event.target.value.replace(/[^a-zA-Z0-9_]/g, "_") })} placeholder="variable_key" aria-label="变量 key" /></div>
+                        {inputDirection && <ReferenceSelect value={binding.sourceRef ?? ""} options={outputReferenceOptions(workflow, Math.max(0, selectedStepIndex)).concat(inputReferenceOptions(workflow))} onChange={(sourceRef) => updateComfyBinding(selectedStep.id, index, { sourceRef })} />}
+                        <input className="text-input comfy-node-input" value={binding.nodeId} onChange={(event) => updateComfyBinding(selectedStep.id, index, { nodeId: event.target.value })} list={nodeListId} placeholder="节点 ID" aria-label="ComfyUI 节点 ID" />
+                        <datalist id={nodeListId}>{comfyNodes.map((item) => <option value={item.id} key={item.id}>{item.type}</option>)}</datalist>
+                        <input className="text-input comfy-property-input" value={binding.property} onChange={(event) => updateComfyBinding(selectedStep.id, index, { property: event.target.value })} list={propertyListId} placeholder="节点属性" aria-label="ComfyUI 节点属性" />
+                        <datalist id={propertyListId}>{propertyOptions.map((property) => <option value={property} key={property} />)}</datalist>
+                        <div className="select-wrap schema-type-select"><select value={binding.type} onChange={(event) => updateComfyBinding(selectedStep.id, index, { type: event.target.value as WorkflowVariableType })} aria-label="变量类型">{Object.entries(inputDirection ? variableTypeLabels : outputTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
+                        <button className="icon-button schema-delete" onClick={() => updateComfyBindings(selectedStep.id, selectedComfyBindings.filter((_, itemIndex) => itemIndex !== index))} title="删除绑定" aria-label={`删除${binding.label}绑定`}><Trash2 size={14} /></button>
+                        {node && <small className="comfy-node-type">{node.type}</small>}
+                      </div>;
+                    })}
+                    {!bindings.length && <div className="comfy-workflow-empty">还没有定义变量绑定</div>}
+                  </section>;
+                })}
+              </div>}
+            </div>}
+
+            {selectedStep.kind !== "comfyui" && selectedStep.kind !== "control" && <div className="designer-subsection">
               <div className="designer-subsection-heading"><div><h3>步骤输入</h3><p>为当前步骤选择场景输入或前序输出</p></div><span>{selectedStep.inputs.length} 项映射</span></div>
               {selectedStep.inputs.map((input, index) => <div className="step-input-row" key={`${input.key}-${index}`}>
                 <div className="step-input-labels"><input className="text-input" value={input.label} onChange={(event) => setStepInput(index, "label", event.target.value)} aria-label="输入标签" placeholder="输入名称" /><input className="text-input" value={input.key} onChange={(event) => setStepInput(index, "key", event.target.value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输入 key" placeholder="step_input" /></div>
@@ -299,9 +647,9 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
                 <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, inputs: step.inputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除输入映射" aria-label={`删除${input.label}映射`}><Trash2 size={14} /></button>
               </div>)}
               <button className="designer-add-field" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, inputs: [...step.inputs, { key: `input_${step.inputs.length + 1}`, label: "新输入", sourceRef: "" }] }))}><Plus size={14} />添加步骤输入</button>
-            </div>
+            </div>}
 
-            <div className="designer-subsection">
+            {selectedStep.kind !== "comfyui" && selectedStep.kind !== "control" && <div className="designer-subsection">
               <div className="designer-subsection-heading"><div><h3>步骤输出</h3><p>声明此步骤提供给后续步骤的结果</p></div><span>{selectedStep.outputs.length} 项结果</span></div>
               {selectedStep.outputs.map((output, index) => <div className="step-output-row" key={`${output.key}-${index}`}>
                 <input className="text-input" value={output.label} onChange={(event) => setStepOutput(index, "label", event.target.value)} aria-label="输出标签" placeholder="输出名称" />
@@ -310,7 +658,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
                 <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: step.outputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除步骤输出" aria-label={`删除${output.label}`}><Trash2 size={14} /></button>
               </div>)}
               <button className="designer-add-field" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: [...step.outputs, { key: `output_${step.outputs.length + 1}`, label: "新输出", type: "text" }] }))}><Plus size={14} />添加步骤输出</button>
-            </div>
+            </div>}
 
             {selectedStep.kind === "hermes" && <div className="designer-subsection prompt-subsection">
               <div className="designer-subsection-heading"><div><h3>提示词模板</h3><p>使用上方步骤输入，也可直接插入场景变量引用</p></div><span><Braces size={13} />变量引用</span></div>

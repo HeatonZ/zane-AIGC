@@ -3,11 +3,13 @@ import {
   Boxes,
   Cable,
   Clapperboard,
+  Image,
   LayoutDashboard,
   Orbit,
   Package,
   Workflow,
 } from "lucide-react";
+import { scenes } from "../data/scenes";
 import type { PageId, SceneId } from "../types";
 
 interface SidebarProps {
@@ -51,12 +53,9 @@ export default function Sidebar({ page, sceneId, onNavigate, onOpenScene }: Side
 
         <div className="nav-divider" />
         <div className="nav-section-heading"><span className="nav-section-label">创作场景</span></div>
-        <button className={`nav-item ${page === "studio" && sceneId === "comic" ? "active" : ""}`} onClick={() => onOpenScene("comic")}>
-          <Clapperboard size={17} /><span>漫剧制作</span><span className="nav-count">01</span>
-        </button>
-        <button className={`nav-item ${page === "studio" && sceneId === "commerce" ? "active" : ""}`} onClick={() => onOpenScene("commerce")}>
-          <Package size={17} /><span>商品展示</span><span className="nav-count">02</span>
-        </button>
+        {scenes.map((scene, index) => <button className={`nav-item ${page === "studio" && sceneId === scene.id ? "active" : ""}`} key={scene.id} onClick={() => onOpenScene(scene.id)}>
+          {scene.id === "text_to_image" ? <Image size={17} /> : scene.id === "comic" ? <Clapperboard size={17} /> : <Package size={17} />}<span>{scene.title}</span><span className="nav-count">{String(index + 1).padStart(2, "0")}</span>
+        </button>)}
       </nav>
 
       <div className="sidebar-bottom">

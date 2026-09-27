@@ -1,4 +1,10 @@
-import type { ConnectionSettings, ConnectorState, HermesProfile } from "../types";
+import type {
+  ComfyUIWorkflowDetail,
+  ComfyUIWorkflowSummary,
+  ConnectionSettings,
+  ConnectorState,
+  HermesProfile,
+} from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -37,4 +43,12 @@ export function checkConnections(enabledHermesProfiles?: string[]) {
     method: "POST",
     body: JSON.stringify({ enabledHermesProfiles }),
   });
+}
+
+export function loadComfyUIWorkflows() {
+  return request<ComfyUIWorkflowSummary[]>("/api/comfyui/workflows");
+}
+
+export function loadComfyUIWorkflow(filename: string) {
+  return request<ComfyUIWorkflowDetail>(`/api/comfyui/workflow?filename=${encodeURIComponent(filename)}`);
 }
