@@ -1,5 +1,6 @@
 import type {
   ComfyUIWorkflowDetail,
+  ComfyUINodeInfo,
   ComfyUIWorkflowSummary,
   ConnectionSettings,
   ConnectorState,
@@ -54,6 +55,10 @@ export function loadComfyUIWorkflows() {
 
 export function loadComfyUIWorkflow(filename: string) {
   return request<ComfyUIWorkflowDetail>(`/api/comfyui/workflow?filename=${encodeURIComponent(filename)}`);
+}
+
+export function loadComfyUINodeInfo(nodeType: string) {
+  return request<ComfyUINodeInfo>(`/api/comfyui/node-info?type=${encodeURIComponent(nodeType)}`);
 }
 
 export function runWorkflow(workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>) {

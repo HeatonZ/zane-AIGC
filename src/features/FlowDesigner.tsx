@@ -18,9 +18,11 @@ import {
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
 import { scenes } from "../data/scenes";
-import { loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesProfiles } from "../lib/api";
+import { loadComfyUINodeInfo, loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesProfiles } from "../lib/api";
 import type {
   ComfyUIBinding,
+  ComfyUINodeInfo,
+  ComfyUIPropertyInfo,
   ComfyUIWorkflowDetail,
   ComfyUIWorkflowNode,
   ComfyUIWorkflowSummary,
@@ -258,6 +260,125 @@ function comfyBindings(step: WorkflowStepDefinition): ComfyUIBinding[] {
     : inferredComfyBindings(step);
 }
 
+function stepWithComfyBindings(step: WorkflowStepDefinition, bindings: ComfyUIBinding[]): WorkflowStepDefinition {
+  return {
+    ...step,
+    comfyui: { workflowFile: step.comfyui?.workflowFile ?? "", bindings },
+    inputs: bindings.filter((binding) => binding.direction === "input").map((binding) => ({
+      key: binding.key,
+      label: binding.label,
+      sourceRef: binding.sourceRef ?? "",
+    })),
+    outputs: bindings.filter((binding) => binding.direction === "output").map((binding) => ({
+      key: binding.key,
+      label: binding.label,
+      type: bindingOutputType(binding.type),
+    })),
+  };
+}
+
+function comfySourceInputKey(sourceRef: string) {
+  return /^input\.([a-zA-Z0-9_]+)$/.exec(sourceRef)?.[1];
+}
+
+function comfySourceOutput(sourceRef: string) {
+  const match = /^step\.([a-zA-Z0-9_-]+)\.outputs\.([a-zA-Z0-9_]+)$/.exec(sourceRef);
+  return match ? { stepId: match[1], outputKey: match[2] } : undefined;
+}
+
+function restoreComfySourceInput(workflow: WorkflowDefinition, sourceRef: string, format?: ComfyUIBinding["sourceInputFormat"]): WorkflowDefinition {
+  const inputKey = comfySourceInputKey(sourceRef);
+  if (!inputKey || !format) return workflow;
+  return {
+    ...workflow,
+    inputs: workflow.inputs.map((field) => {
+      if (field.key !== inputKey) return field;
+      const { options: _options, ...withoutOptions } = field;
+      return { ...withoutOptions, type: format.type, required: format.required, ...(format.options ? { options: format.options } : {}) };
+    }),
+  };
+}
+
+function restoreComfySourceOutput(workflow: WorkflowDefinition, sourceRef: string, format?: ComfyUIBinding["sourceOutputFormat"]): WorkflowDefinition {
+  const source = comfySourceOutput(sourceRef);
+  if (!source || !format) return workflow;
+  return {
+    ...workflow,
+    steps: workflow.steps.map((step) => step.id !== source.stepId ? step : {
+      ...step,
+      outputs: step.outputs.map((output) => output.key === source.outputKey ? { ...output, type: format.type } : output),
+    }),
+  };
+}
+
+function syncComfySourceFormat(
+  workflow: WorkflowDefinition,
+  previous: ComfyUIBinding,
+  next: ComfyUIBinding,
+  property?: ComfyUIPropertyInfo,
+): { workflow: WorkflowDefinition; binding: ComfyUIBinding } {
+  const previousKey = comfySourceInputKey(previous.sourceRef ?? "");
+  const nextKey = comfySourceInputKey(next.sourceRef ?? "");
+  const previousOutput = comfySourceOutput(previous.sourceRef ?? "");
+  const nextOutput = comfySourceOutput(next.sourceRef ?? "");
+  const sameInput = Boolean(previousKey && previousKey === nextKey);
+  const sameOutput = Boolean(previousOutput && nextOutput && previousOutput.stepId === nextOutput.stepId && previousOutput.outputKey === nextOutput.outputKey);
+  let updatedWorkflow = workflow;
+
+  if (previousKey && (!sameInput || !property)) {
+    updatedWorkflow = restoreComfySourceInput(updatedWorkflow, previous.sourceRef ?? "", previous.sourceInputFormat);
+  }
+  if (previousOutput && (!sameOutput || !property)) {
+    updatedWorkflow = restoreComfySourceOutput(updatedWorkflow, previous.sourceRef ?? "", previous.sourceOutputFormat);
+  }
+  if (!property || !nextKey) {
+    if (!property || !nextOutput) {
+      return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat: undefined } };
+    }
+  }
+
+  if (nextKey) {
+    const field = updatedWorkflow.inputs.find((item) => item.key === nextKey);
+    if (!field) return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat: undefined } };
+    const sourceInputFormat = sameInput && previous.sourceInputFormat
+      ? previous.sourceInputFormat
+      : { type: field.type, required: field.required, ...(field.options ? { options: field.options } : {}) };
+    const inputType: WorkflowFieldType = property?.options?.length ? "select" : property!.type;
+    updatedWorkflow = {
+      ...updatedWorkflow,
+      inputs: updatedWorkflow.inputs.map((item) => {
+        if (item.key !== nextKey) return item;
+        const { options: _options, ...withoutOptions } = item;
+        return {
+          ...withoutOptions,
+          type: inputType,
+          required: property!.required ?? sourceInputFormat.required,
+          ...(property!.options?.length ? { options: property!.options } : {}),
+        };
+      }),
+    };
+    return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat, sourceOutputFormat: undefined } };
+  }
+
+  if (nextOutput) {
+    const output = updatedWorkflow.steps.find((step) => step.id === nextOutput.stepId)?.outputs.find((item) => item.key === nextOutput.outputKey);
+    if (!output) return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat: undefined } };
+    const sourceOutputFormat = sameOutput && previous.sourceOutputFormat
+      ? previous.sourceOutputFormat
+      : { stepId: nextOutput.stepId, outputKey: nextOutput.outputKey, type: output.type };
+    updatedWorkflow = {
+      ...updatedWorkflow,
+      steps: updatedWorkflow.steps.map((step) => step.id !== nextOutput.stepId ? step : {
+        ...step,
+        outputs: step.outputs.map((item) => item.key === nextOutput.outputKey ? { ...item, type: property!.type } : item),
+      }),
+    };
+    return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat } };
+  }
+
+  return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat: undefined } };
+}
+
 export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChange, onOpenConnections }: FlowDesignerProps) {
   const [selection, setSelection] = useState<Selection>({ kind: "inputs" });
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
@@ -269,7 +390,8 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
   const [comfyLoading, setComfyLoading] = useState(false);
   const [comfyError, setComfyError] = useState("");
   const [comfyNodeError, setComfyNodeError] = useState("");
-  const [loadedComfyNodeIds, setLoadedComfyNodeIds] = useState<string[]>([]);
+  const [comfyNodeInfos, setComfyNodeInfos] = useState<Record<string, ComfyUINodeInfo>>({});
+  const [comfyNodeLoadingTypes, setComfyNodeLoadingTypes] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [referenceToInsert, setReferenceToInsert] = useState("");
@@ -315,7 +437,6 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     if (!selectedStep || selectedStep.kind !== "comfyui" || !selectedStep.comfyui?.workflowFile) {
       setComfyNodes([]);
       setComfyFormat(null);
-      setLoadedComfyNodeIds([]);
       setComfyNodeError("");
       return;
     }
@@ -324,7 +445,6 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     setComfyError("");
     setComfyNodeError("");
     setComfyFormat(null);
-    setLoadedComfyNodeIds([]);
     loadComfyUIWorkflow(selectedStep.comfyui.workflowFile)
       .then((detail) => { if (active) { setComfyNodes(detail.nodes); setComfyFormat(detail.format); } })
       .catch((error: unknown) => { if (active) setComfyError(error instanceof Error ? error.message : "无法读取工作流节点"); })
@@ -382,26 +502,102 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
   }
 
   function updateComfyBindings(stepId: string, bindings: ComfyUIBinding[]) {
-    updateStep(stepId, (step) => ({
-      ...step,
-      comfyui: { workflowFile: step.comfyui?.workflowFile ?? "", bindings },
-      inputs: bindings.filter((binding) => binding.direction === "input").map((binding) => ({
-        key: binding.key,
-        label: binding.label,
-        sourceRef: binding.sourceRef ?? "",
-      })),
-      outputs: bindings.filter((binding) => binding.direction === "output").map((binding) => ({
-        key: binding.key,
-        label: binding.label,
-        type: bindingOutputType(binding.type),
-      })),
-    }));
+    update({
+      ...workflow,
+      steps: workflow.steps.map((step) => step.id === stepId ? stepWithComfyBindings(step, bindings) : step),
+    });
   }
 
   function updateComfyBinding(stepId: string, index: number, changes: Partial<ComfyUIBinding>) {
     if (!selectedStep) return;
     const bindings = comfyBindings(selectedStep);
     updateComfyBindings(stepId, bindings.map((binding, itemIndex) => itemIndex === index ? { ...binding, ...changes } : binding));
+  }
+
+  function updateComfyBindingNode(index: number, nodeId: string) {
+    if (!selectedStep || selectedStep.kind !== "comfyui") return;
+    const bindings = comfyBindings(selectedStep);
+    const binding = bindings[index];
+    if (!binding) return;
+    if (binding.nodeId.trim() === nodeId.trim()) {
+      updateComfyBinding(selectedStep.id, index, { nodeId });
+      return;
+    }
+
+    let updated: ComfyUIBinding = { ...binding, nodeId, property: "", options: undefined, required: undefined };
+    let nextWorkflow = workflow;
+    if (binding.direction === "input") {
+      const result = syncComfySourceFormat(workflow, binding, updated);
+      nextWorkflow = result.workflow;
+      updated = result.binding;
+    }
+    const nextBindings = bindings.map((item, itemIndex) => itemIndex === index ? updated : item);
+    update({
+      ...nextWorkflow,
+      steps: nextWorkflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings) : step),
+    });
+  }
+
+  function removeComfyBinding(index: number) {
+    if (!selectedStep || selectedStep.kind !== "comfyui") return;
+    const bindings = comfyBindings(selectedStep);
+    const binding = bindings[index];
+    if (!binding) return;
+    const nextWorkflow = binding.direction === "input"
+      ? restoreComfySourceInput(workflow, binding.sourceRef ?? "", binding.sourceInputFormat)
+      : workflow;
+    const nextBindings = bindings.filter((_, itemIndex) => itemIndex !== index);
+    update({
+      ...nextWorkflow,
+      steps: nextWorkflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings) : step),
+    });
+  }
+
+  function propertyInfoForBinding(binding: ComfyUIBinding): ComfyUIPropertyInfo | undefined {
+    const node = comfyNodes.find((item) => item.id === binding.nodeId.trim());
+    const nodeInfo = node ? comfyNodeInfos[node.type] : undefined;
+    if (!nodeInfo) return undefined;
+    const properties = binding.direction === "input" ? nodeInfo.inputs : nodeInfo.outputs;
+    return properties.find((property) => property.name === binding.property);
+  }
+
+  function updateComfyBindingSource(index: number, sourceRef: string) {
+    if (!selectedStep || selectedStep.kind !== "comfyui") return;
+    const bindings = comfyBindings(selectedStep);
+    const binding = bindings[index];
+    if (!binding) return;
+    const propertyInfo = propertyInfoForBinding(binding);
+    const result = syncComfySourceFormat(workflow, binding, { ...binding, sourceRef }, propertyInfo);
+    const nextBindings = bindings.map((item, itemIndex) => itemIndex === index ? result.binding : item);
+    update({
+      ...result.workflow,
+      steps: result.workflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings) : step),
+    });
+  }
+
+  function updateComfyBindingProperty(index: number, propertyName: string) {
+    if (!selectedStep || selectedStep.kind !== "comfyui") return;
+    const bindings = comfyBindings(selectedStep);
+    const binding = bindings[index];
+    if (!binding) return;
+    const node = comfyNodes.find((item) => item.id === binding.nodeId.trim());
+    const nodeInfo = node ? comfyNodeInfos[node.type] : undefined;
+    const properties = binding.direction === "input" ? nodeInfo?.inputs : nodeInfo?.outputs;
+    const propertyInfo = properties?.find((property) => property.name === propertyName);
+    let updated: ComfyUIBinding = propertyInfo
+      ? { ...binding, property: propertyName, type: propertyInfo.type, options: propertyInfo.options, required: propertyInfo.required }
+      : { ...binding, property: propertyName, options: undefined, required: undefined };
+    let nextWorkflow = workflow;
+    if (binding.direction === "input") {
+      const result = syncComfySourceFormat(workflow, binding, updated, propertyInfo);
+      nextWorkflow = result.workflow;
+      updated = result.binding;
+    }
+    const nextBindings = bindings.map((item, itemIndex) => itemIndex === index ? updated : item);
+    update({
+      ...nextWorkflow,
+      steps: nextWorkflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings) : step),
+    });
   }
 
   function syncComfyBindingsFromVariables(stepId: string, variables: ComfyUIBinding[], direction: "input" | "output") {
@@ -422,7 +618,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     }));
   }
 
-  function loadComfyNodeProperties(nodeId: string) {
+  async function loadComfyNodeProperties(nodeId: string) {
     const normalizedId = nodeId.trim();
     if (!normalizedId) {
       setComfyNodeError("请先填写节点 ID，再加载属性。");
@@ -433,10 +629,23 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
       setComfyNodeError(`工作流中没有找到节点 ID：${normalizedId}`);
       return;
     }
-    setLoadedComfyNodeIds((current) => current.includes(node.id) ? current : [...current, node.id]);
     setComfyNodeError("");
-    setNotice(`已加载节点 ${node.id} 的属性`);
-    window.setTimeout(() => setNotice(""), 1600);
+    if (comfyNodeInfos[node.type]) {
+      setNotice(`已加载节点 ${node.id} 的属性`);
+      window.setTimeout(() => setNotice(""), 1600);
+      return;
+    }
+    setComfyNodeLoadingTypes((current) => [...new Set([...current, node.type])]);
+    try {
+      const info = await loadComfyUINodeInfo(node.type);
+      setComfyNodeInfos((current) => ({ ...current, [node.type]: info }));
+      setNotice(`已加载 ${node.type} 的类型和选项`);
+      window.setTimeout(() => setNotice(""), 1600);
+    } catch (error) {
+      setComfyNodeError(error instanceof Error ? error.message : `无法读取 ${node.type} 的属性定义`);
+    } finally {
+      setComfyNodeLoadingTypes((current) => current.filter((type) => type !== node.type));
+    }
   }
 
   function changeStepKind(stepId: string, kind: WorkflowStepKind) {
@@ -703,21 +912,26 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
                       const index = selectedComfyBindings.indexOf(binding);
                       const normalizedNodeId = binding.nodeId.trim();
                       const node = comfyNodes.find((item) => item.id === normalizedNodeId);
+                      const nodeInfo = node ? comfyNodeInfos[node.type] : undefined;
                       const suffix = `${selectedStep.id}-${direction}-${index}`.replace(/[^a-zA-Z0-9_-]/g, "-");
                       const nodeListId = `comfy-node-options-${suffix}`;
                       const propertyListId = `comfy-property-options-${suffix}`;
-                      const propertyOptions = inputDirection ? node?.inputProperties ?? [] : node?.outputProperties ?? [];
-                      const nodePropertiesLoaded = loadedComfyNodeIds.includes(normalizedNodeId);
+                      const propertyInfos = inputDirection ? nodeInfo?.inputs ?? [] : nodeInfo?.outputs ?? [];
+                      const workflowProperties = inputDirection ? node?.inputProperties ?? [] : node?.outputProperties ?? [];
+                      const propertyOptions = [...new Set([...propertyInfos.map((property) => property.name), ...workflowProperties])];
+                      const nodePropertiesLoaded = Boolean(nodeInfo);
+                      const nodeLoading = Boolean(node && comfyNodeLoadingTypes.includes(node.type));
+                      const selectedPropertyInfo = propertyInfos.find((property) => property.name === binding.property);
                       return <div className={`comfy-binding-row ${inputDirection ? "input-binding" : "output-binding"}`} key={`comfy-binding-${direction}-${index}`}>
                         <div className="comfy-binding-variable"><DeferredInput className="text-input" value={binding.label} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { label: value })} placeholder="变量名称" aria-label="变量名称" /><DeferredInput className="text-input output-key-input" value={binding.key} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { key: value.replace(/[^a-zA-Z0-9_]/g, "_") })} placeholder="variable_key" aria-label="变量 key" /></div>
-                        {inputDirection && <ReferenceSelect value={binding.sourceRef ?? ""} options={outputReferenceOptions(workflow, Math.max(0, selectedStepIndex)).concat(inputReferenceOptions(workflow))} onChange={(sourceRef) => updateComfyBinding(selectedStep.id, index, { sourceRef })} />}
-                        <div className="comfy-node-loader"><DeferredInput className="text-input comfy-node-input" value={binding.nodeId} onCommit={(value) => { updateComfyBinding(selectedStep.id, index, { nodeId: value }); setComfyNodeError(""); }} list={nodeListId} placeholder="节点 ID" aria-label="ComfyUI 节点 ID" /><button className="icon-button comfy-node-load-button" onClick={() => loadComfyNodeProperties(binding.nodeId)} title="加载节点属性" aria-label={`加载节点 ${binding.nodeId || ""} 的属性`} disabled={comfyLoading}><RefreshCw size={13} /></button></div>
+                        {inputDirection && <ReferenceSelect value={binding.sourceRef ?? ""} options={outputReferenceOptions(workflow, Math.max(0, selectedStepIndex)).concat(inputReferenceOptions(workflow))} onChange={(sourceRef) => updateComfyBindingSource(index, sourceRef)} />}
+                        <div className="comfy-node-loader"><DeferredInput className="text-input comfy-node-input" value={binding.nodeId} onCommit={(value) => { updateComfyBindingNode(index, value); setComfyNodeError(""); }} list={nodeListId} placeholder="节点 ID" aria-label="ComfyUI 节点 ID" /><button className="icon-button comfy-node-load-button" onClick={() => loadComfyNodeProperties(binding.nodeId)} title="加载节点属性" aria-label={`加载节点 ${binding.nodeId || ""} 的属性`} disabled={comfyLoading || nodeLoading}><RefreshCw className={nodeLoading ? "spin" : undefined} size={13} /></button></div>
                         <datalist id={nodeListId}>{comfyNodes.map((item) => <option value={item.id} key={item.id}>{item.type}</option>)}</datalist>
-                        <DeferredInput className="text-input comfy-property-input" value={binding.property} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { property: value })} list={propertyListId} placeholder={inputDirection ? "节点输入属性" : "输出属性，如 images"} aria-label="ComfyUI 节点属性" />
+                        <DeferredInput className="text-input comfy-property-input" value={binding.property} onCommit={(value) => updateComfyBindingProperty(index, value)} list={propertyListId} placeholder={inputDirection ? "节点输入属性" : "输出属性，如 images"} aria-label="ComfyUI 节点属性" />
                         <datalist id={propertyListId}>{nodePropertiesLoaded && propertyOptions.map((property) => <option value={property} key={property} />)}</datalist>
                         <div className="select-wrap schema-type-select"><select value={binding.type} onChange={(event) => updateComfyBinding(selectedStep.id, index, { type: event.target.value as WorkflowVariableType })} aria-label="变量类型">{Object.entries(inputDirection ? variableTypeLabels : outputTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
-                        <button className="icon-button schema-delete" onClick={() => updateComfyBindings(selectedStep.id, selectedComfyBindings.filter((_, itemIndex) => itemIndex !== index))} title="删除绑定" aria-label={`删除${binding.label}绑定`}><Trash2 size={14} /></button>
-                        {node && <small className="comfy-node-type">{node.type}{nodePropertiesLoaded ? ` · 已加载 ${propertyOptions.length} 个${inputDirection ? "输入" : "输出"}属性` : " · 点击加载属性"}</small>}
+                        <button className="icon-button schema-delete" onClick={() => removeComfyBinding(index)} title="删除绑定" aria-label={`删除${binding.label}绑定`}><Trash2 size={14} /></button>
+                        {node && <small className="comfy-node-type">{node.type}{nodePropertiesLoaded ? ` · 已加载 ${propertyInfos.length} 个${inputDirection ? "输入" : "输出"}属性` : " · 点击加载属性"}{selectedPropertyInfo?.options?.length ? ` · 选项 ${selectedPropertyInfo.options.length} 个` : ""}</small>}
                       </div>;
                     })}
                     {!bindings.length && <div className="comfy-workflow-empty">还没有定义变量绑定</div>}

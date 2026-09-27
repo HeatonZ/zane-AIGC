@@ -124,7 +124,19 @@ export interface ComfyUIBinding {
   nodeId: string;
   property: string;
   type: WorkflowVariableType;
+  options?: string[];
+  required?: boolean;
   sourceRef?: string;
+  sourceInputFormat?: {
+    type: WorkflowFieldType;
+    required: boolean;
+    options?: string[];
+  };
+  sourceOutputFormat?: {
+    stepId: string;
+    outputKey: string;
+    type: WorkflowVariableType;
+  };
 }
 
 export interface ComfyUIWorkflowConfig {
@@ -181,6 +193,19 @@ export interface ComfyUIWorkflowNode {
   type: string;
   inputProperties: string[];
   outputProperties: string[];
+}
+
+export interface ComfyUIPropertyInfo {
+  name: string;
+  type: WorkflowVariableType;
+  options?: string[];
+  required?: boolean;
+}
+
+export interface ComfyUINodeInfo {
+  type: string;
+  inputs: ComfyUIPropertyInfo[];
+  outputs: ComfyUIPropertyInfo[];
 }
 
 export interface ComfyUIWorkflowDetail {

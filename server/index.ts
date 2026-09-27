@@ -29,18 +29,44 @@ interface ComfyUIWorkflowNode {
   outputProperties: string[];
 }
 
+interface ComfyUIPropertyInfo {
+  name: string;
+  type: "text" | "number" | "boolean" | "image" | "video" | "json";
+  options?: string[];
+  required?: boolean;
+}
+
+interface ComfyUINodeInfo {
+  type: string;
+  inputs: ComfyUIPropertyInfo[];
+  outputs: ComfyUIPropertyInfo[];
+}
+
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 interface RunInputField {
   key: string;
   type: string;
   required?: boolean;
+  options?: string[];
 }
 
 interface RunStepOutput {
   key: string;
   label?: string;
   type: string;
+}
+
+interface RunComfyBinding {
+  key: string;
+  label?: string;
+  direction: "input" | "output";
+  nodeId: string;
+  property: string;
+  type: string;
+  options?: string[];
+  required?: boolean;
+  sourceRef?: string;
 }
 
 interface RunStep {
@@ -53,15 +79,7 @@ interface RunStep {
   promptTemplate?: string;
   comfyui?: {
     workflowFile: string;
-    bindings?: Array<{
-      key: string;
-      label?: string;
-      direction: "input" | "output";
-      nodeId: string;
-      property: string;
-      type: string;
-      sourceRef?: string;
-    }>;
+    bindings?: RunComfyBinding[];
   };
   control?: {
     type: "condition";
@@ -239,6 +257,46 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function uniqueStrings(values: unknown[]) {
   return [...new Set(values.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim()))];
+}
+
+function comfyPropertyType(value: unknown): ComfyUIPropertyInfo["type"] {
+  switch (typeof value === "string" ? value.toUpperCase() : "") {
+    case "INT":
+    case "FLOAT":
+    case "NUMBER": return "number";
+    case "BOOLEAN": return "boolean";
+    case "IMAGE":
+    case "MASK": return "image";
+    case "VIDEO": return "video";
+    case "STRING":
+    case "COMBO": return "text";
+    default: return "json";
+  }
+}
+
+function summarizeComfyUINodeInfo(payload: unknown, nodeType: string): ComfyUINodeInfo {
+  const root = asRecord(payload);
+  const definition = asRecord(root?.[nodeType]) ?? root;
+  const inputSchema = asRecord(definition?.input);
+  const inputs = ["required", "optional"].flatMap((section) => {
+    const entries = asRecord(inputSchema?.[section]);
+    return Object.entries(entries ?? {}).flatMap(([name, rawSchema]) => {
+      const schema = Array.isArray(rawSchema) ? rawSchema : [rawSchema];
+      const rawType = schema[0];
+      const options = Array.isArray(rawType)
+        ? uniqueStrings(rawType.map((option) => typeof option === "string" ? option : typeof option === "number" ? String(option) : ""))
+        : [];
+      const typeToken = options.length ? "COMBO" : rawType;
+      return [{ name, type: comfyPropertyType(typeToken), required: section === "required", ...(options.length ? { options } : {}) }];
+    });
+  });
+  const outputTypes = Array.isArray(definition?.output) ? definition.output : [];
+  const outputNames = Array.isArray(definition?.output_name) ? definition.output_name : [];
+  const outputs = outputTypes.flatMap((rawType, index) => {
+    const name = typeof outputNames[index] === "string" ? outputNames[index] : `output_${index + 1}`;
+    return [{ name, type: comfyPropertyType(rawType) }];
+  });
+  return { type: nodeType, inputs, outputs };
 }
 
 function summarizeComfyUIWorkflow(payload: unknown, filename: string) {
@@ -434,6 +492,30 @@ function readComfyOutputValue(history: unknown, promptId: string, nodeId: string
   return toJsonValue(value);
 }
 
+function coerceComfyInputValue(value: JsonValue | undefined, binding: RunComfyBinding, stepName: string): JsonValue | undefined {
+  if (value === undefined) throw new Error(`${stepName} 的输入引用没有值`);
+  if (binding.options?.length) {
+    if ((value === null || value === "") && !binding.required) return undefined;
+    const optionValue = typeof value === "string" ? value : String(value);
+    if (!binding.options.includes(optionValue)) {
+      throw new Error(`${stepName} 的 ${binding.property} 需要从可用选项中选择：${binding.options.join("、")}`);
+    }
+    return optionValue;
+  }
+  if (binding.type === "number") {
+    const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+    if (!Number.isFinite(number)) throw new Error(`${stepName} 的 ${binding.property} 需要有效数字`);
+    return number;
+  }
+  if (binding.type === "boolean") {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string" && /^(true|false)$/i.test(value.trim())) return value.trim().toLowerCase() === "true";
+    throw new Error(`${stepName} 的 ${binding.property} 需要布尔值`);
+  }
+  if (binding.type === "text") return typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
+  return toJsonValue(value);
+}
+
 async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, baseUrl: string) {
   const workflowFile = step.comfyui?.workflowFile;
   if (!workflowFile) throw new Error(`${step.name} 尚未选择 ComfyUI 工作流`);
@@ -450,7 +532,9 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
     const node = graph[binding.nodeId];
     const nodeInputs = asRecord(node?.inputs);
     if (!nodeInputs || !(binding.property in nodeInputs)) throw new Error(`${step.name} 找不到输入绑定 ${binding.nodeId}.${binding.property}`);
-    nodeInputs[binding.property] = resolveWorkflowReference(binding.sourceRef ?? "", inputs, stepValues);
+    const value = resolveWorkflowReference(binding.sourceRef ?? "", inputs, stepValues);
+    const converted = coerceComfyInputValue(value, binding, step.name);
+    if (converted !== undefined) nodeInputs[binding.property] = converted;
   }
   const queued = asRecord(await fetchJson(`${baseUrl}/prompt`, {
     method: "POST",
@@ -581,6 +665,28 @@ app.get("/api/comfyui/workflow", async (request, response) => {
   }
 });
 
+app.get("/api/comfyui/node-info", async (request, response) => {
+  const settings = await readSettings();
+  const nodeType = typeof request.query.type === "string" ? request.query.type.trim() : "";
+  if (!settings.comfyuiBaseUrl || !nodeType || nodeType.length > 200) {
+    response.status(400).json({ error: "缺少 ComfyUI 地址或节点类型" });
+    return;
+  }
+
+  try {
+    const payload = await fetchComfyUIJson(`${settings.comfyuiBaseUrl}/object_info/${encodeURIComponent(nodeType)}`);
+    const info = summarizeComfyUINodeInfo(payload, nodeType);
+    if (!info.inputs.length && !info.outputs.length) {
+      response.status(404).json({ error: `ComfyUI 中没有找到节点类型：${nodeType}` });
+      return;
+    }
+    response.json(info);
+  } catch (error) {
+    const message = error instanceof Error && error.name === "AbortError" ? "读取 ComfyUI 节点属性超时" : "读取 ComfyUI 节点属性失败";
+    response.status(502).json({ error: message });
+  }
+});
+
 app.get("/api/comfyui/view", async (request, response) => {
   const settings = await readSettings();
   const filename = typeof request.query.filename === "string" ? request.query.filename : "";
@@ -637,6 +743,10 @@ app.post("/api/workflows/run", async (request, response) => {
           : typeof value === "string";
     if (!correctType) {
       response.status(400).json({ error: `字段 ${field.key} 的数据类型不匹配` });
+      return;
+    }
+    if (field.type === "select" && Array.isArray(field.options) && !field.options.includes(String(value))) {
+      response.status(400).json({ error: `字段 ${field.key} 的选项无效` });
       return;
     }
   }
