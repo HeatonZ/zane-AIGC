@@ -1,0 +1,39 @@
+import { ArrowRight, Archive, ArrowUpRight, Clock3, FileText, Sparkles } from "lucide-react";
+import { getScene } from "../data/scenes";
+import type { PageId, SceneId, WorkflowDraft } from "../types";
+
+interface HistoryProps {
+  drafts: WorkflowDraft[];
+  onNavigate: (page: PageId) => void;
+  onOpenScene: (scene: SceneId) => void;
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+export default function History({ drafts, onNavigate, onOpenScene }: HistoryProps) {
+  return (
+    <div className="history-page">
+      <div className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-line" />WORKSPACE RECORDS</div><h1>任务草稿</h1><p className="page-subtitle">在本地继续整理你保存的业务方案。</p></div><button className="button button-outline" onClick={() => onNavigate("home")}><ArrowUpRight size={15} />浏览场景</button></div>
+      <div className="history-toolbar"><div><Archive size={16} /><strong>全部草稿</strong><span>{drafts.length}</span></div><small>最近保存优先</small></div>
+      {drafts.length ? (
+        <div className="history-list">
+          {drafts.map((draft) => {
+            const scene = getScene(draft.sceneId);
+            return (
+              <article className="history-row" key={draft.id}>
+                <span className={`history-type-icon ${scene.accent}`}><Sparkles size={17} /></span>
+                <div className="history-main"><div className="history-title-row"><h2>{draft.title}</h2><span className="draft-status">草稿</span></div><p>{draft.summary}</p><div className="history-meta"><span>{scene.shortTitle}制作</span><i /> <Clock3 size={12} /><span>{formatDate(draft.createdAt)}</span></div></div>
+                <button className="button button-small" onClick={() => onOpenScene(draft.sceneId)}>继续编辑 <ArrowRight size={14} /></button>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="history-empty"><span className="history-empty-mark"><FileText size={22} /></span><h2>还没有保存的草稿</h2><p>选择一个场景创建你的第一份业务方案。</p><button className="button button-dark" onClick={() => onNavigate("home")}>浏览创作场景 <ArrowRight size={15} /></button></div>
+      )}
+    </div>
+  );
+}
+
