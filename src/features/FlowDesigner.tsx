@@ -45,8 +45,10 @@ import type {
 interface FlowDesignerProps {
   sceneId: SceneId;
   workflow: WorkflowDefinition;
+  optionPresets: WorkflowOptionPreset[];
   onSceneChange: (sceneId: SceneId) => void;
   onChange: (workflow: WorkflowDefinition) => void;
+  onOptionPresetsChange: (optionPresets: WorkflowOptionPreset[]) => void;
   onOpenConnections: () => void;
 }
 
@@ -225,9 +227,9 @@ function sameOptions(left: string[] | undefined, right: string[] | undefined) {
   return left.every((option, index) => option === right[index]);
 }
 
-function matchingOptionPresetId(workflow: WorkflowDefinition, options?: string[]) {
+function matchingOptionPresetId(optionPresets: WorkflowOptionPreset[], options?: string[]) {
   if (!options?.length) return undefined;
-  return workflow.optionPresets?.find((preset) => sameOptions(preset.options, options))?.id;
+  return optionPresets.find((preset) => sameOptions(preset.options, options))?.id;
 }
 
 function newOutputField(index: number): WorkflowOutputField {
@@ -305,15 +307,18 @@ function comfySourceOutput(sourceRef: string) {
   return match ? { stepId: match[1], outputKey: match[2] } : undefined;
 }
 
-function restoreComfySourceInput(workflow: WorkflowDefinition, sourceRef: string, format?: ComfyUIBinding["sourceInputFormat"]): WorkflowDefinition {
+function restoreComfySourceInput(workflow: WorkflowDefinition, sourceRef: string, format: ComfyUIBinding["sourceInputFormat"] | undefined, optionPresets: WorkflowOptionPreset[]): WorkflowDefinition {
   const inputKey = comfySourceInputKey(sourceRef);
   if (!inputKey || !format) return workflow;
+  const optionPresetId = format.optionPresetId && optionPresets.some((preset) => preset.id === format.optionPresetId)
+    ? format.optionPresetId
+    : undefined;
   return {
     ...workflow,
     inputs: workflow.inputs.map((field) => {
       if (field.key !== inputKey) return field;
       const { options: _options, optionPresetId: _optionPresetId, ...withoutOptions } = field;
-      return { ...withoutOptions, type: format.type, required: format.required, ...(format.options ? { options: format.options } : {}), ...(format.optionPresetId ? { optionPresetId: format.optionPresetId } : {}) };
+      return { ...withoutOptions, type: format.type, required: format.required, ...(format.options ? { options: format.options } : {}), ...(optionPresetId ? { optionPresetId } : {}) };
     }),
   };
 }
@@ -335,6 +340,7 @@ function syncComfySourceFormat(
   previous: ComfyUIBinding,
   next: ComfyUIBinding,
   property?: ComfyUIPropertyInfo,
+  optionPresets: WorkflowOptionPreset[] = [],
 ): { workflow: WorkflowDefinition; binding: ComfyUIBinding } {
   const previousKey = comfySourceInputKey(previous.sourceRef ?? "");
   const nextKey = comfySourceInputKey(next.sourceRef ?? "");
@@ -345,7 +351,7 @@ function syncComfySourceFormat(
   let updatedWorkflow = workflow;
 
   if (previousKey && (!sameInput || !property)) {
-    updatedWorkflow = restoreComfySourceInput(updatedWorkflow, previous.sourceRef ?? "", previous.sourceInputFormat);
+    updatedWorkflow = restoreComfySourceInput(updatedWorkflow, previous.sourceRef ?? "", previous.sourceInputFormat, optionPresets);
   }
   if (previousOutput && (!sameOutput || !property)) {
     updatedWorkflow = restoreComfySourceOutput(updatedWorkflow, previous.sourceRef ?? "", previous.sourceOutputFormat);
@@ -368,7 +374,7 @@ function syncComfySourceFormat(
       inputs: updatedWorkflow.inputs.map((item) => {
         if (item.key !== nextKey) return item;
         const { options: _options, optionPresetId: _optionPresetId, ...withoutOptions } = item;
-        const optionPresetId = matchingOptionPresetId(updatedWorkflow, property?.options);
+        const optionPresetId = matchingOptionPresetId(optionPresets, property?.options);
         return {
           ...withoutOptions,
           type: inputType,
@@ -399,7 +405,7 @@ function syncComfySourceFormat(
   return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat: undefined } };
 }
 
-export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChange, onOpenConnections }: FlowDesignerProps) {
+export default function FlowDesigner({ sceneId, workflow, optionPresets, onSceneChange, onChange, onOptionPresetsChange, onOpenConnections }: FlowDesignerProps) {
   const [selection, setSelection] = useState<Selection>({ kind: "inputs" });
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
   const [enabledProfiles, setEnabledProfiles] = useState<string[]>([]);
@@ -532,28 +538,22 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
   }
 
   function applyOptionPreset(inputIndex: number, presetId: string) {
-    const preset = workflow.optionPresets?.find((item) => item.id === presetId);
+    const preset = optionPresets.find((item) => item.id === presetId);
     updateInputField(inputIndex, preset
       ? { options: [...preset.options], optionPresetId: preset.id }
       : { optionPresetId: undefined });
   }
 
   function updateOptionPreset(presetId: string, changes: Partial<WorkflowOptionPreset>) {
-    const optionPresets = (workflow.optionPresets ?? []).map((preset) => preset.id === presetId ? { ...preset, ...changes } : preset);
-    const inputs = changes.options
-      ? workflow.inputs.map((field) => field.optionPresetId === presetId ? { ...field, options: [...changes.options!] } : field)
-      : workflow.inputs;
-    update({ ...workflow, optionPresets, inputs });
+    onOptionPresetsChange(optionPresets.map((preset) => preset.id === presetId ? { ...preset, ...changes } : preset));
   }
 
   function addOptionPreset() {
-    update({ ...workflow, optionPresets: [...(workflow.optionPresets ?? []), newOptionPreset((workflow.optionPresets?.length ?? 0) + 1)] });
+    onOptionPresetsChange([...optionPresets, newOptionPreset(optionPresets.length + 1)]);
   }
 
   function removeOptionPreset(presetId: string) {
-    const optionPresets = (workflow.optionPresets ?? []).filter((preset) => preset.id !== presetId);
-    const inputs = workflow.inputs.map((field) => field.optionPresetId === presetId ? { ...field, optionPresetId: undefined } : field);
-    update({ ...workflow, optionPresets, inputs });
+    onOptionPresetsChange(optionPresets.filter((preset) => preset.id !== presetId));
   }
 
   function updateComfyBindings(stepId: string, bindings: ComfyUIBinding[]) {
@@ -582,7 +582,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     let updated: ComfyUIBinding = { ...binding, nodeId, property: "", options: undefined, required: undefined };
     let nextWorkflow = workflow;
     if (binding.direction === "input") {
-      const result = syncComfySourceFormat(workflow, binding, updated);
+      const result = syncComfySourceFormat(workflow, binding, updated, undefined, optionPresets);
       nextWorkflow = result.workflow;
       updated = result.binding;
     }
@@ -599,7 +599,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     const binding = bindings[index];
     if (!binding) return;
     const nextWorkflow = binding.direction === "input"
-      ? restoreComfySourceInput(workflow, binding.sourceRef ?? "", binding.sourceInputFormat)
+      ? restoreComfySourceInput(workflow, binding.sourceRef ?? "", binding.sourceInputFormat, optionPresets)
       : workflow;
     const nextBindings = bindings.filter((_, itemIndex) => itemIndex !== index);
     update({
@@ -622,7 +622,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     const binding = bindings[index];
     if (!binding) return;
     const propertyInfo = propertyInfoForBinding(binding);
-    const result = syncComfySourceFormat(workflow, binding, { ...binding, sourceRef }, propertyInfo);
+    const result = syncComfySourceFormat(workflow, binding, { ...binding, sourceRef }, propertyInfo, optionPresets);
     const nextBindings = bindings.map((item, itemIndex) => itemIndex === index ? result.binding : item);
     update({
       ...result.workflow,
@@ -644,7 +644,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
       : { ...binding, property: propertyName, options: undefined, required: undefined };
     let nextWorkflow = workflow;
     if (binding.direction === "input") {
-      const result = syncComfySourceFormat(workflow, binding, updated, propertyInfo);
+      const result = syncComfySourceFormat(workflow, binding, updated, propertyInfo, optionPresets);
       nextWorkflow = result.workflow;
       updated = result.binding;
     }
@@ -871,19 +871,19 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
               </div>
               {field.type === "select" && <div className="schema-options-controls">
                 <DeferredInput className="text-input schema-options-input" value={(field.options ?? []).join(", ")} onCommit={(value) => updateInputField(index, { options: value.split(",").map((option) => option.trim()).filter(Boolean), optionPresetId: undefined })} placeholder="选项用逗号分隔" aria-label={`${field.label} 的选项`} />
-                <div className="select-wrap schema-option-preset-select"><select value={field.optionPresetId ?? ""} onChange={(event) => applyOptionPreset(index, event.target.value)} aria-label={`${field.label} 的选项预设`}><option value="">自定义选项</option>{(workflow.optionPresets ?? []).map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select><ChevronDown size={13} /></div>
+                <div className="select-wrap schema-option-preset-select"><select value={field.optionPresetId ?? ""} onChange={(event) => applyOptionPreset(index, event.target.value)} aria-label={`${field.label} 的选项预设`}><option value="">自定义选项</option>{optionPresets.map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select><ChevronDown size={13} /></div>
               </div>}
               <DeferredInput className="text-input schema-placeholder-input" value={field.placeholder ?? ""} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, placeholder: value } : item) })} placeholder="填写提示（可选）" aria-label={`${field.label} 的填写提示`} />
             </div>)}
             <button className="designer-add-field" onClick={() => update({ ...workflow, inputs: [...workflow.inputs, newInputField(workflow.inputs.length + 1)] })}><ListPlus size={15} />添加场景输入</button>
             <div className="designer-subsection option-presets-section">
-              <div className="designer-subsection-heading"><div><h3>选项预设</h3><p>把固定的 ComfyUI 选项保存一次，后续可直接套用到选项输入</p></div><span>{(workflow.optionPresets ?? []).length} 组</span></div>
-              {(workflow.optionPresets ?? []).map((preset) => <div className="option-preset-row" key={preset.id}>
+              <div className="designer-subsection-heading"><div><h3>工作区选项预设</h3><p>把固定的 ComfyUI 选项保存一次，所有场景的选项输入都能套用</p></div><span>{optionPresets.length} 组</span></div>
+              {optionPresets.map((preset) => <div className="option-preset-row" key={preset.id}>
                 <DeferredInput className="text-input option-preset-name" value={preset.name} onCommit={(name) => updateOptionPreset(preset.id, { name })} placeholder="预设名称" aria-label="选项预设名称" />
                 <DeferredInput className="text-input option-preset-values" value={preset.options.join(", ")} onCommit={(value) => updateOptionPreset(preset.id, { options: value.split(",").map((option) => option.trim()).filter(Boolean) })} placeholder="选项用逗号分隔，例如：SDXL, SD1.5" aria-label="预设选项" />
                 <button className="icon-button schema-delete" onClick={() => removeOptionPreset(preset.id)} title="删除选项预设" aria-label={`删除${preset.name}`}><Trash2 size={14} /></button>
               </div>)}
-              {!workflow.optionPresets?.length && <div className="option-preset-empty">还没有预设。新建后可以在上方的“选项”输入中直接选择。</div>}
+              {!optionPresets.length && <div className="option-preset-empty">还没有预设。新建后可以在上方或其他场景的“选项”输入中直接选择。</div>}
               <button className="designer-add-field" onClick={addOptionPreset}><Plus size={15} />新建选项预设</button>
             </div>
           </section>}

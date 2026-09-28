@@ -163,7 +163,6 @@ export interface WorkflowDefinition {
   sceneId: SceneId;
   name: string;
   inputs: WorkflowInputField[];
-  optionPresets?: WorkflowOptionPreset[];
   steps: WorkflowStepDefinition[];
   outputs: WorkflowOutputField[];
 }

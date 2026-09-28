@@ -9,9 +9,9 @@ import Studio from "./features/Studio";
 import { getScene } from "./data/scenes";
 import { checkConnections } from "./lib/api";
 import { readDrafts, writeDrafts } from "./lib/drafts";
-import { readWorkflows, writeWorkflows } from "./lib/workflowStorage";
+import { readOptionPresets, readWorkflows, writeOptionPresets, writeWorkflows } from "./lib/workflowStorage";
 import FlowDesigner from "./features/FlowDesigner";
-import type { ConnectorState, PageId, SceneId, WorkflowDefinition, WorkflowDraft } from "./types";
+import type { ConnectorState, PageId, SceneId, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset } from "./types";
 
 const navLabels: Record<PageId, string> = {
   home: "工作台",
@@ -32,6 +32,7 @@ export default function App() {
   const [sceneId, setSceneId] = useState<SceneId>("comic");
   const [drafts, setDrafts] = useState<WorkflowDraft[]>(() => readDrafts().sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
   const [workflows, setWorkflows] = useState(() => readWorkflows());
+  const [optionPresets, setOptionPresets] = useState<WorkflowOptionPreset[]>(() => readOptionPresets());
   const [connectors, setConnectors] = useState<ConnectorState[]>(initialConnectors);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -92,6 +93,38 @@ export default function App() {
     writeWorkflows(next);
   }
 
+  function updateOptionPresets(nextOptionPresets: WorkflowOptionPreset[]) {
+    const previousIds = new Set(optionPresets.map((preset) => preset.id));
+    const nextPresetMap = new Map(nextOptionPresets.map((preset) => [preset.id, preset]));
+    const removedIds = new Set([...previousIds].filter((id) => !nextPresetMap.has(id)));
+    const nextWorkflows = Object.fromEntries(Object.entries(workflows).map(([id, workflow]) => {
+      const inputs = workflow.inputs.map((field) => {
+        if (!field.optionPresetId) return field;
+        if (removedIds.has(field.optionPresetId)) return { ...field, optionPresetId: undefined };
+        const preset = nextPresetMap.get(field.optionPresetId);
+        return preset ? { ...field, options: [...preset.options] } : field;
+      });
+      const steps = workflow.steps.map((step) => {
+        if (!step.comfyui?.bindings.length) return step;
+        const bindings = step.comfyui.bindings.map((binding) => {
+          const format = binding.sourceInputFormat;
+          if (!format?.optionPresetId) return binding;
+          if (removedIds.has(format.optionPresetId)) {
+            return { ...binding, sourceInputFormat: { ...format, optionPresetId: undefined } };
+          }
+          const preset = nextPresetMap.get(format.optionPresetId);
+          return preset ? { ...binding, sourceInputFormat: { ...format, options: [...preset.options] } } : binding;
+        });
+        return { ...step, comfyui: { ...step.comfyui, bindings } };
+      });
+      return [id, { ...workflow, inputs, steps }];
+    })) as Record<SceneId, WorkflowDefinition>;
+    setOptionPresets(nextOptionPresets);
+    writeOptionPresets(nextOptionPresets);
+    setWorkflows(nextWorkflows);
+    writeWorkflows(nextWorkflows);
+  }
+
   const currentScene = getScene(sceneId);
   const title = page === "studio" ? currentScene.title : navLabels[page];
   const dateLabel = new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
@@ -119,7 +152,7 @@ export default function App() {
             {page === "history" && <History drafts={drafts} onNavigate={setPage} onOpenScene={openScene} />}
             {page === "assets" && <Library drafts={drafts} onNavigate={setPage} onOpenScene={openScene} />}
             {page === "connections" && <Connections connectors={connectors} onRefresh={refreshConnections} />}
-            {page === "flows" && <FlowDesigner sceneId={sceneId} workflow={workflows[sceneId]} onSceneChange={setSceneId} onChange={updateWorkflow} onOpenConnections={() => setPage("connections")} />}
+            {page === "flows" && <FlowDesigner sceneId={sceneId} workflow={workflows[sceneId]} optionPresets={optionPresets} onSceneChange={setSceneId} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onOpenConnections={() => setPage("connections")} />}
           </div>
           <footer className="app-footer"><span>在本地专注创作</span><span><Command size={12} /> ZANE STUDIO</span></footer>
         </div>
