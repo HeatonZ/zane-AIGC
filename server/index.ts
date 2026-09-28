@@ -1580,7 +1580,12 @@ app.post("/api/workflows/run", async (request, response) => {
     return;
   }
   const validatedWorkflow = workflow;
-  const runId = randomUUID();
+  const requestedRunId = body?.runId;
+  if (requestedRunId !== undefined && (typeof requestedRunId !== "string" || !isRunId(requestedRunId))) {
+    response.status(400).json({ error: "运行记录编号无效" });
+    return;
+  }
+  const runId = typeof requestedRunId === "string" ? requestedRunId : randomUUID();
   const runController = new AbortController();
   const abortRun = () => {
     if (!response.writableEnded) runController.abort();
@@ -1611,6 +1616,15 @@ app.post("/api/workflows/run", async (request, response) => {
   }
 
   const settings = await readSettings();
+  if (settings.projectDirectory && typeof requestedRunId === "string") {
+    try {
+      await stat(runArtifactPaths(settings.projectDirectory, runId).directory);
+      response.status(409).json({ error: "运行记录编号已存在" });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
   const startedAt = new Date().toISOString();
   let artifacts: RunArtifactPaths | undefined;
   try {

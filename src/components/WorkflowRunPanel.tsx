@@ -1,4 +1,4 @@
-import { Check, Copy, History as HistoryIcon } from "lucide-react";
+import { Check, Copy, History as HistoryIcon, Square } from "lucide-react";
 import { useState } from "react";
 import type { JsonValue, WorkflowRunOutput, WorkflowRunResult } from "../types";
 
@@ -22,10 +22,12 @@ export default function WorkflowRunPanel({
   result,
   inputValues,
   onOpenRuns,
+  onCancelRun,
 }: {
   result: WorkflowRunResult;
   inputValues?: Record<string, JsonValue>;
   onOpenRuns?: () => void;
+  onCancelRun?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const cancelled = result.status === "cancelled";
@@ -44,6 +46,7 @@ export default function WorkflowRunPanel({
         <div><h3>{result.status === "completed" ? "运行完成" : cancelled ? "已取消运行" : result.status === "running" ? "正在运行" : "运行失败"}</h3><span>{result.steps.filter((step) => step.status === "completed").length} 步完成 · {result.steps.filter((step) => step.status === "skipped").length} 步跳过</span></div>
         <small>{result.runId.slice(0, 8)}</small>
       </div>
+      {result.status === "running" && onCancelRun && <button className="text-button workflow-run-cancel" type="button" onClick={onCancelRun}><Square size={13} />取消运行</button>}
       {result.error && <div className="workflow-run-error" role="alert">{result.error}</div>}
       {result.archiveWarnings?.length ? <div className="workflow-run-warning" role="status">部分生成媒体没有复制到项目目录：{result.archiveWarnings.join("；")}</div> : null}
       {inputValues && <details className="run-input-snapshot"><summary>查看本次输入</summary><pre>{JSON.stringify(inputValues, null, 2)}</pre></details>}

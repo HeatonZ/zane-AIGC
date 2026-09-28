@@ -1,6 +1,6 @@
 import { ArrowLeft, Check, ChevronDown, CircleHelp, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Package, Play, Save, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from "react";
-import { loadConnectionSettings, pickLocalMediaFile, runWorkflow } from "../lib/api";
+import { loadConnectionSettings, pickLocalMediaFile } from "../lib/api";
 import WorkflowRunPanel from "../components/WorkflowRunPanel";
 import type { JsonValue, PageId, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowInputField, WorkflowRunResult } from "../types";
 
@@ -12,6 +12,8 @@ interface StudioProps {
   onNavigate: (page: PageId) => void;
   onBack: () => void;
   onSaveDraft: (draft: WorkflowDraft) => void;
+  onStartRun: (workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>, runId: string) => Promise<WorkflowRunResult>;
+  onCancelRun: (runId: string) => void;
 }
 
 function draftInputValues(workflow: WorkflowDefinition, draft?: WorkflowDraft): Record<string, string> {
@@ -74,7 +76,7 @@ function DynamicField({
   );
 }
 
-export default function Studio({ sceneId, scene, workflow, draft, onNavigate, onBack, onSaveDraft }: StudioProps) {
+export default function Studio({ sceneId, scene, workflow, draft, onNavigate, onBack, onSaveDraft, onStartRun, onCancelRun }: StudioProps) {
   const [values, setValues] = useState<Record<string, string>>(() => draftInputValues(workflow, draft));
   const [saved, setSaved] = useState(false);
   const [formError, setFormError] = useState("");
@@ -83,7 +85,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
   const [pickingField, setPickingField] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<WorkflowRunResult | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
-  const runControllerRef = useRef<AbortController | null>(null);
+  const currentRunIdRef = useRef<string | null>(null);
   const draftIdRef = useRef<string | null>(draft?.id ?? null);
 
   useEffect(() => {
@@ -99,10 +101,6 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
       .then((settings) => { if (active) setProjectDirectory(settings.projectDirectory); })
       .catch(() => { if (active) setProjectDirectory(""); });
     return () => { active = false; };
-  }, []);
-
-  useEffect(() => () => {
-    runControllerRef.current?.abort();
   }, []);
 
   function updateValue(key: string, value: string) {
@@ -176,17 +174,18 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     setFormError("");
     setRunning(true);
     setRunResult(null);
-    const controller = new AbortController();
-    runControllerRef.current = controller;
     try {
       const inputValues = collectInputValues();
-      const result = await runWorkflow(workflow, inputValues, controller.signal);
+      onSaveDraft(draftFor(inputValues));
+      const runId = crypto.randomUUID();
+      currentRunIdRef.current = runId;
+      const result = await onStartRun(workflow, inputValues, runId);
       setRunResult(result);
       onSaveDraft(draftFor(inputValues, result));
     } catch (error) {
-      setFormError(controller.signal.aborted ? "已取消运行" : error instanceof Error ? error.message : "流程执行失败");
+      setFormError(error instanceof Error ? error.message : "流程执行失败");
     } finally {
-      if (runControllerRef.current === controller) runControllerRef.current = null;
+      currentRunIdRef.current = null;
       setRunning(false);
     }
   }
@@ -205,7 +204,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
   }
 
   function cancelRun() {
-    runControllerRef.current?.abort();
+    if (currentRunIdRef.current) onCancelRun(currentRunIdRef.current);
   }
 
   return (

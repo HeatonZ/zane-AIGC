@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, Command, RotateCw } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import Connections from "./features/Connections";
@@ -9,12 +9,12 @@ import Library from "./features/Library";
 import Studio from "./features/Studio";
 import { getScene } from "./data/scenes";
 import { createSceneWorkflow } from "./data/workflows";
-import { checkConnections } from "./lib/api";
+import { checkConnections, runWorkflow } from "./lib/api";
 import { readDrafts, writeDrafts } from "./lib/drafts";
 import { createScene, readScenes, writeScenes } from "./lib/sceneStorage";
 import { readOptionPresets, readWorkflows, writeOptionPresets, writeWorkflows } from "./lib/workflowStorage";
 import FlowDesigner from "./features/FlowDesigner";
-import type { ConnectorState, PageId, SceneDetails, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset } from "./types";
+import type { ConnectorState, JsonValue, PageId, SceneDetails, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset } from "./types";
 
 const navLabels: Record<PageId, string> = {
   home: "工作台",
@@ -37,10 +37,15 @@ export default function App() {
   const [sceneId, setSceneId] = useState<SceneId>(() => readScenes()[0]?.id ?? "");
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<WorkflowDraft[]>(() => readDrafts().sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+  const draftsRef = useRef(drafts);
   const [workflows, setWorkflows] = useState(() => readWorkflows(readScenes()));
   const [optionPresets, setOptionPresets] = useState<WorkflowOptionPreset[]>(() => readOptionPresets());
   const [connectors, setConnectors] = useState<ConnectorState[]>(initialConnectors);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [activeRunIds, setActiveRunIds] = useState<string[]>([]);
+  const [runStartErrors, setRunStartErrors] = useState<Record<string, string>>({});
+  const runControllersRef = useRef(new Map<string, AbortController>());
 
   const refreshConnections = useCallback(async (enabledHermesProfiles?: string[]) => {
     setRefreshing(true);
@@ -89,11 +94,43 @@ export default function App() {
   }
 
   function saveDraft(draft: WorkflowDraft) {
-    const next = [draft, ...drafts.filter((item) => item.id !== draft.id)]
+    const next = [draft, ...draftsRef.current.filter((item) => item.id !== draft.id)]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    draftsRef.current = next;
     setDrafts(next);
     writeDrafts(next);
   }
+
+  const startWorkflowRun = useCallback(async (workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>, runId: string) => {
+    const controller = new AbortController();
+    runControllersRef.current.set(runId, controller);
+    setSelectedRunId(runId);
+    setActiveRunIds((current) => [...current, runId]);
+    setRunStartErrors((current) => ({ ...current, [runId]: "" }));
+    setPage("runs");
+    try {
+      return await runWorkflow(workflow, inputValues, controller.signal, runId);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setRunStartErrors((current) => ({
+          ...current,
+          [runId]: error instanceof Error ? error.message : "流程执行失败",
+        }));
+      }
+      throw error;
+    } finally {
+      runControllersRef.current.delete(runId);
+      setActiveRunIds((current) => current.filter((id) => id !== runId));
+    }
+  }, []);
+
+  const cancelWorkflowRun = useCallback((runId: string) => {
+    runControllersRef.current.get(runId)?.abort();
+  }, []);
+
+  const selectRun = useCallback((runId: string | null) => {
+    setSelectedRunId(runId);
+  }, []);
 
   function updateWorkflow(workflow: WorkflowDefinition) {
     const next = { ...workflows, [workflow.sceneId]: workflow };
@@ -134,6 +171,7 @@ export default function App() {
     setWorkflows(nextWorkflows);
     writeWorkflows(nextWorkflows);
     setDrafts(nextDrafts);
+    draftsRef.current = nextDrafts;
     writeDrafts(nextDrafts);
     if (sceneId === sceneIdToDelete) setSceneId(nextScenes[0]?.id ?? "");
     if (activeDraftId && sceneDrafts.some((draft) => draft.id === activeDraftId)) setActiveDraftId(null);
@@ -198,9 +236,9 @@ export default function App() {
         <div className="page-scroll">
           <div className="page-content" key={page === "studio" ? `${page}-${sceneId}` : page}>
             {page === "home" && <Dashboard drafts={drafts} scenes={scenes} connectors={connectors} onNavigate={setPage} onOpenScene={openScene} onCreateScene={createWorkspaceScene} onUpdateScene={updateScene} onDeleteScene={deleteScene} />}
-            {page === "studio" && selectedScene && selectedWorkflow && <Studio sceneId={sceneId} scene={selectedScene} workflow={selectedWorkflow} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} />}
+            {page === "studio" && selectedScene && selectedWorkflow && <Studio sceneId={sceneId} scene={selectedScene} workflow={selectedWorkflow} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} onStartRun={startWorkflowRun} onCancelRun={cancelWorkflowRun} />}
             {page === "history" && <History drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} />}
-            {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} />}
+            {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} selectedRunId={selectedRunId} onSelectRun={selectRun} onCancelRun={cancelWorkflowRun} activeRunId={selectedRunId !== null && activeRunIds.includes(selectedRunId) ? selectedRunId : null} canCancelRun={selectedRunId !== null && activeRunIds.includes(selectedRunId)} runStartError={selectedRunId ? runStartErrors[selectedRunId] : undefined} />}
             {page === "assets" && <Library drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} />}
             {page === "connections" && <Connections connectors={connectors} onRefresh={refreshConnections} />}
             {page === "flows" && selectedScene && selectedWorkflow && <FlowDesigner sceneId={sceneId} scenes={scenes} workflow={selectedWorkflow} optionPresets={optionPresets} onSceneChange={setSceneId} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onOpenConnections={() => setPage("connections")} />}

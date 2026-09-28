@@ -72,11 +72,11 @@ export function loadComfyUINodeInfo(nodeType: string) {
   return request<ComfyUINodeInfo>(`/api/comfyui/node-info?type=${encodeURIComponent(nodeType)}`);
 }
 
-export function runWorkflow(workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>, signal?: AbortSignal) {
+export function runWorkflow(workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>, signal?: AbortSignal, runId?: string) {
   return request<WorkflowRunResult>("/api/workflows/run", {
     method: "POST",
     signal,
-    body: JSON.stringify({ workflow, inputValues }),
+    body: JSON.stringify({ workflow, inputValues, ...(runId ? { runId } : {}) }),
   });
 }
 
