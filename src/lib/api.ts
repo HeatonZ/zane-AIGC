@@ -7,6 +7,8 @@ import type {
   HermesProfile,
   JsonValue,
   WorkflowDefinition,
+  WorkflowRunHistoryItem,
+  WorkflowRunRecord,
   WorkflowRunResult,
 } from "../types";
 
@@ -35,6 +37,7 @@ export function loadHermesProfiles() {
 export function saveConnectionSettings(input: {
   enabledHermesProfiles: string[];
   comfyuiBaseUrl: string;
+  projectDirectory: string;
 }) {
   return request<ConnectionSettings>("/api/settings", {
     method: "PUT",
@@ -53,6 +56,14 @@ export function loadComfyUIWorkflows() {
   return request<ComfyUIWorkflowSummary[]>("/api/comfyui/workflows");
 }
 
+export async function pickLocalMediaFile(type: "image" | "video") {
+  const result = await request<{ path: string | null }>("/api/files/pick", {
+    method: "POST",
+    body: JSON.stringify({ type }),
+  });
+  return result.path;
+}
+
 export function loadComfyUIWorkflow(filename: string) {
   return request<ComfyUIWorkflowDetail>(`/api/comfyui/workflow?filename=${encodeURIComponent(filename)}`);
 }
@@ -61,9 +72,18 @@ export function loadComfyUINodeInfo(nodeType: string) {
   return request<ComfyUINodeInfo>(`/api/comfyui/node-info?type=${encodeURIComponent(nodeType)}`);
 }
 
-export function runWorkflow(workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>) {
+export function runWorkflow(workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>, signal?: AbortSignal) {
   return request<WorkflowRunResult>("/api/workflows/run", {
     method: "POST",
+    signal,
     body: JSON.stringify({ workflow, inputValues }),
   });
+}
+
+export function loadWorkflowRuns() {
+  return request<{ projectDirectory: string; runs: WorkflowRunHistoryItem[] }>("/api/workflows/runs");
+}
+
+export function loadWorkflowRun(runId: string) {
+  return request<WorkflowRunRecord>(`/api/workflows/runs/${encodeURIComponent(runId)}`);
 }

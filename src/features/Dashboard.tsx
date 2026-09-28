@@ -7,7 +7,7 @@ interface DashboardProps {
   drafts: WorkflowDraft[];
   connectors: ConnectorState[];
   onNavigate: (page: PageId) => void;
-  onOpenScene: (sceneId: SceneId) => void;
+  onOpenScene: (sceneId: SceneId, draftId?: string) => void;
 }
 
 function formatDate(value: string) {
@@ -81,7 +81,7 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
               {recentDrafts.map((draft) => {
                 const scene = getScene(draft.sceneId);
                 return (
-                  <button className="draft-row" key={draft.id} onClick={() => onOpenScene(draft.sceneId)}>
+                  <button className="draft-row" key={draft.id} onClick={() => onOpenScene(draft.sceneId, draft.id)}>
                     <span className={`draft-thumb ${scene.accent}`}><Sparkles size={16} /></span>
                     <span className="draft-info"><strong>{draft.title}</strong><small>{scene.shortTitle}制作 · {formatDate(draft.createdAt)}</small></span>
                     <span className={`draft-status ${draft.status}`}>{draft.status === "completed" ? "已完成" : draft.status === "failed" ? "失败" : "草稿"}</span>

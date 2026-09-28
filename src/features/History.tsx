@@ -5,7 +5,7 @@ import type { PageId, SceneId, WorkflowDraft } from "../types";
 interface HistoryProps {
   drafts: WorkflowDraft[];
   onNavigate: (page: PageId) => void;
-  onOpenScene: (scene: SceneId) => void;
+  onOpenScene: (scene: SceneId, draftId?: string) => void;
 }
 
 function formatDate(value: string) {
@@ -25,7 +25,7 @@ export default function History({ drafts, onNavigate, onOpenScene }: HistoryProp
               <article className="history-row" key={draft.id}>
                 <span className={`history-type-icon ${scene.accent}`}><Sparkles size={17} /></span>
                 <div className="history-main"><div className="history-title-row"><h2>{draft.title}</h2><span className={`draft-status ${draft.status}`}>{draft.status === "completed" ? "已完成" : draft.status === "failed" ? "失败" : "草稿"}</span></div><p>{draft.summary}</p><div className="history-meta"><span>{scene.shortTitle}制作</span><i /> <Clock3 size={12} /><span>{formatDate(draft.createdAt)}</span>{draft.runResult && <><i /><span>{draft.runResult.steps.length} 步执行记录</span></>}</div></div>
-                <button className="button button-small" onClick={() => onOpenScene(draft.sceneId)}>继续编辑 <ArrowRight size={14} /></button>
+                <button className="button button-small" onClick={() => onOpenScene(draft.sceneId, draft.id)}>继续编辑 <ArrowRight size={14} /></button>
               </article>
             );
           })}

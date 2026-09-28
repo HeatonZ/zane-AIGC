@@ -1,15 +1,16 @@
 import express from "express";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
-import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 interface SavedSettings {
   enabledHermesProfiles: string[];
   comfyuiBaseUrl: string;
+  projectDirectory: string;
 }
 
 interface HermesProfile {
@@ -98,9 +99,19 @@ interface RunStep {
 }
 
 interface RunWorkflowDefinition {
+  sceneId?: string;
+  name?: string;
   inputs: RunInputField[];
   steps: RunStep[];
   outputs: Array<{ key: string; label?: string; type: string; sourceRef: string }>;
+}
+
+interface RunArtifactPaths {
+  directory: string;
+  inputs: string;
+  workflow: string;
+  runtime: string;
+  output: string;
 }
 
 function parseEnvFile(text: string) {
@@ -161,14 +172,94 @@ const execFileAsync = promisify(execFile);
 const defaults: SavedSettings = {
   enabledHermesProfiles: ["default"],
   comfyuiBaseUrl: configuredComfyuiBaseUrl ?? "http://127.0.0.1:8188",
+  projectDirectory: nonEmpty(process.env.ZANE_PROJECT_DIR) ? path.resolve(process.env.ZANE_PROJECT_DIR as string) : "",
 };
 
 app.use(express.json({ limit: "4mb" }));
 
+function cancellationError() {
+  const error = new Error("运行已取消");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw cancellationError();
+}
+
+function waitForAbortable<T>(promise: Promise<T>, signal?: AbortSignal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(cancellationError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(cancellationError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function delayWithAbort(ms: number, signal?: AbortSignal) {
+  if (!signal) return new Promise<void>((resolve) => setTimeout(resolve, ms));
+  if (signal.aborted) return Promise.reject(cancellationError());
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(cancellationError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+class SerialTaskQueue {
+  private tail: Promise<void> = Promise.resolve();
+
+  run<T>(task: () => Promise<T>, signal?: AbortSignal) {
+    const previous = this.tail;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.tail = previous.then(() => current);
+
+    return (async () => {
+      try {
+        await waitForAbortable(previous, signal);
+        throwIfAborted(signal);
+        return await task();
+      } finally {
+        release();
+      }
+    })();
+  }
+}
+
+// Hermes steps run directly and may execute in parallel. Every ComfyUI step
+// goes through this queue so a single ComfyUI instance is never overrun.
+const comfyuiQueue = new SerialTaskQueue();
+
 async function readSettings(): Promise<SavedSettings> {
   try {
     const text = await readFile(settingsFile, "utf8");
-    return { ...defaults, ...(JSON.parse(text) as Partial<SavedSettings>) };
+    const parsed = JSON.parse(text) as Partial<SavedSettings>;
+    return {
+      ...defaults,
+      ...parsed,
+      projectDirectory: normalizeProjectDirectory(parsed.projectDirectory, defaults.projectDirectory),
+    };
   } catch {
     return defaults;
   }
@@ -178,12 +269,208 @@ function publicSettings(settings: SavedSettings) {
   return {
     enabledHermesProfiles: settings.enabledHermesProfiles,
     comfyuiBaseUrl: settings.comfyuiBaseUrl,
+    projectDirectory: settings.projectDirectory,
   };
 }
 
 function normalizeBaseUrl(value: unknown, fallback: string) {
   if (typeof value !== "string" || !value.trim()) return fallback;
   return value.trim().replace(/\/+$/, "");
+}
+
+function normalizeProjectDirectory(value: unknown, fallback: string) {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string" || !value.trim()) return "";
+  return path.resolve(value.trim());
+}
+
+function runArtifactPaths(projectDirectory: string, runId: string): RunArtifactPaths {
+  const directory = path.join(projectDirectory, ".zane", "runs", runId);
+  return {
+    directory,
+    inputs: path.join(directory, "inputs", "input.json"),
+    workflow: path.join(directory, "workflow.json"),
+    runtime: path.join(directory, "runtime.json"),
+    output: path.join(directory, "outputs", "result.json"),
+  };
+}
+
+async function writeJsonFile(filename: string, value: unknown) {
+  await mkdir(path.dirname(filename), { recursive: true });
+  await writeFile(filename, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function validateProjectDirectory(directory: string) {
+  if (!directory) return "";
+  await mkdir(directory, { recursive: true });
+  if (!(await stat(directory)).isDirectory()) throw new Error("项目目录必须是文件夹");
+  const dataDirectory = path.join(directory, ".zane");
+  await mkdir(dataDirectory, { recursive: true });
+  const marker = path.join(dataDirectory, `.write-check-${randomUUID()}`);
+  await writeFile(marker, "ok", { flag: "wx" });
+  await unlink(marker);
+  return directory;
+}
+
+function artifactPublicPaths(paths: RunArtifactPaths) {
+  return {
+    directory: paths.directory,
+    inputs: paths.inputs,
+    workflow: paths.workflow,
+    runtime: paths.runtime,
+    output: paths.output,
+  };
+}
+
+async function prepareRunArtifacts(settings: SavedSettings, runId: string, workflow: RunWorkflowDefinition, inputValues: Record<string, JsonValue>, startedAt: string) {
+  if (!settings.projectDirectory) throw new Error("请先在集成连接中配置项目目录");
+  const paths = runArtifactPaths(settings.projectDirectory, runId);
+  await mkdir(paths.directory, { recursive: true });
+  const inputFiles: Array<{ key: string; path: string; originalPath: string }> = [];
+  for (const field of workflow.inputs) {
+    const value = inputValues[field.key];
+    if ((field.type !== "image" && field.type !== "video") || typeof value !== "string" || !value.trim() || /^(https?:|data:)/i.test(value)) continue;
+    const originalPath = path.resolve(value.trim());
+    try {
+      if (!(await stat(originalPath)).isFile()) continue;
+      const extension = path.extname(originalPath).replace(/[^.A-Za-z0-9]/g, "").slice(0, 12);
+      const filename = `${field.key.replace(/[^A-Za-z0-9_-]/g, "_") || "input"}${extension}`;
+      const relativePath = path.posix.join("inputs", "files", filename);
+      const destination = path.join(paths.directory, ...relativePath.split("/"));
+      await mkdir(path.dirname(destination), { recursive: true });
+      await copyFile(originalPath, destination);
+      inputFiles.push({ key: field.key, path: relativePath, originalPath });
+    } catch {
+      // The input remains in the JSON snapshot if it is not an accessible local file.
+    }
+  }
+  await Promise.all([
+    writeJsonFile(paths.inputs, {
+      format: "zane-studio.input/v1",
+      runId,
+      createdAt: startedAt,
+      sceneId: workflow.sceneId ?? null,
+      workflowName: workflow.name ?? "未命名工作流",
+      values: inputValues,
+      files: inputFiles,
+    }),
+    writeJsonFile(paths.workflow, {
+      format: "zane-studio.workflow/v1",
+      runId,
+      createdAt: startedAt,
+      workflow,
+    }),
+    writeJsonFile(paths.runtime, {
+      format: "zane-studio.runtime/v1",
+      runId,
+      status: "running",
+      startedAt,
+      sceneId: workflow.sceneId ?? null,
+      workflowName: workflow.name ?? "未命名工作流",
+      artifacts: artifactPublicPaths(paths),
+      steps: [],
+    }),
+  ]);
+  return paths;
+}
+
+function mediaContentTypeExtension(contentType: string | null) {
+  const type = contentType?.split(";")[0].trim().toLowerCase();
+  return ({
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+  } as Record<string, string>)[type ?? ""] ?? ".bin";
+}
+
+async function archiveOutputMedia(value: JsonValue, runId: string, paths: RunArtifactPaths, comfyuiBaseUrl: string, cache: Map<string, JsonValue>, warnings: string[]): Promise<JsonValue> {
+  if (Array.isArray(value)) return Promise.all(value.map((item) => archiveOutputMedia(item, runId, paths, comfyuiBaseUrl, cache, warnings)));
+  if (!value || typeof value !== "object") return value;
+  const media = value as Record<string, JsonValue>;
+  if (typeof media.filename === "string" && (typeof media.url === "string" || typeof media.type === "string")) {
+    const subfolder = typeof media.subfolder === "string" ? media.subfolder : "";
+    const type = typeof media.type === "string" ? media.type : "output";
+    const cacheKey = `${media.filename}\n${subfolder}\n${type}`;
+    const existing = cache.get(cacheKey);
+    if (existing) return existing;
+    const query = new URLSearchParams({ filename: media.filename, subfolder, type });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${comfyuiBaseUrl}/view?${query}`, { signal: controller.signal });
+      if (!response.ok) throw new Error(`ComfyUI 媒体返回 ${response.status}`);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const extension = path.extname(path.basename(media.filename)).replace(/[^.A-Za-z0-9]/g, "").slice(0, 12) || mediaContentTypeExtension(response.headers.get("content-type"));
+      const base = path.basename(media.filename, path.extname(media.filename)).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 60) || "output";
+      const suffix = createHash("sha1").update(cacheKey).digest("hex").slice(0, 8);
+      const filename = `${base}-${suffix}${extension}`;
+      const mediaDirectory = path.join(paths.directory, "outputs", "media");
+      await mkdir(mediaDirectory, { recursive: true });
+      await writeFile(path.join(mediaDirectory, filename), bytes);
+      const archived: JsonValue = {
+        ...media,
+        file: `outputs/media/${filename}`,
+        url: `/api/workflows/runs/${runId}/media/${encodeURIComponent(filename)}`,
+      };
+      cache.set(cacheKey, archived);
+      return archived;
+    } catch (error) {
+      warnings.push(`${media.filename}: ${error instanceof Error ? error.message : "归档媒体失败"}`);
+      return value;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  const entries = await Promise.all(Object.entries(media).map(async ([key, item]) => [key, await archiveOutputMedia(item, runId, paths, comfyuiBaseUrl, cache, warnings)] as const));
+  return Object.fromEntries(entries);
+}
+
+function isRunId(value: string) {
+  return /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value);
+}
+
+function runStatus(value: unknown): "running" | "completed" | "failed" | "cancelled" {
+  return value === "running" || value === "completed" || value === "cancelled" ? value : "failed";
+}
+
+async function readJsonFile(filename: string) {
+  try {
+    return asRecord(JSON.parse(await readFile(filename, "utf8")));
+  } catch {
+    return undefined;
+  }
+}
+
+async function readRunRecord(projectDirectory: string, runId: string) {
+  const paths = runArtifactPaths(projectDirectory, runId);
+  const [runtime, inputs, output] = await Promise.all([
+    readJsonFile(paths.runtime),
+    readJsonFile(paths.inputs),
+    readJsonFile(paths.output),
+  ]);
+  if (!runtime || !inputs) return undefined;
+  const sceneId = typeof runtime.sceneId === "string" ? runtime.sceneId : typeof inputs.sceneId === "string" ? inputs.sceneId : "comic";
+  const workflowName = typeof runtime.workflowName === "string" ? runtime.workflowName : typeof inputs.workflowName === "string" ? inputs.workflowName : "未命名工作流";
+  const steps = Array.isArray(output?.steps) ? output.steps : Array.isArray(runtime.steps) ? runtime.steps : [];
+  const outputs = Array.isArray(output?.outputs) ? output.outputs : [];
+  return {
+    runId,
+    sceneId,
+    workflowName,
+    status: runStatus(output?.status ?? runtime.status),
+    startedAt: typeof runtime.startedAt === "string" ? runtime.startedAt : typeof inputs.createdAt === "string" ? inputs.createdAt : "",
+    ...(typeof (output?.finishedAt ?? runtime.finishedAt) === "string" ? { finishedAt: output?.finishedAt ?? runtime.finishedAt } : {}),
+    ...(typeof (output?.durationMs ?? runtime.durationMs) === "number" ? { durationMs: output?.durationMs ?? runtime.durationMs } : {}),
+    steps,
+    outputs,
+    ...(typeof output?.error === "string" ? { error: output.error } : {}),
+    ...(Array.isArray(output?.archiveWarnings) ? { archiveWarnings: output.archiveWarnings } : Array.isArray(runtime.archiveWarnings) ? { archiveWarnings: runtime.archiveWarnings } : {}),
+    inputValues: asRecord(inputs.values) ?? {},
+    artifacts: artifactPublicPaths(paths),
+  };
 }
 
 async function probe(
@@ -599,7 +886,7 @@ function expandComfyUIWorkflow(
   return { nodes: expandedNodes, sources };
 }
 
-async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string): Promise<ComfyWorkflowConversion> {
+async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal?: AbortSignal): Promise<ComfyWorkflowConversion> {
   const root = asRecord(payload);
   if (!root) return { format: "unknown", converted: false, graph: {}, outputProperties: {} };
 
@@ -622,10 +909,21 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string): Promi
     if (!baseUrl) return undefined;
     const cached = objectInfoCache.get(nodeType);
     if (cached) return cached;
-    const request = fetchComfyUIJson(`${baseUrl}/object_info/${encodeURIComponent(nodeType)}`, 4500).catch(() => undefined);
+    const request = fetchComfyUIJson(`${baseUrl}/object_info/${encodeURIComponent(nodeType)}`, 4500, signal).catch((error) => {
+      if (signal?.aborted) throw error;
+      return undefined;
+    });
     objectInfoCache.set(nodeType, request);
     return request;
   }
+
+  const objectInfoTypes = uniqueStrings(uiNodes.flatMap(({ node }) => {
+    const values = comfyWidgetValues(node);
+    return Object.keys(values.named).length || values.values.length
+      ? [typeof node.type === "string" ? node.type : ""]
+      : [];
+  }));
+  await Promise.all(objectInfoTypes.map((nodeType) => loadObjectInfo(nodeType)));
 
   const graph: Record<string, Record<string, unknown>> = {};
   const outputProperties: Record<string, string[]> = {};
@@ -701,8 +999,8 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string): Promi
   };
 }
 
-async function summarizeComfyUIWorkflow(payload: unknown, filename: string, baseUrl?: string) {
-  const conversion = await convertComfyUIWorkflow(payload, baseUrl);
+async function summarizeComfyUIWorkflow(payload: unknown, filename: string, baseUrl?: string, signal?: AbortSignal) {
+  const conversion = await convertComfyUIWorkflow(payload, baseUrl, signal);
   const nodes: ComfyUIWorkflowNode[] = Object.entries(conversion.graph).map(([id, node]) => ({
     id,
     type: typeof node.class_type === "string" ? node.class_type : "Unknown",
@@ -717,21 +1015,37 @@ async function summarizeComfyUIWorkflow(payload: unknown, filename: string, base
   };
 }
 
-async function fetchComfyUIJson(url: string, timeoutMs = 10000) {
+async function fetchComfyUIJson(url: string, timeoutMs = 10000, parentSignal?: AbortSignal) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abortFromParent = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener("abort", abortFromParent, { once: true });
+  }
   try {
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) throw new Error(`ComfyUI 返回 ${response.status}`);
     return await response.json() as unknown;
   } finally {
     clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 
-async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
+async function fetchJson(url: string, init: RequestInit = {}, parentSignal?: AbortSignal): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10 * 60 * 1000);
+  const initSignal = init.signal;
+  const abortFromParent = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener("abort", abortFromParent, { once: true });
+  }
+  if (initSignal) {
+    if (initSignal.aborted) controller.abort();
+    else initSignal.addEventListener("abort", abortFromParent, { once: true });
+  }
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
     const body = await response.json().catch(() => null) as unknown;
@@ -742,6 +1056,8 @@ async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
     return body;
   } finally {
     clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+    initSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 
@@ -826,8 +1142,25 @@ function workflowApiPath(filename: string) {
   return `workflows/${filename}`.split("/").map((segment) => encodeURIComponent(segment)).join("%252F");
 }
 
-async function readWorkflowApiGraph(payload: unknown, baseUrl?: string) {
-  const conversion = await convertComfyUIWorkflow(payload, baseUrl);
+async function interruptComfyUI(baseUrl: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    await fetch(`${baseUrl}/interrupt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: controller.signal,
+    });
+  } catch {
+    // Cancellation should still finish locally when ComfyUI is unreachable.
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function readWorkflowApiGraph(payload: unknown, baseUrl?: string, signal?: AbortSignal) {
+  const conversion = await convertComfyUIWorkflow(payload, baseUrl, signal);
   const graph = conversion.graph;
   if (!Object.keys(graph).length) {
     if (conversion.format === "ui") throw new Error("ComfyUI 画布工作流中没有可转换的节点");
@@ -864,10 +1197,14 @@ function readComfyOutputValue(history: unknown, promptId: string, nodeId: string
   return toJsonValue(value);
 }
 
-function coerceComfyInputValue(value: JsonValue | undefined, binding: RunComfyBinding, stepName: string): JsonValue | undefined {
+function coerceComfyInputValue(value: JsonValue | undefined, binding: RunComfyBinding, stepName: string, required = binding.required): JsonValue | undefined {
   if (value === undefined) throw new Error(`${stepName} 的输入引用没有值`);
+  // Optional scene inputs are represented as null by the Studio. Leaving the
+  // ComfyUI widget untouched lets it keep its own default (for example, a
+  // random seed) instead of trying to convert null into a number.
+  if ((value === null || value === "") && !required) return undefined;
   if (binding.options?.length) {
-    if ((value === null || value === "") && !binding.required) return undefined;
+    if ((value === null || value === "") && !required) return undefined;
     const optionValue = typeof value === "string" ? value : String(value);
     if (!binding.options.includes(optionValue)) {
       throw new Error(`${stepName} 的 ${binding.property} 需要从可用选项中选择：${binding.options.join("、")}`);
@@ -888,67 +1225,90 @@ function coerceComfyInputValue(value: JsonValue | undefined, binding: RunComfyBi
   return toJsonValue(value);
 }
 
-async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, baseUrl: string) {
+async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, baseUrl: string, signal?: AbortSignal, inputFields: RunInputField[] = []) {
+  throwIfAborted(signal);
   const workflowFile = step.comfyui?.workflowFile;
   if (!workflowFile) throw new Error(`${step.name} 尚未选择 ComfyUI 工作流`);
   const encodedPath = workflowApiPath(workflowFile);
   let payload: unknown;
   try {
-    payload = await fetchJson(`${baseUrl}/api/userdata/${encodedPath}`);
+    payload = await fetchJson(`${baseUrl}/api/userdata/${encodedPath}`, {}, signal);
   } catch {
-    payload = await fetchJson(`${baseUrl}/userdata/${encodedPath}`);
+    throwIfAborted(signal);
+    payload = await fetchJson(`${baseUrl}/userdata/${encodedPath}`, {}, signal);
   }
-  const graph = await readWorkflowApiGraph(payload, baseUrl);
+  const graph = await readWorkflowApiGraph(payload, baseUrl, signal);
   const bindings = step.comfyui?.bindings ?? [];
   for (const binding of bindings.filter((item) => item.direction === "input")) {
     const node = graph[binding.nodeId];
     const nodeInputs = asRecord(node?.inputs);
     if (!nodeInputs || !(binding.property in nodeInputs)) throw new Error(`${step.name} 找不到输入绑定 ${binding.nodeId}.${binding.property}`);
     const value = resolveWorkflowReference(binding.sourceRef ?? "", inputs, stepValues);
-    const converted = coerceComfyInputValue(value, binding, step.name);
+    const inputKey = /^input\.([a-zA-Z0-9_]+)$/.exec(binding.sourceRef ?? "")?.[1];
+    const sourceField = inputKey ? inputFields.find((field) => field.key === inputKey) : undefined;
+    const converted = coerceComfyInputValue(value, binding, step.name, sourceField?.required ?? binding.required);
     if (converted !== undefined) nodeInputs[binding.property] = converted;
   }
-  const queued = asRecord(await fetchJson(`${baseUrl}/prompt`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: graph, client_id: "zane-aigc-studio" }),
-  }));
-  const promptId = queued?.prompt_id;
-  if (typeof promptId !== "string") {
-    const details = Array.isArray(queued?.node_errors) ? JSON.stringify(queued.node_errors) : "ComfyUI 未返回任务 ID";
-    throw new Error(details);
-  }
-  const deadline = Date.now() + 10 * 60 * 1000;
-  let history: unknown;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    const found = asRecord(await fetchJson(`${baseUrl}/history/${encodeURIComponent(promptId)}`));
-    if (found && found[promptId]) {
-      history = found;
-      break;
+  let promptId: string | undefined;
+  let promptSubmitted = false;
+  let interruptPromise: Promise<void> | undefined;
+  const requestInterrupt = () => {
+    if (!promptSubmitted || interruptPromise) return interruptPromise;
+    interruptPromise = interruptComfyUI(baseUrl);
+    return interruptPromise;
+  };
+  const onAbort = () => { void requestInterrupt(); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    throwIfAborted(signal);
+    promptSubmitted = true;
+    const queued = asRecord(await fetchJson(`${baseUrl}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: graph, client_id: "zane-aigc-studio" }),
+    }, signal));
+    promptId = typeof queued?.prompt_id === "string" ? queued.prompt_id : undefined;
+    if (!promptId) {
+      const details = Array.isArray(queued?.node_errors) ? JSON.stringify(queued.node_errors) : "ComfyUI 未返回任务 ID";
+      throw new Error(details);
     }
+    throwIfAborted(signal);
+    const deadline = Date.now() + 10 * 60 * 1000;
+    let history: unknown;
+    while (Date.now() < deadline) {
+      await delayWithAbort(1000, signal);
+      const found = asRecord(await fetchJson(`${baseUrl}/history/${encodeURIComponent(promptId)}`, {}, signal));
+      if (found && found[promptId]) {
+        history = found;
+        break;
+      }
+    }
+    if (!history) throw new Error("等待 ComfyUI 任务完成超时");
+    const historyEntry = asRecord(asRecord(history)?.[promptId]);
+    const status = asRecord(historyEntry?.status);
+    if (status?.status_str === "error") {
+      const messages = Array.isArray(status.messages) ? status.messages : [];
+      const executionError = messages.find((item) => Array.isArray(item) && item[0] === "execution_error");
+      const detail = Array.isArray(executionError) ? asRecord(executionError[1]) : undefined;
+      const errorMessage = typeof detail?.exception_message === "string" ? detail.exception_message : "ComfyUI 节点执行失败";
+      const nodeType = typeof detail?.node_type === "string" ? `（${detail.node_type}）` : "";
+      throw new Error(`ComfyUI 执行失败${nodeType}：${errorMessage}`);
+    }
+    const outputValues: Record<string, JsonValue> = {};
+    for (const binding of bindings.filter((item) => item.direction === "output")) {
+      const declared = step.outputs?.find((output) => output.key === binding.key);
+      const type = declared?.type ?? binding.type;
+      outputValues[binding.key] = readComfyOutputValue(history, promptId, binding.nodeId, binding.property, type);
+    }
+    return outputValues;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (signal?.aborted) await requestInterrupt();
   }
-  if (!history) throw new Error("等待 ComfyUI 任务完成超时");
-  const historyEntry = asRecord(asRecord(history)?.[promptId]);
-  const status = asRecord(historyEntry?.status);
-  if (status?.status_str === "error") {
-    const messages = Array.isArray(status.messages) ? status.messages : [];
-    const executionError = messages.find((item) => Array.isArray(item) && item[0] === "execution_error");
-    const detail = Array.isArray(executionError) ? asRecord(executionError[1]) : undefined;
-    const errorMessage = typeof detail?.exception_message === "string" ? detail.exception_message : "ComfyUI 节点执行失败";
-    const nodeType = typeof detail?.node_type === "string" ? `（${detail.node_type}）` : "";
-    throw new Error(`ComfyUI 执行失败${nodeType}：${errorMessage}`);
-  }
-  const outputValues: Record<string, JsonValue> = {};
-  for (const binding of bindings.filter((item) => item.direction === "output")) {
-    const declared = step.outputs?.find((output) => output.key === binding.key);
-    const type = declared?.type ?? binding.type;
-    outputValues[binding.key] = readComfyOutputValue(history, promptId, binding.nodeId, binding.property, type);
-  }
-  return outputValues;
 }
 
-async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>) {
+async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, signal?: AbortSignal) {
+  throwIfAborted(signal);
   const profile = step.hermesProfile;
   if (!profile || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(profile)) throw new Error(`${step.name} 的 Hermes Profile 无效`);
   const outputs = step.outputs ?? [];
@@ -961,6 +1321,7 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
     timeout: 10 * 60 * 1000,
     windowsHide: true,
     maxBuffer: 10 * 1024 * 1024,
+    signal,
   });
   const output = stdout.trim();
   const result = outputs.length > 1 ? asRecord(parseHermesJson(output)) : undefined;
@@ -976,8 +1337,127 @@ app.get("/api/health", (_request, response) => {
   response.json({ status: "ok" });
 });
 
+app.post("/api/files/pick", async (request, response) => {
+  const type = request.body?.type;
+  if (type !== "image" && type !== "video") {
+    response.status(400).json({ error: "只支持选择图像或视频文件" });
+    return;
+  }
+  if (process.platform !== "win32") {
+    response.status(501).json({ error: "本机路径选择器目前仅支持 Windows，请手动输入资源 URL 或文件路径" });
+    return;
+  }
+
+  const title = type === "image" ? "选择图像文件" : "选择视频文件";
+  const filter = type === "image"
+    ? "图像文件|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.tif;*.tiff|所有文件|*.*"
+    : "视频文件|*.mp4;*.mov;*.webm;*.mkv;*.avi;*.m4v|所有文件|*.*";
+  const script = [
+    "$utf8 = New-Object System.Text.UTF8Encoding($false)",
+    "[Console]::OutputEncoding = $utf8",
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$dialog = New-Object System.Windows.Forms.OpenFileDialog",
+    `$dialog.Title = '${title}'`,
+    `$dialog.Filter = '${filter}'`,
+    "$dialog.Multiselect = $false",
+    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Write($dialog.FileName) }",
+  ].join("; ");
+
+  try {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-STA", "-Command", script], {
+      windowsHide: true,
+      timeout: 10 * 60 * 1000,
+    });
+    response.json({ path: stdout.trim() || null });
+  } catch {
+    response.status(500).json({ error: "无法打开本机文件选择器" });
+  }
+});
+
 app.get("/api/settings", async (_request, response) => {
   response.json(publicSettings(await readSettings()));
+});
+
+app.get("/api/workflows/runs", async (_request, response) => {
+  const settings = await readSettings();
+  if (!settings.projectDirectory) {
+    response.json({ projectDirectory: "", runs: [] });
+    return;
+  }
+  const runsDirectory = path.join(settings.projectDirectory, ".zane", "runs");
+  let entries;
+  try {
+    entries = await readdir(runsDirectory, { withFileTypes: true });
+  } catch {
+    response.json({ projectDirectory: settings.projectDirectory, runs: [] });
+    return;
+  }
+  const runs = (await Promise.all(entries
+    .filter((entry) => entry.isDirectory() && isRunId(entry.name))
+    .map((entry) => readRunRecord(settings.projectDirectory, entry.name))))
+    .filter((run): run is NonNullable<typeof run> => Boolean(run))
+    .map((run) => ({
+      runId: run.runId,
+      sceneId: run.sceneId,
+      workflowName: run.workflowName,
+      status: run.status,
+      startedAt: run.startedAt,
+      ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
+      ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
+      stepCount: run.steps.length,
+      outputCount: run.outputs.length,
+      ...(run.error ? { error: run.error } : {}),
+      artifacts: run.artifacts,
+    }))
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    .slice(0, 200);
+  response.json({ projectDirectory: settings.projectDirectory, runs });
+});
+
+app.get("/api/workflows/runs/:runId", async (request, response) => {
+  const settings = await readSettings();
+  const { runId } = request.params;
+  if (!isRunId(runId)) {
+    response.status(400).json({ error: "运行记录编号无效" });
+    return;
+  }
+  if (!settings.projectDirectory) {
+    response.status(400).json({ error: "请先在集成连接中配置项目目录" });
+    return;
+  }
+  const run = await readRunRecord(settings.projectDirectory, runId);
+  if (!run) {
+    response.status(404).json({ error: "没有找到这条运行记录" });
+    return;
+  }
+  response.json(run);
+});
+
+app.get("/api/workflows/runs/:runId/media/:filename", async (request, response) => {
+  const settings = await readSettings();
+  const { runId, filename } = request.params;
+  if (!isRunId(runId) || !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(filename) || filename.includes("..")) {
+    response.status(400).json({ error: "归档媒体路径无效" });
+    return;
+  }
+  if (!settings.projectDirectory) {
+    response.status(404).json({ error: "项目目录未配置" });
+    return;
+  }
+  const mediaDirectory = path.resolve(runArtifactPaths(settings.projectDirectory, runId).directory, "outputs", "media");
+  const mediaPath = path.resolve(mediaDirectory, filename);
+  if (!mediaPath.startsWith(`${mediaDirectory}${path.sep}`)) {
+    response.status(400).json({ error: "归档媒体路径无效" });
+    return;
+  }
+  try {
+    const bytes = await readFile(mediaPath);
+    const extension = path.extname(filename).toLowerCase();
+    const contentType = ({ ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif", ".mp4": "video/mp4", ".webm": "video/webm" } as Record<string, string>)[extension] ?? "application/octet-stream";
+    response.type(contentType).send(bytes);
+  } catch {
+    response.status(404).json({ error: "没有找到归档媒体文件" });
+  }
 });
 
 app.get("/api/hermes/profiles", async (_request, response) => {
@@ -1099,6 +1579,14 @@ app.post("/api/workflows/run", async (request, response) => {
     response.status(400).json({ error: "工作流规模超出限制" });
     return;
   }
+  const validatedWorkflow = workflow;
+  const runId = randomUUID();
+  const runController = new AbortController();
+  const abortRun = () => {
+    if (!response.writableEnded) runController.abort();
+  };
+  request.once("aborted", abortRun);
+  response.once("close", abortRun);
   const inputValues = rawInputs as Record<string, JsonValue>;
   for (const field of workflow.inputs) {
     const value = inputValues[field.key];
@@ -1123,13 +1611,42 @@ app.post("/api/workflows/run", async (request, response) => {
   }
 
   const settings = await readSettings();
+  const startedAt = new Date().toISOString();
+  let artifacts: RunArtifactPaths | undefined;
+  try {
+    artifacts = await prepareRunArtifacts(settings, runId, workflow, inputValues, startedAt);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "无法创建项目运行目录";
+    response.status(400).json({ error: message });
+    return;
+  }
   const values = new Map<string, Record<string, JsonValue>>();
   const types = new Map<string, string>();
   for (const field of workflow.inputs) types.set(`input.${field.key}`, field.type === "textarea" || field.type === "select" ? "text" : field.type);
-  const steps: Array<{ stepId: string; name: string; status: "completed" | "skipped" | "failed"; message?: string; outputs?: Record<string, JsonValue> }> = [];
+  const steps: Array<{ stepId: string; name: string; status: "running" | "completed" | "skipped" | "failed"; message?: string; outputs?: Record<string, JsonValue> }> = [];
   let failure = "";
 
+  async function persistRuntime(status: "running" | "completed" | "failed" | "cancelled", finishedAt?: string, archiveWarnings?: string[]) {
+    if (!artifacts) return;
+    await writeJsonFile(artifacts.runtime, {
+      format: "zane-studio.runtime/v1",
+      runId,
+      status,
+      startedAt,
+      sceneId: validatedWorkflow.sceneId ?? null,
+      workflowName: validatedWorkflow.name ?? "未命名工作流",
+      artifacts: artifactPublicPaths(artifacts),
+      ...(finishedAt ? { finishedAt, durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime() } : {}),
+      ...(archiveWarnings?.length ? { archiveWarnings } : {}),
+      steps,
+    });
+  }
+
   for (let index = 0; index < workflow.steps.length; index += 1) {
+    if (runController.signal.aborted) {
+      failure = "运行已取消";
+      break;
+    }
     const step = workflow.steps[index];
     if (!step || typeof step.id !== "string" || typeof step.name !== "string") {
       failure = `第 ${index + 1} 步配置无效`;
@@ -1144,11 +1661,14 @@ app.post("/api/workflows/run", async (request, response) => {
       }
       if (condition !== step.runCondition.expectedResult) {
         steps.push({ stepId: step.id, name: step.name, status: "skipped", message: "执行条件未满足" });
+        await persistRuntime("running");
         continue;
       }
     }
 
     try {
+      steps.push({ stepId: step.id, name: step.name, status: "running" });
+      await persistRuntime("running");
       let outputs: Record<string, JsonValue> = {};
       if (step.kind === "control") {
         const control = step.control;
@@ -1156,20 +1676,51 @@ app.post("/api/workflows/run", async (request, response) => {
         const results = control.rules.map((rule) => evaluateCondition(rule, inputValues, values, types));
         outputs = { result: control.match === "all" ? results.every(Boolean) : results.some(Boolean) };
       } else if (step.kind === "hermes") {
-        outputs = await runHermesStep(step, inputValues, values);
+        outputs = await runHermesStep(step, inputValues, values, runController.signal);
       } else if (step.kind === "comfyui") {
-        outputs = await runComfyUIStep(step, inputValues, values, settings.comfyuiBaseUrl);
+        outputs = await comfyuiQueue.run(
+          () => runComfyUIStep(step, inputValues, values, settings.comfyuiBaseUrl, runController.signal, workflow.inputs),
+          runController.signal,
+        );
       } else {
         throw new Error(`暂不支持执行方式：${step.kind}`);
       }
       values.set(step.id, outputs);
       for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, output.type);
-      steps.push({ stepId: step.id, name: step.name, status: "completed", outputs });
+      steps[steps.length - 1] = { stepId: step.id, name: step.name, status: "completed", outputs };
+      await persistRuntime("running");
     } catch (error) {
+      if (runController.signal.aborted) {
+        failure = "运行已取消";
+        break;
+      }
       failure = error instanceof Error ? error.message : `${step.name} 执行失败`;
-      steps.push({ stepId: step.id, name: step.name, status: "failed", message: failure });
+      steps[steps.length - 1] = { stepId: step.id, name: step.name, status: "failed", message: failure };
+      await persistRuntime("running");
       break;
     }
+  }
+
+  if (runController.signal.aborted) {
+    const finishedAt = new Date().toISOString();
+    await persistRuntime("cancelled", finishedAt);
+    if (artifacts) {
+      await writeJsonFile(artifacts.output, {
+        format: "zane-studio.output/v1",
+        runId,
+        status: "cancelled",
+        startedAt,
+        finishedAt,
+        durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime(),
+        steps,
+        outputs: [],
+        error: "运行已取消",
+      });
+    }
+    if (!response.writableEnded && !response.destroyed) {
+      response.status(499).json({ runId, status: "cancelled", steps, outputs: [], error: "运行已取消", artifacts: artifactPublicPaths(artifacts) });
+    }
+    return;
   }
 
   const finalOutputs = workflow.outputs.map((output) => {
@@ -1184,13 +1735,41 @@ app.post("/api/workflows/run", async (request, response) => {
       return { key: output.key, label: output.label ?? output.key, type: output.type, value: null };
     }
   });
-  response.json({
-    runId: randomUUID(),
-    status: failure ? "failed" : "completed",
+  const mediaCache = new Map<string, JsonValue>();
+  const archiveWarnings: string[] = [];
+  const archivedOutputs = await Promise.all(finalOutputs.map(async (output) => ({
+    ...output,
+    value: await archiveOutputMedia(output.value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
+  })));
+  const archivedSteps = await Promise.all(steps.map(async (step) => step.outputs ? {
+    ...step,
+    outputs: Object.fromEntries(await Promise.all(Object.entries(step.outputs).map(async ([key, value]) => [
+      key,
+      await archiveOutputMedia(value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
+    ] as const))),
+  } : step));
+  steps.splice(0, steps.length, ...archivedSteps);
+
+  const finishedAt = new Date().toISOString();
+  const status = failure ? "failed" as const : "completed" as const;
+  const result = {
+    runId,
+    status,
     steps,
-    outputs: finalOutputs,
+    outputs: archivedOutputs,
+    startedAt,
+    finishedAt,
+    durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime(),
     ...(failure ? { error: failure } : {}),
+    ...(archiveWarnings.length ? { archiveWarnings } : {}),
+    artifacts: artifactPublicPaths(artifacts),
+  };
+  await writeJsonFile(artifacts.output, {
+    format: "zane-studio.output/v1",
+    ...result,
   });
+  await persistRuntime(status, finishedAt, archiveWarnings);
+  response.json(result);
 });
 
 app.put("/api/settings", async (request, response) => {
@@ -1203,10 +1782,17 @@ app.put("/api/settings", async (request, response) => {
   const next: SavedSettings = {
     enabledHermesProfiles: [...new Set(requestedProfiles)],
     comfyuiBaseUrl: normalizeBaseUrl(request.body?.comfyuiBaseUrl, defaults.comfyuiBaseUrl),
+    projectDirectory: normalizeProjectDirectory(request.body?.projectDirectory, current.projectDirectory),
   };
 
-  await mkdir(localDirectory, { recursive: true });
-  await writeFile(settingsFile, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  try {
+    next.projectDirectory = await validateProjectDirectory(next.projectDirectory);
+    await mkdir(localDirectory, { recursive: true });
+    await writeFile(settingsFile, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "项目目录不可写" });
+    return;
+  }
   response.json(publicSettings(next));
 });
 

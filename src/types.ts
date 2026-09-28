@@ -1,6 +1,6 @@
 export type SceneId = "comic" | "commerce" | "text_to_image";
 
-export type PageId = "home" | "history" | "assets" | "connections" | "studio" | "flows";
+export type PageId = "home" | "history" | "runs" | "assets" | "connections" | "studio" | "flows";
 
 export interface SceneModule {
   id: SceneId;
@@ -38,6 +38,7 @@ export interface ConnectorState {
 export interface ConnectionSettings {
   enabledHermesProfiles: string[];
   comfyuiBaseUrl: string;
+  projectDirectory: string;
 }
 
 export interface HermesProfile {
@@ -170,7 +171,7 @@ export interface WorkflowDefinition {
 export interface WorkflowRunStepResult {
   stepId: string;
   name: string;
-  status: "completed" | "skipped" | "failed";
+  status: "running" | "completed" | "skipped" | "failed";
   message?: string;
   outputs?: Record<string, JsonValue>;
 }
@@ -184,10 +185,43 @@ export interface WorkflowRunOutput {
 
 export interface WorkflowRunResult {
   runId: string;
-  status: "completed" | "failed";
+  status: "running" | "completed" | "failed" | "cancelled";
   steps: WorkflowRunStepResult[];
   outputs: WorkflowRunOutput[];
   error?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  archiveWarnings?: string[];
+  artifacts?: WorkflowRunArtifacts;
+}
+
+export interface WorkflowRunArtifacts {
+  directory: string;
+  inputs: string;
+  workflow: string;
+  runtime: string;
+  output: string;
+}
+
+export interface WorkflowRunHistoryItem {
+  runId: string;
+  sceneId: SceneId;
+  workflowName: string;
+  status: WorkflowRunResult["status"];
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  stepCount: number;
+  outputCount: number;
+  error?: string;
+  artifacts: WorkflowRunArtifacts;
+}
+
+export interface WorkflowRunRecord extends WorkflowRunResult {
+  sceneId: SceneId;
+  workflowName: string;
+  inputValues: Record<string, JsonValue>;
 }
 
 export interface ComfyUIWorkflowSummary {

@@ -50,6 +50,22 @@ Vite 默认使用 `5173`，并把 `/api` 代理到 `127.0.0.1:8799`。API 的开
 
 正式环境的连接设置保存在 `APP_DATA_DIR/connections.json`，开发环境仍保存在 `.local/connections.json`。浏览器的工作流和草稿也按访问地址分别保存在各自的 localStorage 中。发布新版本时重新执行 `npm run build`，然后重启 `npm run start`。
 
+## 项目目录与运行归档
+
+首次运行前，在“集成连接”页设置本机项目根目录。运行输入、工作流快照、步骤状态和输出会保存在该目录的 `.zane/runs/<运行 ID>/` 下：
+
+```text
+.zane/runs/<运行 ID>/
+  inputs/input.json       # 本次场景输入
+  inputs/files/           # 可访问的本地图片或视频副本
+  workflow.json           # 本次执行的工作流快照
+  runtime.json            # 运行时间与逐步执行状态
+  outputs/result.json     # 最终输出数据
+  outputs/media/          # ComfyUI 生成媒体副本
+```
+
+也可以通过 `ZANE_PROJECT_DIR` 设置默认项目目录。应用内“运行记录”页可查看输入、状态和结果，并复制单次运行目录路径。运行记录保存在项目目录中，不依赖浏览器草稿存储。
+
 ## 更新正式环境而不覆盖配置
 
 流程配置和草稿目前保存在浏览器中：开发地址 `http://127.0.0.1:5173` 与正式地址 `http://127.0.0.1:8799` 使用不同的 localStorage。重新构建前端、替换 `dist/`、重启 Node 服务都不会清除正式地址的流程配置。正式环境的连接设置则由 `APP_DATA_DIR/connections.json` 持久化。
@@ -63,14 +79,16 @@ Vite 默认使用 `5173`，并把 `/api` 代理到 `127.0.0.1:8799`。API 的开
 
 不要清除正式地址的浏览器站点数据，也不要改用新的域名或端口后再判断配置是否丢失；浏览器会把新地址视为另一份 localStorage。若需要把正式配置迁移到新地址，当前版本需要在浏览器侧单独导出或迁移 localStorage。
 
-`.env.example` 列出了常用配置项。`API_HOST`、`API_PORT`、`APP_DATA_DIR`、`DIST_DIR`、`HERMES_HOME`、`HERMES_BIN`、`COMFYUI_BASE_URL` 用于 API；`VITE_API_PROXY_TARGET` 只用于开发环境代理。
+`.env.example` 列出了常用配置项。`API_HOST`、`API_PORT`、`APP_DATA_DIR`、`DIST_DIR`、`HERMES_HOME`、`HERMES_BIN`、`COMFYUI_BASE_URL`、`ZANE_PROJECT_DIR` 用于 API；`VITE_API_PROXY_TARGET` 只用于开发环境代理。
 
 ## 当前能力
 
 - `流程配置` 使用表单编辑场景输入、按顺序执行的步骤、每步输入/输出和场景最终输出，不提供图形画布。
 - 步骤输入可引用场景字段或前序步骤的输出；最终输出可引用场景字段或任意步骤输出。Hermes 提示词可插入这些引用。
-- 场景输入表单随流程定义生成；流程与草稿保存在浏览器本地存储。
+- 场景输入表单随流程定义生成；流程与草稿保存在浏览器本地存储，运行输入、状态和输出归档到配置的项目目录。
 - 集成页可启用多个 Hermes Profile，并检查本机 Profile Gateway；ComfyUI 使用 `/system_stats` 检查。
+- Hermes 运行不经过全局队列，不同运行请求可以并行启动独立会话；ComfyUI 步骤进入进程级串行队列，自动等待前一个任务结束。
+- 运行中的流程可以点击“取消运行”。客户端会中止请求，Hermes 子进程会收到终止信号，ComfyUI 会调用 `/interrupt`；“继续编辑”会恢复草稿输入和上次运行结果。
 - Hermes Profile 从 `HERMES_HOME` 下的 `config.yaml` 和 `profiles/*/config.yaml` 发现。Hermes 不按 OpenAI 兼容 `/models` 接口探测。若 API 进程找不到 CLI，可设置 `HERMES_BIN` 为 `hermes.exe` 完整路径。
 - ComfyUI 工作流支持直接选择画布（UI）格式；后台在读取和运行时会实时转换为 `/prompt` 所需的 API 图，不需要用户手动导出 API JSON。
 - 连接设置写入 `.local/connections.json`，该目录已加入 `.gitignore`。

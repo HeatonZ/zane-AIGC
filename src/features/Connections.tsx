@@ -1,4 +1,4 @@
-import { Check, ChevronDown, CircleHelp, ExternalLink, LoaderCircle, Save, ServerCog, ShieldCheck, Unplug, X } from "lucide-react";
+import { Check, ChevronDown, CircleHelp, ExternalLink, FolderOpen, LoaderCircle, Save, ServerCog, ShieldCheck, Unplug, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { loadConnectionSettings, loadHermesProfiles, saveConnectionSettings } from "../lib/api";
 import type { ConnectionSettings, ConnectorState, HermesProfile } from "../types";
@@ -11,6 +11,7 @@ interface ConnectionsProps {
 const initialSettings: ConnectionSettings = {
   enabledHermesProfiles: ["default"],
   comfyuiBaseUrl: "http://127.0.0.1:8188",
+  projectDirectory: "",
 };
 
 export default function Connections({ connectors, onRefresh }: ConnectionsProps) {
@@ -48,9 +49,10 @@ export default function Connections({ connectors, onRefresh }: ConnectionsProps)
       const updated = await saveConnectionSettings({
         enabledHermesProfiles: settings.enabledHermesProfiles,
         comfyuiBaseUrl: settings.comfyuiBaseUrl,
+        projectDirectory: settings.projectDirectory,
       });
       setSettings(updated);
-      setNotice("已保存选中的 Hermes Profile 和 ComfyUI 地址。");
+      setNotice("集成设置和项目目录已保存。");
       await onRefresh(updated.enabledHermesProfiles);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存失败，请检查本地 API 服务。 ");
@@ -117,6 +119,16 @@ export default function Connections({ connectors, onRefresh }: ConnectionsProps)
             <label className="field-label" htmlFor="comfyui-url">服务地址</label>
             <input id="comfyui-url" className="text-input mono-input" value={settings.comfyuiBaseUrl} onChange={(event) => setSettings({ ...settings, comfyuiBaseUrl: event.target.value })} disabled={loading} placeholder="http://127.0.0.1:8188" />
             <small className="field-help">检查 ComfyUI 的 /system_stats 接口；默认端口为 8188。</small>
+          </div>
+        </div>
+
+        <div className="connection-section-heading comfy-heading"><div><span className="section-index">03</span><div><h2>项目目录</h2><p>保存运行输入、结果和执行状态</p></div></div><FolderOpen size={17} className="project-directory-icon" /></div>
+        <div className="connection-fields single-field project-directory-fields">
+          <div className="field-group">
+            <label className="field-label" htmlFor="project-directory">项目根目录</label>
+            <input id="project-directory" className="text-input mono-input" value={settings.projectDirectory} onChange={(event) => setSettings({ ...settings, projectDirectory: event.target.value })} disabled={loading} placeholder="例如 F:/projects/my-drama" />
+            <small className="field-help">填写本机的绝对路径。保存时会创建目录并检查写入权限；运行时会写入 <code>.zane/runs/&lt;运行 ID&gt;</code>。</small>
+            <small className="field-help project-layout-help">每次运行包含 <code>inputs/input.json</code>、<code>workflow.json</code>、<code>runtime.json</code> 和 <code>outputs/result.json</code>；生成媒体放在 <code>outputs/media</code>。</small>
           </div>
         </div>
 

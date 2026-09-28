@@ -5,7 +5,7 @@ import type { PageId, SceneId, WorkflowDraft } from "../types";
 interface LibraryProps {
   drafts: WorkflowDraft[];
   onNavigate: (page: PageId) => void;
-  onOpenScene: (scene: SceneId) => void;
+  onOpenScene: (scene: SceneId, draftId?: string) => void;
 }
 
 const visualAssets = [
@@ -29,8 +29,7 @@ export default function Library({ drafts, onNavigate, onOpenScene }: LibraryProp
         ))}
       </div>
       <div className="library-section-heading draft-library-heading"><div><h2>任务草稿</h2><p>{drafts.length ? `${drafts.length} 份已保存` : "已保存的业务构想"}</p></div><button className="text-button" onClick={() => onNavigate("history")}>查看全部 <ArrowUpRight size={14} /></button></div>
-      {drafts.length ? <div className="library-drafts">{drafts.slice(0, 4).map((draft) => <button className="library-draft" key={draft.id} onClick={() => onOpenScene(draft.sceneId)}><span className={`library-draft-icon ${draft.sceneId}`}><Image size={15} /></span><span><strong>{draft.title}</strong><small>{draft.summary}</small></span><ArrowUpRight size={15} /></button>)}</div> : <div className="library-empty"><span className="library-empty-icon"><Image size={18} /></span><strong>素材会出现在这里</strong><span>先从场景工作流创建一份任务草稿。</span><button className="text-button" onClick={() => onOpenScene(scenes[0].id)}>开始创作 <ArrowUpRight size={14} /></button></div>}
+      {drafts.length ? <div className="library-drafts">{drafts.slice(0, 4).map((draft) => <button className="library-draft" key={draft.id} onClick={() => onOpenScene(draft.sceneId, draft.id)}><span className={`library-draft-icon ${draft.sceneId}`}><Image size={15} /></span><span><strong>{draft.title}</strong><small>{draft.summary}</small></span><ArrowUpRight size={15} /></button>)}</div> : <div className="library-empty"><span className="library-empty-icon"><Image size={18} /></span><strong>素材会出现在这里</strong><span>先从场景工作流创建一份任务草稿。</span><button className="text-button" onClick={() => onOpenScene(scenes[0].id)}>开始创作 <ArrowUpRight size={14} /></button></div>}
     </div>
   );
 }
-

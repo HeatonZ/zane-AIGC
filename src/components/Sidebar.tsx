@@ -4,6 +4,7 @@ import {
   Cable,
   Clapperboard,
   Image,
+  History as HistoryIcon,
   LayoutDashboard,
   Orbit,
   Package,
@@ -43,6 +44,9 @@ export default function Sidebar({ page, sceneId, onNavigate, onOpenScene }: Side
         </button>
         <button className={`nav-item ${page === "history" ? "active" : ""}`} onClick={() => onNavigate("history")}>
           <Archive size={17} /><span>任务草稿</span>
+        </button>
+        <button className={`nav-item ${page === "runs" ? "active" : ""}`} onClick={() => onNavigate("runs")}>
+          <HistoryIcon size={17} /><span>运行记录</span>
         </button>
         <button className={`nav-item ${page === "assets" ? "active" : ""}`} onClick={() => onNavigate("assets")}>
           <Boxes size={17} /><span>素材库</span>

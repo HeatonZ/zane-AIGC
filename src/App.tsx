@@ -4,6 +4,7 @@ import Sidebar from "./components/Sidebar";
 import Connections from "./features/Connections";
 import Dashboard from "./features/Dashboard";
 import History from "./features/History";
+import WorkflowRuns from "./features/WorkflowRuns";
 import Library from "./features/Library";
 import Studio from "./features/Studio";
 import { getScene } from "./data/scenes";
@@ -16,6 +17,7 @@ import type { ConnectorState, PageId, SceneId, WorkflowDefinition, WorkflowDraft
 const navLabels: Record<PageId, string> = {
   home: "工作台",
   history: "任务草稿",
+  runs: "运行记录",
   assets: "素材库",
   connections: "集成连接",
   studio: "创作场景",
@@ -30,6 +32,7 @@ const initialConnectors: ConnectorState[] = [
 export default function App() {
   const [page, setPage] = useState<PageId>("home");
   const [sceneId, setSceneId] = useState<SceneId>("comic");
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<WorkflowDraft[]>(() => readDrafts().sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
   const [workflows, setWorkflows] = useState(() => readWorkflows());
   const [optionPresets, setOptionPresets] = useState<WorkflowOptionPreset[]>(() => readOptionPresets());
@@ -76,13 +79,15 @@ export default function App() {
     };
   }, [refreshConnections]);
 
-  function openScene(nextScene: SceneId) {
+  function openScene(nextScene: SceneId, draftId?: string) {
     setSceneId(nextScene);
+    setActiveDraftId(draftId ?? null);
     setPage("studio");
   }
 
   function saveDraft(draft: WorkflowDraft) {
-    const next = [draft, ...drafts];
+    const next = [draft, ...drafts.filter((item) => item.id !== draft.id)]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     setDrafts(next);
     writeDrafts(next);
   }
@@ -126,6 +131,7 @@ export default function App() {
   }
 
   const currentScene = getScene(sceneId);
+  const activeDraft = activeDraftId ? drafts.find((draft) => draft.id === activeDraftId) : undefined;
   const title = page === "studio" ? currentScene.title : navLabels[page];
   const dateLabel = new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
 
@@ -148,8 +154,9 @@ export default function App() {
         <div className="page-scroll">
           <div className="page-content" key={page === "studio" ? `${page}-${sceneId}` : page}>
             {page === "home" && <Dashboard drafts={drafts} connectors={connectors} onNavigate={setPage} onOpenScene={openScene} />}
-            {page === "studio" && <Studio sceneId={sceneId} workflow={workflows[sceneId]} onBack={() => setPage("home")} onSaveDraft={saveDraft} />}
+            {page === "studio" && <Studio sceneId={sceneId} workflow={workflows[sceneId]} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} />}
             {page === "history" && <History drafts={drafts} onNavigate={setPage} onOpenScene={openScene} />}
+            {page === "runs" && <WorkflowRuns onNavigate={setPage} />}
             {page === "assets" && <Library drafts={drafts} onNavigate={setPage} onOpenScene={openScene} />}
             {page === "connections" && <Connections connectors={connectors} onRefresh={refreshConnections} />}
             {page === "flows" && <FlowDesigner sceneId={sceneId} workflow={workflows[sceneId]} optionPresets={optionPresets} onSceneChange={setSceneId} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onOpenConnections={() => setPage("connections")} />}
