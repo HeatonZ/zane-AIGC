@@ -727,6 +727,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
       return {
         ...withoutControl,
         kind,
+        ...(kind === "hermes" ? { inputs: [] } : {}),
         outputs: kind === "hermes" && (leavingControl || !step.outputs.length) ? defaultHermesOutputs() : leavingControl ? [] : step.outputs,
         ...(kind === "comfyui" ? { comfyui: step.comfyui ?? { workflowFile: "", bindings: [] }, hermesProfile: undefined } : {}),
         ...(kind === "hermes" ? { hermesProfile: step.hermesProfile ?? enabledProfiles[0] ?? profiles[0]?.id ?? "" } : {}),
@@ -1015,7 +1016,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
               </div>}
             </div>}
 
-            {selectedStep.kind !== "comfyui" && selectedStep.kind !== "control" && <div className="designer-subsection">
+            {selectedStep.kind === "manual" && <div className="designer-subsection">
               <div className="designer-subsection-heading"><div><h3>步骤输入</h3><p>为当前步骤选择场景输入或前序输出</p></div><span>{selectedStep.inputs.length} 项映射</span></div>
               {selectedStep.inputs.map((input, index) => <div className="step-input-row" key={`step-input-${index}`}>
                 <div className="step-input-labels"><DeferredInput className="text-input" value={input.label} onCommit={(value) => setStepInput(index, "label", value)} aria-label="输入标签" placeholder="输入名称" /><DeferredInput className="text-input" value={input.key} onCommit={(value) => setStepInput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输入 key" placeholder="step_input" /></div>
