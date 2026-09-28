@@ -1,5 +1,5 @@
-import { cloneDefaultWorkflows } from "../data/workflows";
-import type { SceneId, WorkflowDefinition, WorkflowOptionPreset, WorkflowStepDefinition } from "../types";
+import { cloneDefaultWorkflows, createSceneWorkflow } from "../data/workflows";
+import type { SceneId, SceneModule, WorkflowDefinition, WorkflowOptionPreset, WorkflowStepDefinition } from "../types";
 
 const storageKey = "zane-studio:workflows:v1";
 const optionPresetStorageKey = "zane-studio:option-presets:v1";
@@ -63,26 +63,25 @@ function legacyOptionPresets(): WorkflowOptionPreset[] {
   try {
     const saved = window.localStorage.getItem(storageKey);
     if (!saved) return [];
-    const parsed = JSON.parse(saved) as Partial<Record<SceneId, LegacyWorkflowDefinition>>;
+    const parsed = JSON.parse(saved) as Record<string, LegacyWorkflowDefinition>;
     return (Object.values(parsed) as Array<LegacyWorkflowDefinition | undefined>).flatMap((workflow) => normalizeOptionPresets(workflow?.optionPresets));
   } catch {
     return [];
   }
 }
 
-export function readWorkflows(): Record<SceneId, WorkflowDefinition> {
+export function readWorkflows(scenes: SceneModule[]): Record<SceneId, WorkflowDefinition> {
   try {
     const saved = window.localStorage.getItem(storageKey);
-    if (!saved) return cloneDefaultWorkflows();
+    const parsed = saved ? JSON.parse(saved) as Record<string, LegacyWorkflowDefinition> : {};
     const defaults = cloneDefaultWorkflows();
-    const parsed = JSON.parse(saved) as Partial<Record<SceneId, LegacyWorkflowDefinition>>;
-    return (Object.keys(defaults) as SceneId[]).reduce((result, sceneId) => {
-      const workflow = parsed[sceneId] ?? defaults[sceneId];
-      result[sceneId] = normalizeWorkflow(workflow);
-      return result;
-    }, {} as Record<SceneId, WorkflowDefinition>);
+    return Object.fromEntries(scenes.map((scene) => {
+      const workflow = parsed[scene.id] ?? defaults[scene.id] ?? createSceneWorkflow(scene);
+      return [scene.id, normalizeWorkflow(workflow)];
+    }));
   } catch {
-    return cloneDefaultWorkflows();
+    const defaults = cloneDefaultWorkflows();
+    return Object.fromEntries(scenes.map((scene) => [scene.id, defaults[scene.id] ?? createSceneWorkflow(scene)]));
   }
 }
 

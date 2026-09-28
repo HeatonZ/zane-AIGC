@@ -8,11 +8,13 @@ import WorkflowRuns from "./features/WorkflowRuns";
 import Library from "./features/Library";
 import Studio from "./features/Studio";
 import { getScene } from "./data/scenes";
+import { createSceneWorkflow } from "./data/workflows";
 import { checkConnections } from "./lib/api";
 import { readDrafts, writeDrafts } from "./lib/drafts";
+import { createScene, readScenes, writeScenes } from "./lib/sceneStorage";
 import { readOptionPresets, readWorkflows, writeOptionPresets, writeWorkflows } from "./lib/workflowStorage";
 import FlowDesigner from "./features/FlowDesigner";
-import type { ConnectorState, PageId, SceneId, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset } from "./types";
+import type { ConnectorState, PageId, SceneDetails, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset } from "./types";
 
 const navLabels: Record<PageId, string> = {
   home: "工作台",
@@ -31,10 +33,11 @@ const initialConnectors: ConnectorState[] = [
 
 export default function App() {
   const [page, setPage] = useState<PageId>("home");
-  const [sceneId, setSceneId] = useState<SceneId>("comic");
+  const [scenes, setScenes] = useState<SceneModule[]>(() => readScenes());
+  const [sceneId, setSceneId] = useState<SceneId>(() => readScenes()[0]?.id ?? "");
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<WorkflowDraft[]>(() => readDrafts().sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
-  const [workflows, setWorkflows] = useState(() => readWorkflows());
+  const [workflows, setWorkflows] = useState(() => readWorkflows(readScenes()));
   const [optionPresets, setOptionPresets] = useState<WorkflowOptionPreset[]>(() => readOptionPresets());
   const [connectors, setConnectors] = useState<ConnectorState[]>(initialConnectors);
   const [refreshing, setRefreshing] = useState(false);
@@ -98,6 +101,45 @@ export default function App() {
     writeWorkflows(next);
   }
 
+  function createWorkspaceScene(details: SceneDetails) {
+    const scene = createScene(details);
+    const nextScenes = [...scenes, scene];
+    const nextWorkflows = { ...workflows, [scene.id]: createSceneWorkflow(scene) };
+    setScenes(nextScenes);
+    writeScenes(nextScenes);
+    setWorkflows(nextWorkflows);
+    writeWorkflows(nextWorkflows);
+    setSceneId(scene.id);
+    setPage("flows");
+  }
+
+  function updateScene(sceneIdToUpdate: SceneId, details: SceneDetails) {
+    const nextScenes = scenes.map((scene) => scene.id === sceneIdToUpdate ? { ...scene, ...details } : scene);
+    setScenes(nextScenes);
+    writeScenes(nextScenes);
+  }
+
+  function deleteScene(sceneIdToDelete: SceneId) {
+    const scene = scenes.find((item) => item.id === sceneIdToDelete);
+    if (!scene) return;
+    const sceneDrafts = drafts.filter((draft) => draft.sceneId === sceneIdToDelete);
+    const draftMessage = sceneDrafts.length ? `以及 ${sceneDrafts.length} 份关联草稿` : "";
+    if (!window.confirm(`确定删除“${scene.title}”吗？这会同时删除该场景的流程配置${draftMessage}。项目目录中的运行归档会保留。`)) return;
+
+    const nextScenes = scenes.filter((item) => item.id !== sceneIdToDelete);
+    const nextWorkflows = Object.fromEntries(Object.entries(workflows).filter(([id]) => id !== sceneIdToDelete));
+    const nextDrafts = drafts.filter((draft) => draft.sceneId !== sceneIdToDelete);
+    setScenes(nextScenes);
+    writeScenes(nextScenes);
+    setWorkflows(nextWorkflows);
+    writeWorkflows(nextWorkflows);
+    setDrafts(nextDrafts);
+    writeDrafts(nextDrafts);
+    if (sceneId === sceneIdToDelete) setSceneId(nextScenes[0]?.id ?? "");
+    if (activeDraftId && sceneDrafts.some((draft) => draft.id === activeDraftId)) setActiveDraftId(null);
+    if (sceneId === sceneIdToDelete && page === "studio") setPage("home");
+  }
+
   function updateOptionPresets(nextOptionPresets: WorkflowOptionPreset[]) {
     const previousIds = new Set(optionPresets.map((preset) => preset.id));
     const nextPresetMap = new Map(nextOptionPresets.map((preset) => [preset.id, preset]));
@@ -130,14 +172,16 @@ export default function App() {
     writeWorkflows(nextWorkflows);
   }
 
-  const currentScene = getScene(sceneId);
+  const currentScene = getScene(sceneId, scenes);
+  const selectedScene = scenes.find((scene) => scene.id === sceneId);
+  const selectedWorkflow = workflows[sceneId];
   const activeDraft = activeDraftId ? drafts.find((draft) => draft.id === activeDraftId) : undefined;
   const title = page === "studio" ? currentScene.title : navLabels[page];
   const dateLabel = new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
 
   return (
     <div className="app-shell">
-      <Sidebar page={page} sceneId={sceneId} onNavigate={setPage} onOpenScene={openScene} />
+      <Sidebar page={page} sceneId={sceneId} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} />
       <main className="main-column">
         <header className="topbar">
           <div className="topbar-context"><span className="topbar-workspace"><span className="workspace-dot" />本地工作区</span><ChevronRight size={14} /><span>{title}</span></div>
@@ -153,13 +197,13 @@ export default function App() {
 
         <div className="page-scroll">
           <div className="page-content" key={page === "studio" ? `${page}-${sceneId}` : page}>
-            {page === "home" && <Dashboard drafts={drafts} connectors={connectors} onNavigate={setPage} onOpenScene={openScene} />}
-            {page === "studio" && <Studio sceneId={sceneId} workflow={workflows[sceneId]} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} />}
-            {page === "history" && <History drafts={drafts} onNavigate={setPage} onOpenScene={openScene} />}
-            {page === "runs" && <WorkflowRuns onNavigate={setPage} />}
-            {page === "assets" && <Library drafts={drafts} onNavigate={setPage} onOpenScene={openScene} />}
+            {page === "home" && <Dashboard drafts={drafts} scenes={scenes} connectors={connectors} onNavigate={setPage} onOpenScene={openScene} onCreateScene={createWorkspaceScene} onUpdateScene={updateScene} onDeleteScene={deleteScene} />}
+            {page === "studio" && selectedScene && selectedWorkflow && <Studio sceneId={sceneId} scene={selectedScene} workflow={selectedWorkflow} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} />}
+            {page === "history" && <History drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} />}
+            {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} />}
+            {page === "assets" && <Library drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} />}
             {page === "connections" && <Connections connectors={connectors} onRefresh={refreshConnections} />}
-            {page === "flows" && <FlowDesigner sceneId={sceneId} workflow={workflows[sceneId]} optionPresets={optionPresets} onSceneChange={setSceneId} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onOpenConnections={() => setPage("connections")} />}
+            {page === "flows" && selectedScene && selectedWorkflow && <FlowDesigner sceneId={sceneId} scenes={scenes} workflow={selectedWorkflow} optionPresets={optionPresets} onSceneChange={setSceneId} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onOpenConnections={() => setPage("connections")} />}
           </div>
           <footer className="app-footer"><span>在本地专注创作</span><span><Command size={12} /> ZANE STUDIO</span></footer>
         </div>

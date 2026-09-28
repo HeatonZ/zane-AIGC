@@ -1,9 +1,10 @@
 import { ArrowRight, Archive, ArrowUpRight, Clock3, FileText, Sparkles } from "lucide-react";
 import { getScene } from "../data/scenes";
-import type { PageId, SceneId, WorkflowDraft } from "../types";
+import type { PageId, SceneId, SceneModule, WorkflowDraft } from "../types";
 
 interface HistoryProps {
   drafts: WorkflowDraft[];
+  scenes: SceneModule[];
   onNavigate: (page: PageId) => void;
   onOpenScene: (scene: SceneId, draftId?: string) => void;
 }
@@ -12,7 +13,7 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
-export default function History({ drafts, onNavigate, onOpenScene }: HistoryProps) {
+export default function History({ drafts, scenes, onNavigate, onOpenScene }: HistoryProps) {
   return (
     <div className="history-page">
       <div className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-line" />WORKSPACE RECORDS</div><h1>任务草稿</h1><p className="page-subtitle">在本地继续整理你保存的业务方案。</p></div><button className="button button-outline" onClick={() => onNavigate("home")}><ArrowUpRight size={15} />浏览场景</button></div>
@@ -20,7 +21,7 @@ export default function History({ drafts, onNavigate, onOpenScene }: HistoryProp
       {drafts.length ? (
         <div className="history-list">
           {drafts.map((draft) => {
-            const scene = getScene(draft.sceneId);
+            const scene = getScene(draft.sceneId, scenes);
             return (
               <article className="history-row" key={draft.id}>
                 <span className={`history-type-icon ${scene.accent}`}><Sparkles size={17} /></span>

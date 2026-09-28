@@ -1,6 +1,6 @@
-import type { SceneId, WorkflowDefinition } from "../types";
+import type { SceneId, SceneModule, WorkflowDefinition } from "../types";
 
-export const defaultWorkflows: Record<SceneId, WorkflowDefinition> = {
+export const defaultWorkflows: Record<string, WorkflowDefinition> = {
   comic: {
     sceneId: "comic",
     name: "漫剧制作流程",
@@ -153,4 +153,26 @@ export const defaultWorkflows: Record<SceneId, WorkflowDefinition> = {
 
 export function cloneDefaultWorkflows() {
   return structuredClone(defaultWorkflows);
+}
+
+export function createSceneWorkflow(scene: SceneModule): WorkflowDefinition {
+  return {
+    sceneId: scene.id as SceneId,
+    name: `${scene.title}流程`,
+    inputs: [
+      { key: "prompt", label: "提示词", type: "textarea", required: true, placeholder: "描述希望生成的内容" },
+    ],
+    steps: [
+      {
+        id: "generate",
+        name: "内容生成",
+        kind: "comfyui",
+        comfyui: { workflowFile: "", bindings: [] },
+        inputs: [{ key: "prompt", label: "提示词", sourceRef: "input.prompt" }],
+        outputs: [{ key: "result", label: "生成结果", type: "image" }],
+        promptTemplate: "",
+      },
+    ],
+    outputs: [{ key: "result", label: "生成结果", type: "image", sourceRef: "step.generate.outputs.result" }],
+  };
 }

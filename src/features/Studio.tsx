@@ -1,12 +1,12 @@
 import { ArrowLeft, Check, ChevronDown, CircleHelp, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Package, Play, Save, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from "react";
-import { scenes } from "../data/scenes";
 import { loadConnectionSettings, pickLocalMediaFile, runWorkflow } from "../lib/api";
 import WorkflowRunPanel from "../components/WorkflowRunPanel";
-import type { JsonValue, PageId, SceneId, WorkflowDefinition, WorkflowDraft, WorkflowInputField, WorkflowRunResult } from "../types";
+import type { JsonValue, PageId, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowInputField, WorkflowRunResult } from "../types";
 
 interface StudioProps {
   sceneId: SceneId;
+  scene: SceneModule;
   workflow: WorkflowDefinition;
   draft?: WorkflowDraft;
   onNavigate: (page: PageId) => void;
@@ -74,8 +74,7 @@ function DynamicField({
   );
 }
 
-export default function Studio({ sceneId, workflow, draft, onNavigate, onBack, onSaveDraft }: StudioProps) {
-  const scene = scenes.find((item) => item.id === sceneId) ?? scenes[0];
+export default function Studio({ sceneId, scene, workflow, draft, onNavigate, onBack, onSaveDraft }: StudioProps) {
   const [values, setValues] = useState<Record<string, string>>(() => draftInputValues(workflow, draft));
   const [saved, setSaved] = useState(false);
   const [formError, setFormError] = useState("");

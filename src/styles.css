@@ -92,6 +92,28 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .button-outline:hover { color: #263423; background: #f9faf7; border-color: #cbd3c4; }
 .button-small { min-height: 31px; color: #4e6148; background: #f5f7f1; border: 1px solid #e4e9dc; }
 .button-small:hover { background: #ebf0e3; }
+.scene-dialog-backdrop { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(29,35,28,.38); }
+.scene-dialog { width: min(100%, 610px); max-height: min(92vh, 760px); overflow: auto; background: #fff; border: 1px solid #e2e7de; border-radius: 7px; box-shadow: 0 20px 65px rgba(26,34,25,.22); }
+.scene-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 19px 21px 15px; border-bottom: 1px solid #edf0eb; }
+.scene-dialog-heading h2 { color: #30372e; font-size: 15px; font-weight: 600; }
+.scene-dialog-heading p { margin-top: 4px; color: #92998f; font-size: 10px; }
+.scene-editor-form { padding: 17px 21px 0; }
+.scene-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
+.scene-editor-field { display: flex; min-width: 0; flex-direction: column; gap: 6px; padding: 0; color: #667060; font-size: 10px; border: 0; }
+.scene-editor-field > span { display: flex; align-items: center; gap: 6px; }
+.scene-editor-field i { color: #b96250; font-size: 8px; font-style: normal; }
+.scene-editor-field small { color: #9ca399; font-size: 9px; }
+.scene-editor-wide { grid-column: 1 / -1; }
+.scene-editor-textarea { min-height: 69px; resize: vertical; }
+.stage-editor-textarea { min-height: 88px; }
+.scene-accent-field legend { margin-bottom: 7px; }
+.scene-accent-options { display: flex; align-items: center; gap: 15px; min-height: 37px; }
+.scene-accent-options label { display: inline-flex; align-items: center; gap: 6px; color: #60695c; font-size: 10px; cursor: pointer; }
+.scene-accent-options input { width: 13px; height: 13px; margin: 0; accent-color: #6c895d; }
+.accent-swatch { width: 13px; height: 13px; border: 1px solid rgba(0,0,0,.08); border-radius: 50%; }
+.accent-swatch.green { background: #7c9a69; }
+.accent-swatch.coral { background: #d27d67; }
+.scene-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 15px 0 18px; margin-top: 15px; border-top: 1px solid #edf0eb; }
 
 .scene-section { margin-top: 29px; }
 .section-heading { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 13px; }
@@ -101,6 +123,7 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .scene-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
 .scene-card { min-width: 0; overflow: hidden; background: #fff; border: 1px solid #e6e9e2; border-radius: 7px; }
 .scene-cover { position: relative; height: 191px; overflow: hidden; background: #3e4840; }
+.scene-coral .scene-cover { background: #63504a; }
 .scene-cover > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform .4s ease; }
 .scene-card:hover .scene-cover > img { transform: scale(1.025); }
 .scene-cover-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(15,22,18,.08) 0%, rgba(15,22,18,.05) 38%, rgba(15,22,18,.76) 100%); }
@@ -115,9 +138,18 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .scene-stage-list { display: flex; align-items: center; gap: 5px; overflow: hidden; color: #7f867c; font-size: 9px; white-space: nowrap; }
 .scene-stage-list span { display: inline-flex; align-items: center; gap: 5px; }
 .scene-stage-list i { color: #c4c9c1; font-style: normal; }
+.scene-section-actions { display: flex; align-items: center; gap: 12px; }
+.scene-add-button { min-height: 31px; padding: 0 10px; font-size: 9px; }
+.scene-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; }
+.scene-card-actions > div { display: flex; align-items: center; gap: 2px; }
+.scene-card-actions .icon-button { width: 26px; height: 26px; }
+.scene-card-actions .scene-delete-action:hover { color: #a64f43; background: #fbefec; }
+.scene-empty { display: flex; align-items: center; gap: 10px; min-height: 94px; padding: 0 16px; color: #858d82; font-size: 11px; background: #fff; border: 1px dashed #d9dfd5; border-radius: 6px; }
+.scene-empty > svg { color: #718967; }
+.scene-empty .text-button { margin-left: auto; }
 .text-button { display: inline-flex; align-items: center; gap: 6px; padding: 0; color: #536d48; font-size: 10px; font-weight: 600; background: transparent; border: 0; cursor: pointer; }
 .text-button:hover { color: #293e27; }
-.scene-card-bottom .text-button { margin-top: 9px; }
+.scene-card-bottom .text-button { margin-top: 0; }
 .scene-coral .scene-card-bottom .text-button { color: #b65f4d; }
 
 .dashboard-lower { display: grid; grid-template-columns: 1.35fr 1fr; gap: 13px; margin-top: 19px; }
@@ -437,7 +469,12 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
   h1 { font-size: 24px; }
   .welcome-row > .button, .welcome-row > .button-outline { align-self: flex-end; }
   .scene-grid { grid-template-columns: 1fr; }
+  .section-heading { align-items: flex-start; gap: 8px; }
+  .scene-section-actions { gap: 7px; }
+  .scene-section-actions .section-meta { display: none; }
   .scene-cover { height: 205px; }
+  .scene-dialog-backdrop { align-items: flex-end; padding: 10px; }
+  .scene-dialog { max-height: 94vh; }
   .dashboard-lower { grid-template-columns: 1fr; }
   .studio-layout { grid-template-columns: minmax(0, 1fr); }
   .studio-aside { display: grid; grid-template-columns: minmax(120px, .9fr) 1.1fr; align-items: start; gap: 12px; }
@@ -468,6 +505,12 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
   .topbar-context { gap: 5px; font-size: 10px; }
   .topbar-workspace { gap: 5px; }
   .welcome-row { gap: 9px; }
+  .scene-dialog-backdrop { padding: 6px; }
+  .scene-dialog-heading { padding: 15px 15px 12px; }
+  .scene-editor-form { padding: 14px 15px 0; }
+  .scene-editor-grid { grid-template-columns: minmax(0, 1fr); }
+  .scene-editor-wide { grid-column: 1; }
+  .scene-dialog-actions { padding-bottom: 14px; }
   .welcome-row > .button { padding: 0 9px; font-size: 10px; }
   .field-row { grid-template-columns: 1fr; gap: 12px; }
   .studio-input-grid { grid-template-columns: minmax(0, 1fr); }

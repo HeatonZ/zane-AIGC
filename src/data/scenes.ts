@@ -1,6 +1,6 @@
 import type { SceneModule } from "../types";
 
-export const scenes: SceneModule[] = [
+export const defaultScenes: SceneModule[] = [
   {
     id: "text_to_image",
     title: "基础文生图",
@@ -39,6 +39,15 @@ export const scenes: SceneModule[] = [
   },
 ];
 
-export function getScene(sceneId: string | undefined): SceneModule {
-  return scenes.find((scene) => scene.id === sceneId) ?? scenes[0];
+export function getScene(sceneId: string | undefined, availableScenes: SceneModule[] = defaultScenes): SceneModule {
+  return availableScenes.find((scene) => scene.id === sceneId) ?? {
+    id: sceneId ?? "unknown",
+    title: "已删除场景",
+    shortTitle: "已删除场景",
+    summary: "",
+    description: "",
+    cover: "",
+    accent: "green",
+    stages: [],
+  };
 }

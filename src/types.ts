@@ -1,4 +1,4 @@
-export type SceneId = "comic" | "commerce" | "text_to_image";
+export type SceneId = string;
 
 export type PageId = "home" | "history" | "runs" | "assets" | "connections" | "studio" | "flows";
 
@@ -40,6 +40,8 @@ export interface ConnectionSettings {
   comfyuiBaseUrl: string;
   projectDirectory: string;
 }
+
+export type SceneDetails = Omit<SceneModule, "id">;
 
 export interface HermesProfile {
   id: string;

@@ -8,19 +8,20 @@ import {
   LayoutDashboard,
   Orbit,
   Package,
+  Sparkles,
   Workflow,
 } from "lucide-react";
-import { scenes } from "../data/scenes";
-import type { PageId, SceneId } from "../types";
+import type { PageId, SceneId, SceneModule } from "../types";
 
 interface SidebarProps {
   page: PageId;
   sceneId: SceneId;
+  scenes: SceneModule[];
   onNavigate: (page: PageId) => void;
   onOpenScene: (sceneId: SceneId) => void;
 }
 
-export default function Sidebar({ page, sceneId, onNavigate, onOpenScene }: SidebarProps) {
+export default function Sidebar({ page, sceneId, scenes, onNavigate, onOpenScene }: SidebarProps) {
   return (
     <aside className="sidebar">
       <button className="brand" onClick={() => onNavigate("home")} aria-label="返回工作台">
@@ -58,7 +59,7 @@ export default function Sidebar({ page, sceneId, onNavigate, onOpenScene }: Side
         <div className="nav-divider" />
         <div className="nav-section-heading"><span className="nav-section-label">创作场景</span></div>
         {scenes.map((scene, index) => <button className={`nav-item ${page === "studio" && sceneId === scene.id ? "active" : ""}`} key={scene.id} onClick={() => onOpenScene(scene.id)}>
-          {scene.id === "text_to_image" ? <Image size={17} /> : scene.id === "comic" ? <Clapperboard size={17} /> : <Package size={17} />}<span>{scene.title}</span><span className="nav-count">{String(index + 1).padStart(2, "0")}</span>
+          {scene.id === "text_to_image" ? <Image size={17} /> : scene.id === "comic" ? <Clapperboard size={17} /> : scene.id === "commerce" ? <Package size={17} /> : <Sparkles size={17} />}<span>{scene.title}</span><span className="nav-count">{String(index + 1).padStart(2, "0")}</span>
         </button>)}
       </nav>
 

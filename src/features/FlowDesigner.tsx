@@ -17,7 +17,6 @@ import {
 } from "lucide-react";
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
-import { scenes } from "../data/scenes";
 import { loadComfyUINodeInfo, loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesProfiles } from "../lib/api";
 import type {
   ComfyUIBinding,
@@ -28,6 +27,7 @@ import type {
   ComfyUIWorkflowSummary,
   HermesProfile,
   SceneId,
+  SceneModule,
   WorkflowDefinition,
   WorkflowConditionOperator,
   WorkflowConditionRule,
@@ -44,6 +44,7 @@ import type {
 
 interface FlowDesignerProps {
   sceneId: SceneId;
+  scenes: SceneModule[];
   workflow: WorkflowDefinition;
   optionPresets: WorkflowOptionPreset[];
   onSceneChange: (sceneId: SceneId) => void;
@@ -405,7 +406,7 @@ function syncComfySourceFormat(
   return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat: undefined } };
 }
 
-export default function FlowDesigner({ sceneId, workflow, optionPresets, onSceneChange, onChange, onOptionPresetsChange, onOpenConnections }: FlowDesignerProps) {
+export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets, onSceneChange, onChange, onOptionPresetsChange, onOpenConnections }: FlowDesignerProps) {
   const [selection, setSelection] = useState<Selection>({ kind: "inputs" });
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
   const [enabledProfiles, setEnabledProfiles] = useState<string[]>([]);

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getScene } from "../data/scenes";
 import { loadWorkflowRun, loadWorkflowRuns } from "../lib/api";
 import WorkflowRunPanel from "../components/WorkflowRunPanel";
-import type { PageId, WorkflowRunHistoryItem, WorkflowRunRecord } from "../types";
+import type { PageId, SceneModule, WorkflowRunHistoryItem, WorkflowRunRecord } from "../types";
 
 const statusLabels: Record<WorkflowRunHistoryItem["status"], string> = {
   running: "运行中",
@@ -23,7 +23,7 @@ function formatDuration(value?: number) {
   return `${(value / 1000).toFixed(1)} 秒`;
 }
 
-export default function WorkflowRuns({ onNavigate }: { onNavigate: (page: PageId) => void }) {
+export default function WorkflowRuns({ scenes, onNavigate }: { scenes: SceneModule[]; onNavigate: (page: PageId) => void }) {
   const [projectDirectory, setProjectDirectory] = useState("");
   const [runs, setRuns] = useState<WorkflowRunHistoryItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -88,7 +88,7 @@ export default function WorkflowRuns({ onNavigate }: { onNavigate: (page: PageId
           <section className="runs-list" aria-label="运行记录列表">
             <div className="runs-list-heading"><strong>最近运行</strong><span>{runs.length}</span></div>
             {runs.map((run) => {
-              const scene = getScene(run.sceneId);
+              const scene = getScene(run.sceneId, scenes);
               return <button className={`run-history-item ${selectedRunId === run.runId ? "active" : ""}`} key={run.runId} onClick={() => setSelectedRunId(run.runId)}>
                 <span className={`run-history-mark ${scene.accent}`}><Workflow size={16} /></span>
                 <span className="run-history-copy"><span className="run-history-title"><strong>{run.workflowName}</strong><i className={`run-status-dot ${run.status}`} /></span><small>{scene.shortTitle} · {formatDate(run.startedAt)}</small><small>{run.stepCount} 步 · {run.outputCount} 项输出 · {formatDuration(run.durationMs)}</small></span>
@@ -99,7 +99,7 @@ export default function WorkflowRuns({ onNavigate }: { onNavigate: (page: PageId
 
           <section className="run-detail" aria-label="运行详情">
             {detailLoading ? <div className="runs-loading"><LoaderCircle className="spin" size={17} />读取运行详情</div> : selectedRun ? <>
-              <div className="run-detail-heading"><div><span className="eyebrow"><span className="eyebrow-line" />{getScene(selectedRun.sceneId).shortTitle.toUpperCase()}</span><h2>{selectedRun.workflowName}</h2><p><Clock3 size={13} />{formatDate(selectedRun.startedAt ?? "")} · {formatDuration(selectedRun.durationMs)}</p></div><span className={`run-status-label ${selectedRun.status}`}>{statusLabels[selectedRun.status]}</span></div>
+              <div className="run-detail-heading"><div><span className="eyebrow"><span className="eyebrow-line" />{getScene(selectedRun.sceneId, scenes).shortTitle.toUpperCase()}</span><h2>{selectedRun.workflowName}</h2><p><Clock3 size={13} />{formatDate(selectedRun.startedAt ?? "")} · {formatDuration(selectedRun.durationMs)}</p></div><span className={`run-status-label ${selectedRun.status}`}>{statusLabels[selectedRun.status]}</span></div>
               <WorkflowRunPanel result={selectedRun} inputValues={selectedRun.inputValues} />
             </> : <div className="run-detail-empty">选择一条记录查看详情。</div>}
           </section>

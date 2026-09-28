@@ -1,20 +1,28 @@
-import { ArrowRight, ArrowUpRight, Cable, Clock3, Image, Plus, Sparkles } from "lucide-react";
-import { getScene, scenes } from "../data/scenes";
-import type { ConnectorState, PageId, SceneId, WorkflowDraft } from "../types";
+import { ArrowRight, ArrowUpRight, Cable, Clock3, Image, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { getScene } from "../data/scenes";
+import type { ConnectorState, PageId, SceneDetails, SceneId, SceneModule, WorkflowDraft } from "../types";
 import ConnectorBadge, { ConnectorMark } from "../components/ConnectorBadge";
+import SceneEditorDialog from "./SceneEditorDialog";
 
 interface DashboardProps {
   drafts: WorkflowDraft[];
+  scenes: SceneModule[];
   connectors: ConnectorState[];
   onNavigate: (page: PageId) => void;
   onOpenScene: (sceneId: SceneId, draftId?: string) => void;
+  onCreateScene: (details: SceneDetails) => void;
+  onUpdateScene: (sceneId: SceneId, details: SceneDetails) => void;
+  onDeleteScene: (sceneId: SceneId) => void;
 }
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
-export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene }: DashboardProps) {
+export default function Dashboard({ drafts, scenes, connectors, onNavigate, onOpenScene, onCreateScene, onUpdateScene, onDeleteScene }: DashboardProps) {
+  const [creatingScene, setCreatingScene] = useState(false);
+  const [editingScene, setEditingScene] = useState<SceneModule | null>(null);
   const recentDrafts = drafts.slice(0, 3);
   const connectorMap = new Map(connectors.map((connector) => [connector.id, connector]));
 
@@ -26,7 +34,7 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
           <h1>工作台</h1>
           <p className="page-subtitle">把想法带进每一个创作场景。</p>
         </div>
-        <button className="button button-dark" onClick={() => onOpenScene("text_to_image")}>
+        <button className="button button-dark" onClick={() => onOpenScene(scenes[0].id)} disabled={!scenes.length}>
           <Plus size={16} /> 新建创作
         </button>
       </div>
@@ -34,16 +42,16 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
       <section className="scene-section">
         <div className="section-heading">
           <div><h2>创作场景</h2><p>选择一个业务，继续你的工作流</p></div>
-          <span className="section-meta">{String(scenes.length).padStart(2, "0")} 个场景</span>
+          <div className="scene-section-actions"><span className="section-meta">{String(scenes.length).padStart(2, "0")} 个场景</span><button className="button button-outline scene-add-button" onClick={() => setCreatingScene(true)}><Plus size={14} />添加场景</button></div>
         </div>
-        <div className="scene-grid">
+        {scenes.length ? <div className="scene-grid">
           {scenes.map((scene, index) => (
             <article className={`scene-card scene-${scene.accent}`} key={scene.id}>
               <div className="scene-cover">
-                <img src={scene.cover} alt="" style={{ objectPosition: scene.coverPosition }} />
+                {scene.cover && <img src={scene.cover} alt="" style={{ objectPosition: scene.coverPosition }} />}
                 <div className="scene-cover-shade" />
                 <span className="scene-number">0{index + 1}</span>
-                <span className="scene-category">{scene.id === "text_to_image" ? "IMAGE GENERATION" : scene.id === "comic" ? "STORY & MOTION" : "PRODUCT VISUALS"}</span>
+                <span className="scene-category">{scene.id === "text_to_image" ? "IMAGE GENERATION" : scene.id === "comic" ? "STORY & MOTION" : scene.id === "commerce" ? "PRODUCT VISUALS" : "CUSTOM WORKFLOW"}</span>
                 <button className="scene-open" onClick={() => onOpenScene(scene.id)} aria-label={`打开${scene.title}`}>
                   <ArrowUpRight size={19} />
                 </button>
@@ -58,13 +66,11 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
                     <span key={stage}>{stage}{stageIndex < scene.stages.length - 1 && <i>·</i>}</span>
                   ))}
                 </div>
-                <button className="text-button" onClick={() => onOpenScene(scene.id)}>
-                  进入工作流 <ArrowRight size={14} />
-                </button>
+                <div className="scene-card-actions"><button className="text-button" onClick={() => onOpenScene(scene.id)}>进入工作流 <ArrowRight size={14} /></button><div><button className="icon-button" onClick={() => setEditingScene(scene)} title={`编辑${scene.title}`} aria-label={`编辑${scene.title}`}><Pencil size={14} /></button><button className="icon-button scene-delete-action" onClick={() => onDeleteScene(scene.id)} title={`删除${scene.title}`} aria-label={`删除${scene.title}`}><Trash2 size={14} /></button></div></div>
               </div>
             </article>
           ))}
-        </div>
+        </div> : <div className="scene-empty"><Sparkles size={17} /><span>还没有创作场景</span><button className="text-button" onClick={() => setCreatingScene(true)}>添加第一个场景 <ArrowRight size={14} /></button></div>}
       </section>
 
       <div className="dashboard-lower">
@@ -79,7 +85,7 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
           {recentDrafts.length ? (
             <div className="draft-list">
               {recentDrafts.map((draft) => {
-                const scene = getScene(draft.sceneId);
+                const scene = getScene(draft.sceneId, scenes);
                 return (
                   <button className="draft-row" key={draft.id} onClick={() => onOpenScene(draft.sceneId, draft.id)}>
                     <span className={`draft-thumb ${scene.accent}`}><Sparkles size={16} /></span>
@@ -126,6 +132,12 @@ export default function Dashboard({ drafts, connectors, onNavigate, onOpenScene 
           </button>
         </section>
       </div>
+      {(creatingScene || editingScene) && <SceneEditorDialog scene={editingScene ?? undefined} onClose={() => { setCreatingScene(false); setEditingScene(null); }} onSave={(details) => {
+        if (editingScene) onUpdateScene(editingScene.id, details);
+        else onCreateScene(details);
+        setCreatingScene(false);
+        setEditingScene(null);
+      }} />}
     </div>
   );
 }
