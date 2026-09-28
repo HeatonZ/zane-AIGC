@@ -17,6 +17,9 @@ function normalizeStep(step: StoredWorkflowStep): WorkflowStepDefinition {
   return {
     ...step,
     kind,
+    outputs: kind === "hermes" && !step.outputs?.length
+      ? [{ key: "result", label: "结构化结果", type: "json" }]
+      : step.outputs ?? [],
     comfyui: kind === "comfyui" ? step.comfyui ?? { workflowFile: "", bindings: [] } : step.comfyui,
   };
 }

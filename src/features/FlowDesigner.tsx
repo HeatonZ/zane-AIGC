@@ -244,9 +244,13 @@ function newStep(index: number, profile: string): WorkflowStepDefinition {
     kind: "hermes",
     hermesProfile: profile,
     inputs: [],
-    outputs: [],
+    outputs: [{ key: "result", label: "结构化结果", type: "json" }],
     promptTemplate: "",
   };
+}
+
+function defaultHermesOutputs(): WorkflowStepOutput[] {
+  return [{ key: "result", label: "结构化结果", type: "json" }];
 }
 
 function bindingOutputType(type: WorkflowVariableType): WorkflowStepOutput["type"] {
@@ -723,7 +727,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
       return {
         ...withoutControl,
         kind,
-        outputs: leavingControl ? [] : step.outputs,
+        outputs: kind === "hermes" && (leavingControl || !step.outputs.length) ? defaultHermesOutputs() : leavingControl ? [] : step.outputs,
         ...(kind === "comfyui" ? { comfyui: step.comfyui ?? { workflowFile: "", bindings: [] }, hermesProfile: undefined } : {}),
         ...(kind === "hermes" ? { hermesProfile: step.hermesProfile ?? enabledProfiles[0] ?? profiles[0]?.id ?? "" } : {}),
       };
@@ -762,6 +766,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
       const prior = new Set(priorOptions.map((option) => option.value));
       if (step.inputs.some((input) => !prior.has(input.sourceRef))) messages.push(`${step.name} 存在未连接或失效的输入引用`);
       if (step.kind === "hermes" && !step.hermesProfile) messages.push(`${step.name} 还没有选择 Hermes Profile`);
+      if (step.kind === "hermes" && !step.outputs.length) messages.push(`${step.name} 至少需要定义一个步骤输出`);
       if (step.outputs.some((output) => !output.key.trim())) messages.push(`${step.name} 的输出需要设置字段 key`);
       if (new Set(step.outputs.map((output) => output.key.trim())).size !== step.outputs.length) messages.push(`${step.name} 的输出 key 不能重复`);
       if (step.runCondition && !workflow.steps.slice(0, index).some((candidate) => candidate.id === step.runCondition?.conditionStepId && candidate.kind === "control")) {

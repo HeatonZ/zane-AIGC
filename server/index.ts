@@ -1312,11 +1312,14 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
   const profile = step.hermesProfile;
   if (!profile || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(profile)) throw new Error(`${step.name} 的 Hermes Profile 无效`);
   const outputs = step.outputs ?? [];
+  if (!outputs.length) throw new Error(`${step.name} 至少需要定义一个步骤输出`);
+  const outputKeys = outputs.map((item) => item.key.trim());
+  if (outputKeys.some((key) => !/^[a-zA-Z0-9_]+$/.test(key))) throw new Error(`${step.name} 的输出 key 无效`);
+  if (new Set(outputKeys).size !== outputKeys.length) throw new Error(`${step.name} 的输出 key 不能重复`);
   const prompt = resolvePromptTemplate(step.promptTemplate ?? "", inputs, stepValues);
   if (!prompt.trim()) throw new Error(`${step.name} 的提示词为空`);
-  const executionPrompt = outputs.length > 1
-    ? `${prompt}\n\n请将最终结果输出为 JSON 对象，字段名为：${outputs.map((item) => item.key).join("、")}。只输出 JSON，不要附加说明。`
-    : prompt;
+  const outputInstructions = outputs.map((item, index) => `${index + 1}. ${item.key}（${item.label ?? item.key}，类型：${item.type}）`).join("\n");
+  const executionPrompt = `${prompt}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
   const { stdout } = await execFileAsync(hermesBinary, ["-p", profile, "-z", executionPrompt], {
     timeout: 10 * 60 * 1000,
     windowsHide: true,
@@ -1324,10 +1327,13 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
     signal,
   });
   const output = stdout.trim();
-  const result = outputs.length > 1 ? asRecord(parseHermesJson(output)) : undefined;
-  if (outputs.length > 1 && !result) throw new Error("Hermes 多字段输出需要是 JSON 对象");
+  const result = asRecord(parseHermesJson(output));
+  if (!result) throw new Error("Hermes 输出必须是 JSON 对象");
+  const declaredKeys = new Set(outputKeys);
+  const extraKeys = Object.keys(result).filter((key) => !declaredKeys.has(key));
+  if (extraKeys.length) throw new Error(`Hermes 输出包含未声明字段：${extraKeys.join("、")}`);
   return Object.fromEntries(outputs.map((item) => {
-    const value = outputs.length > 1 ? result?.[item.key] : output;
+    const value = result[item.key];
     if (value === undefined) throw new Error(`Hermes 输出缺少字段：${item.key}`);
     return [item.key, coerceHermesOutput(value, item.type)];
   }));
