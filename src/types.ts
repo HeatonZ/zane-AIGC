@@ -90,6 +90,13 @@ export interface WorkflowInputField {
   required: boolean;
   placeholder?: string;
   options?: string[];
+  optionPresetId?: string;
+}
+
+export interface WorkflowOptionPreset {
+  id: string;
+  name: string;
+  options: string[];
 }
 
 export interface WorkflowStepInput {
@@ -131,6 +138,7 @@ export interface ComfyUIBinding {
     type: WorkflowFieldType;
     required: boolean;
     options?: string[];
+    optionPresetId?: string;
   };
   sourceOutputFormat?: {
     stepId: string;
@@ -155,6 +163,7 @@ export interface WorkflowDefinition {
   sceneId: SceneId;
   name: string;
   inputs: WorkflowInputField[];
+  optionPresets?: WorkflowOptionPreset[];
   steps: WorkflowStepDefinition[];
   outputs: WorkflowOutputField[];
 }

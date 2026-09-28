@@ -34,6 +34,7 @@ import type {
   WorkflowControlConfig,
   WorkflowFieldType,
   WorkflowInputField,
+  WorkflowOptionPreset,
   WorkflowOutputField,
   WorkflowStepDefinition,
   WorkflowStepKind,
@@ -211,6 +212,24 @@ function newInputField(index: number): WorkflowInputField {
   return { key: `input_${index}`, label: "新输入", type: "text", required: false };
 }
 
+function newOptionPreset(index: number): WorkflowOptionPreset {
+  return {
+    id: `option_preset_${Date.now().toString(36)}_${index}`,
+    name: `选项预设 ${index}`,
+    options: [],
+  };
+}
+
+function sameOptions(left: string[] | undefined, right: string[] | undefined) {
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((option, index) => option === right[index]);
+}
+
+function matchingOptionPresetId(workflow: WorkflowDefinition, options?: string[]) {
+  if (!options?.length) return undefined;
+  return workflow.optionPresets?.find((preset) => sameOptions(preset.options, options))?.id;
+}
+
 function newOutputField(index: number): WorkflowOutputField {
   return { key: `output_${index}`, label: "新输出", type: "text", sourceRef: "" };
 }
@@ -293,8 +312,8 @@ function restoreComfySourceInput(workflow: WorkflowDefinition, sourceRef: string
     ...workflow,
     inputs: workflow.inputs.map((field) => {
       if (field.key !== inputKey) return field;
-      const { options: _options, ...withoutOptions } = field;
-      return { ...withoutOptions, type: format.type, required: format.required, ...(format.options ? { options: format.options } : {}) };
+      const { options: _options, optionPresetId: _optionPresetId, ...withoutOptions } = field;
+      return { ...withoutOptions, type: format.type, required: format.required, ...(format.options ? { options: format.options } : {}), ...(format.optionPresetId ? { optionPresetId: format.optionPresetId } : {}) };
     }),
   };
 }
@@ -342,18 +361,19 @@ function syncComfySourceFormat(
     if (!field) return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat: undefined } };
     const sourceInputFormat = sameInput && previous.sourceInputFormat
       ? previous.sourceInputFormat
-      : { type: field.type, required: field.required, ...(field.options ? { options: field.options } : {}) };
+      : { type: field.type, required: field.required, ...(field.options ? { options: field.options } : {}), ...(field.optionPresetId ? { optionPresetId: field.optionPresetId } : {}) };
     const inputType: WorkflowFieldType = property?.options?.length ? "select" : property!.type;
     updatedWorkflow = {
       ...updatedWorkflow,
       inputs: updatedWorkflow.inputs.map((item) => {
         if (item.key !== nextKey) return item;
-        const { options: _options, ...withoutOptions } = item;
+        const { options: _options, optionPresetId: _optionPresetId, ...withoutOptions } = item;
+        const optionPresetId = matchingOptionPresetId(updatedWorkflow, property?.options);
         return {
           ...withoutOptions,
           type: inputType,
           required: property!.required ?? sourceInputFormat.required,
-          ...(property!.options?.length ? { options: property!.options } : {}),
+          ...(property!.options?.length ? { options: property!.options, ...(optionPresetId ? { optionPresetId } : {}) } : {}),
         };
       }),
     };
@@ -502,6 +522,38 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
   function setStepOutput(index: number, key: string, value: string) {
     if (!selectedStep) return;
     updateStep(selectedStep.id, (step) => ({ ...step, outputs: step.outputs.map((output, itemIndex) => itemIndex === index ? { ...output, [key]: value } : output) }));
+  }
+
+  function updateInputField(index: number, changes: Partial<WorkflowInputField>) {
+    update({
+      ...workflow,
+      inputs: workflow.inputs.map((field, fieldIndex) => fieldIndex === index ? { ...field, ...changes } : field),
+    });
+  }
+
+  function applyOptionPreset(inputIndex: number, presetId: string) {
+    const preset = workflow.optionPresets?.find((item) => item.id === presetId);
+    updateInputField(inputIndex, preset
+      ? { options: [...preset.options], optionPresetId: preset.id }
+      : { optionPresetId: undefined });
+  }
+
+  function updateOptionPreset(presetId: string, changes: Partial<WorkflowOptionPreset>) {
+    const optionPresets = (workflow.optionPresets ?? []).map((preset) => preset.id === presetId ? { ...preset, ...changes } : preset);
+    const inputs = changes.options
+      ? workflow.inputs.map((field) => field.optionPresetId === presetId ? { ...field, options: [...changes.options!] } : field)
+      : workflow.inputs;
+    update({ ...workflow, optionPresets, inputs });
+  }
+
+  function addOptionPreset() {
+    update({ ...workflow, optionPresets: [...(workflow.optionPresets ?? []), newOptionPreset((workflow.optionPresets?.length ?? 0) + 1)] });
+  }
+
+  function removeOptionPreset(presetId: string) {
+    const optionPresets = (workflow.optionPresets ?? []).filter((preset) => preset.id !== presetId);
+    const inputs = workflow.inputs.map((field) => field.optionPresetId === presetId ? { ...field, optionPresetId: undefined } : field);
+    update({ ...workflow, optionPresets, inputs });
   }
 
   function updateComfyBindings(stepId: string, bindings: ComfyUIBinding[]) {
@@ -811,16 +863,29 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
             {workflow.inputs.map((field, index) => <div className="schema-row" key={`schema-input-${index}`}>
               <span className="schema-row-index">{String(index + 1).padStart(2, "0")}</span>
               <div className="schema-row-main">
-                <DeferredInput className="text-input schema-label-input" value={field.label} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, label: value } : item) })} aria-label="输入名称" placeholder="输入名称" />
-                <DeferredInput className="text-input schema-key-input" value={field.key} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, key: value.replace(/[^a-zA-Z0-9_]/g, "_") } : item) })} aria-label="输入 key" placeholder="field_key" />
-                <div className="select-wrap schema-type-select"><select value={field.type} onChange={(event) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value as WorkflowFieldType } : item) })} aria-label="输入类型">{Object.entries(fieldTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
-                <label className="required-toggle"><input type="checkbox" checked={field.required} onChange={(event) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, required: event.target.checked } : item) })} /><span>必填</span></label>
+                <DeferredInput className="text-input schema-label-input" value={field.label} onCommit={(value) => updateInputField(index, { label: value })} aria-label="输入名称" placeholder="输入名称" />
+                <DeferredInput className="text-input schema-key-input" value={field.key} onCommit={(value) => updateInputField(index, { key: value.replace(/[^a-zA-Z0-9_]/g, "_") })} aria-label="输入 key" placeholder="field_key" />
+                <div className="select-wrap schema-type-select"><select value={field.type} onChange={(event) => updateInputField(index, { type: event.target.value as WorkflowFieldType, ...(event.target.value === "select" ? {} : { optionPresetId: undefined }) })} aria-label="输入类型">{Object.entries(fieldTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
+                <label className="required-toggle"><input type="checkbox" checked={field.required} onChange={(event) => updateInputField(index, { required: event.target.checked })} /><span>必填</span></label>
                 <button className="icon-button schema-delete" onClick={() => update({ ...workflow, inputs: workflow.inputs.filter((_, itemIndex) => itemIndex !== index) })} title="删除输入" aria-label={`删除${field.label}`}><Trash2 size={14} /></button>
               </div>
-              {field.type === "select" && <DeferredInput className="text-input schema-options-input" value={(field.options ?? []).join(", ")} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, options: value.split(",").map((option) => option.trim()).filter(Boolean) } : item) })} placeholder="选项用逗号分隔" aria-label={`${field.label} 的选项`} />}
+              {field.type === "select" && <div className="schema-options-controls">
+                <DeferredInput className="text-input schema-options-input" value={(field.options ?? []).join(", ")} onCommit={(value) => updateInputField(index, { options: value.split(",").map((option) => option.trim()).filter(Boolean), optionPresetId: undefined })} placeholder="选项用逗号分隔" aria-label={`${field.label} 的选项`} />
+                <div className="select-wrap schema-option-preset-select"><select value={field.optionPresetId ?? ""} onChange={(event) => applyOptionPreset(index, event.target.value)} aria-label={`${field.label} 的选项预设`}><option value="">自定义选项</option>{(workflow.optionPresets ?? []).map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select><ChevronDown size={13} /></div>
+              </div>}
               <DeferredInput className="text-input schema-placeholder-input" value={field.placeholder ?? ""} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, placeholder: value } : item) })} placeholder="填写提示（可选）" aria-label={`${field.label} 的填写提示`} />
             </div>)}
             <button className="designer-add-field" onClick={() => update({ ...workflow, inputs: [...workflow.inputs, newInputField(workflow.inputs.length + 1)] })}><ListPlus size={15} />添加场景输入</button>
+            <div className="designer-subsection option-presets-section">
+              <div className="designer-subsection-heading"><div><h3>选项预设</h3><p>把固定的 ComfyUI 选项保存一次，后续可直接套用到选项输入</p></div><span>{(workflow.optionPresets ?? []).length} 组</span></div>
+              {(workflow.optionPresets ?? []).map((preset) => <div className="option-preset-row" key={preset.id}>
+                <DeferredInput className="text-input option-preset-name" value={preset.name} onCommit={(name) => updateOptionPreset(preset.id, { name })} placeholder="预设名称" aria-label="选项预设名称" />
+                <DeferredInput className="text-input option-preset-values" value={preset.options.join(", ")} onCommit={(value) => updateOptionPreset(preset.id, { options: value.split(",").map((option) => option.trim()).filter(Boolean) })} placeholder="选项用逗号分隔，例如：SDXL, SD1.5" aria-label="预设选项" />
+                <button className="icon-button schema-delete" onClick={() => removeOptionPreset(preset.id)} title="删除选项预设" aria-label={`删除${preset.name}`}><Trash2 size={14} /></button>
+              </div>)}
+              {!workflow.optionPresets?.length && <div className="option-preset-empty">还没有预设。新建后可以在上方的“选项”输入中直接选择。</div>}
+              <button className="designer-add-field" onClick={addOptionPreset}><Plus size={15} />新建选项预设</button>
+            </div>
           </section>}
 
           {selection.kind === "outputs" && <section className="schema-editor">
