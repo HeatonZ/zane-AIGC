@@ -7,7 +7,10 @@
     "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch server/index.ts",
     "dev:web": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run build:server",
+    "build:server": "tsc -p tsconfig.server.json",
+    "start": "node dist-server/index.js --production",
+    "start:prod": "npm run build && npm run start",
     "preview": "vite preview"
   },
   "dependencies": {

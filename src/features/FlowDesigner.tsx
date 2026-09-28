@@ -387,6 +387,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
   const [comfyWorkflows, setComfyWorkflows] = useState<ComfyUIWorkflowSummary[]>([]);
   const [comfyNodes, setComfyNodes] = useState<ComfyUIWorkflowNode[]>([]);
   const [comfyFormat, setComfyFormat] = useState<ComfyUIWorkflowDetail["format"] | null>(null);
+  const [comfyConverted, setComfyConverted] = useState(false);
   const [comfyLoading, setComfyLoading] = useState(false);
   const [comfyError, setComfyError] = useState("");
   const [comfyNodeError, setComfyNodeError] = useState("");
@@ -437,6 +438,7 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     if (!selectedStep || selectedStep.kind !== "comfyui" || !selectedStep.comfyui?.workflowFile) {
       setComfyNodes([]);
       setComfyFormat(null);
+      setComfyConverted(false);
       setComfyNodeError("");
       return;
     }
@@ -445,8 +447,9 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
     setComfyError("");
     setComfyNodeError("");
     setComfyFormat(null);
+    setComfyConverted(false);
     loadComfyUIWorkflow(selectedStep.comfyui.workflowFile)
-      .then((detail) => { if (active) { setComfyNodes(detail.nodes); setComfyFormat(detail.format); } })
+      .then((detail) => { if (active) { setComfyNodes(detail.nodes); setComfyFormat(detail.format); setComfyConverted(Boolean(detail.converted)); } })
       .catch((error: unknown) => { if (active) setComfyError(error instanceof Error ? error.message : "无法读取工作流节点"); })
       .finally(() => { if (active) setComfyLoading(false); });
     return () => { active = false; };
@@ -876,7 +879,8 @@ export default function FlowDesigner({ sceneId, workflow, onSceneChange, onChang
               <div className="field-group comfy-workflow-picker"><label className="field-label" htmlFor="comfy-workflow-select">工作流文件</label><div className="select-wrap"><select id="comfy-workflow-select" value={selectedStep.comfyui?.workflowFile ?? ""} onChange={(event) => changeComfyWorkflow(selectedStep.id, event.target.value)}><option value="">选择 ComfyUI 工作流</option>{comfyWorkflows.map((item) => <option value={item.filename} key={item.filename}>{item.filename}</option>)}</select><ChevronDown size={14} /></div></div>
               {comfyError && <div className="designer-profile-error">{comfyError}</div>}
               {comfyNodeError && <div className="designer-profile-error">{comfyNodeError}</div>}
-              {comfyFormat === "ui" && <div className="designer-profile-error" role="status">这是 ComfyUI 画布工作流，当前不能直接运行。请导出为 API 格式 JSON 后再选择。</div>}
+              {comfyConverted && <div className="notice success-notice" role="status">已自动转换为 ComfyUI API 格式，运行时会实时使用转换结果。</div>}
+              {comfyFormat === "ui" && <div className="notice success-notice" role="status">已读取 ComfyUI 画布工作流，运行时会自动转换为 API 格式。</div>}
               {comfyFormat === "unknown" && <div className="designer-profile-error" role="status">无法识别此工作流格式，请选择 ComfyUI API 格式 JSON。</div>}
               {!comfyWorkflows.length && !comfyError && <div className="comfy-workflow-empty">ComfyUI 暂无可读取的 JSON 工作流</div>}
               {selectedStep.comfyui?.workflowFile && <div className="comfy-binding-groups">

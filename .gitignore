@@ -1,6 +1,9 @@
 node_modules/
 dist/
+dist-server/
 .local/
+data/
+production/
 .env*
 !.env.example
 *.tsbuildinfo

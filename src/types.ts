@@ -211,5 +211,6 @@ export interface ComfyUINodeInfo {
 export interface ComfyUIWorkflowDetail {
   filename: string;
   format: "ui" | "api" | "unknown";
+  converted?: boolean;
   nodes: ComfyUIWorkflowNode[];
 }
