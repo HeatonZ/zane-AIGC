@@ -56,6 +56,7 @@ interface RunInputField {
 interface RunStepOutput {
   key: string;
   label?: string;
+  description?: string;
   type: string;
 }
 
@@ -1318,7 +1319,10 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
   if (new Set(outputKeys).size !== outputKeys.length) throw new Error(`${step.name} 的输出 key 不能重复`);
   const prompt = resolvePromptTemplate(step.promptTemplate ?? "", inputs, stepValues);
   if (!prompt.trim()) throw new Error(`${step.name} 的提示词为空`);
-  const outputInstructions = outputs.map((item, index) => `${index + 1}. ${item.key}（${item.label ?? item.key}，类型：${item.type}）`).join("\n");
+  const outputInstructions = outputs.map((item, index) => {
+    const description = typeof item.description === "string" ? item.description.trim() : "";
+    return `${index + 1}. ${item.key}（${item.label ?? item.key}，类型：${item.type}）${description ? `；说明：${description}` : ""}`;
+  }).join("\n");
   const executionPrompt = `${prompt}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
   const { stdout } = await execFileAsync(hermesBinary, ["-p", profile, "-z", executionPrompt], {
     timeout: 10 * 60 * 1000,

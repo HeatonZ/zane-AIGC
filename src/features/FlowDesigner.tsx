@@ -1032,6 +1032,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
                 <DeferredInput className="text-input output-key-input" value={output.key} onCommit={(value) => setStepOutput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输出 key" placeholder="output_key" />
                 <div className="select-wrap schema-type-select"><select value={output.type} onChange={(event) => setStepOutput(index, "type", event.target.value)} aria-label="步骤输出类型">{Object.entries(outputTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
                 <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: step.outputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除步骤输出" aria-label={`删除${output.label}`}><Trash2 size={14} /></button>
+                <DeferredInput className="text-input step-output-description" value={output.description ?? ""} onCommit={(value) => setStepOutput(index, "description", value)} aria-label="步骤输出字段描述" placeholder="字段描述：说明这里应该输出什么内容" />
               </div>)}
               <button className="designer-add-field" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: [...step.outputs, { key: `output_${step.outputs.length + 1}`, label: "新输出", type: "text" }] }))}><Plus size={14} />添加步骤输出</button>
             </div>}

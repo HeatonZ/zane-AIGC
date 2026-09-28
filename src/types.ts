@@ -111,6 +111,7 @@ export interface WorkflowStepInput {
 export interface WorkflowStepOutput {
   key: string;
   label: string;
+  description?: string;
   type: WorkflowVariableType;
 }
 

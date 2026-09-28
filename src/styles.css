@@ -644,7 +644,9 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .designer-subsection-heading > span { display: inline-flex; align-items: center; gap: 5px; color: #a0a69d; font-size: 8px; white-space: nowrap; }
 .step-input-row { display: grid; grid-template-columns: minmax(160px, .75fr) minmax(240px, 1.25fr) 25px; align-items: center; gap: 7px; padding: 8px; margin-bottom: 7px; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
 .step-input-labels { display: grid; grid-template-columns: 1fr .8fr; gap: 6px; min-width: 0; }
-.step-output-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(90px, .75fr) 126px 25px; align-items: center; gap: 7px; padding: 8px; margin-bottom: 7px; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
+.step-output-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(90px, .75fr) 126px 25px; grid-template-rows: auto auto; align-items: center; gap: 7px; padding: 8px; margin-bottom: 7px; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
+.step-output-description { grid-column: 1 / -1; grid-row: 2; width: 100%; }
+.step-output-row > .schema-delete { grid-column: 4; grid-row: 1; }
 .run-condition-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 650px; }
 .run-condition-row .select-wrap select { min-height: 35px; }
 .run-condition-row .select-wrap > svg { top: 10px; }
@@ -757,7 +759,8 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
   .final-output-row > .text-input:nth-of-type(2), .final-output-row > .select-wrap { grid-column: 2; }
   .final-output-row > .schema-delete { grid-column: 3; grid-row: 1; }
   .final-output-row > .ref-select { grid-column: 2 / -1; }
-  .step-output-row { grid-template-columns: 1fr 23px; }
+  .step-output-row { grid-template-columns: 1fr 23px; grid-template-rows: auto auto auto auto; }
   .step-output-row > .text-input:nth-child(2), .step-output-row > .select-wrap { grid-column: 1; }
   .step-output-row > .schema-delete { grid-column: 2; grid-row: 1; }
+  .step-output-description { grid-column: 1 / -1; grid-row: 4; }
 }
