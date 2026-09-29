@@ -18,11 +18,21 @@ export interface WorkflowDraft {
   id: string;
   sceneId: SceneId;
   title: string;
+  runTitle?: string;
   summary: string;
   inputValues?: Record<string, JsonValue>;
   createdAt: string;
   status: "draft" | "completed" | "failed";
   runResult?: WorkflowRunResult;
+}
+
+export interface WorkspaceSnapshot {
+  format: "zane-studio.workspace/v1";
+  scenes: SceneModule[];
+  workflows: Record<SceneId, WorkflowDefinition>;
+  optionPresets: WorkflowOptionPreset[];
+  drafts: WorkflowDraft[];
+  sceneVersions: Record<SceneId, SceneVersionRecord>;
 }
 
 export type ConnectionStatus = "connected" | "not_configured" | "disconnected";
@@ -39,6 +49,7 @@ export interface ConnectionSettings {
   enabledHermesProfiles: string[];
   comfyuiBaseUrl: string;
   projectDirectory: string;
+  workflowTimeoutMinutes: number;
 }
 
 export type SceneDetails = Omit<SceneModule, "id">;
@@ -50,9 +61,26 @@ export interface HermesProfile {
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
-export type WorkflowFieldType = "text" | "textarea" | "number" | "boolean" | "select" | "image" | "video" | "json";
+export interface ComfyImageAttachment {
+  id: string;
+  filename: string;
+  subfolder: string;
+  type: "input";
+  url: string;
+}
+
+export interface ComfyAudioAttachment {
+  id: string;
+  filename: string;
+  subfolder: string;
+  type: "input";
+  url: string;
+}
+
+export type WorkflowFieldType = "text" | "textarea" | "number" | "boolean" | "select" | "image" | "image_list" | "audio" | "video" | "json";
 export type WorkflowStepKind = "hermes" | "comfyui" | "manual" | "control";
-export type WorkflowVariableType = Exclude<WorkflowFieldType, "textarea" | "select">;
+export type WorkflowVariableType = Exclude<WorkflowFieldType, "textarea" | "select" | "audio">;
+export type WorkflowValueSource = "literal" | "reference";
 
 export type WorkflowConditionOperator =
   | "equals"
@@ -102,10 +130,27 @@ export interface WorkflowOptionPreset {
   options: string[];
 }
 
+export interface SceneVersion {
+  id: string;
+  version: string;
+  publishedAt: string;
+  scene: SceneModule;
+  workflow: WorkflowDefinition;
+  optionPresets: WorkflowOptionPreset[];
+}
+
+export interface SceneVersionRecord {
+  publishedVersionId: string | null;
+  versions: SceneVersion[];
+}
+
 export interface WorkflowStepInput {
   key: string;
   label: string;
   sourceRef: string;
+  valueSource?: WorkflowValueSource;
+  literalValue?: string;
+  literalType?: WorkflowVariableType;
 }
 
 export interface WorkflowStepOutput {
@@ -123,6 +168,7 @@ export interface WorkflowStepDefinition {
   inputs: WorkflowStepInput[];
   outputs: WorkflowStepOutput[];
   promptTemplate: string;
+  execution?: WorkflowExecutionConfig;
   comfyui?: ComfyUIWorkflowConfig;
   control?: WorkflowControlConfig;
   runCondition?: WorkflowRunCondition;
@@ -138,6 +184,8 @@ export interface ComfyUIBinding {
   options?: string[];
   required?: boolean;
   sourceRef?: string;
+  valueSource?: WorkflowValueSource;
+  literalValue?: string;
   sourceInputFormat?: {
     type: WorkflowFieldType;
     required: boolean;
@@ -163,20 +211,44 @@ export interface WorkflowOutputField {
   sourceRef: string;
 }
 
+export type WorkflowExecutionMode = "once" | "for_each";
+export type WorkflowIterationErrorPolicy = "continue" | "stop";
+
+export interface WorkflowExecutionConfig {
+  mode: WorkflowExecutionMode;
+  sourceRef?: string;
+  onError?: WorkflowIterationErrorPolicy;
+}
+
 export interface WorkflowDefinition {
   sceneId: SceneId;
   name: string;
   inputs: WorkflowInputField[];
   steps: WorkflowStepDefinition[];
   outputs: WorkflowOutputField[];
+  execution?: WorkflowExecutionConfig;
 }
 
 export interface WorkflowRunStepResult {
   stepId: string;
   name: string;
-  status: "running" | "completed" | "skipped" | "failed";
+  status: "running" | "completed" | "skipped" | "failed" | "cancelled";
   message?: string;
+  inputs?: Record<string, JsonValue>;
+  inputLabels?: Record<string, string>;
   outputs?: Record<string, JsonValue>;
+  outputLabels?: Record<string, string>;
+  outputTypes?: Record<string, string>;
+  items?: WorkflowRunStepItemResult[];
+}
+
+export interface WorkflowRunStepItemResult {
+  index: number;
+  value: JsonValue;
+  status: "running" | "completed" | "skipped" | "failed" | "cancelled";
+  inputs?: Record<string, JsonValue>;
+  outputs?: Record<string, JsonValue>;
+  error?: string;
 }
 
 export interface WorkflowRunOutput {
@@ -186,16 +258,30 @@ export interface WorkflowRunOutput {
   value: JsonValue;
 }
 
+export type WorkflowRunItemStatus = "running" | "completed" | "failed" | "cancelled";
+
+export interface WorkflowRunItemResult {
+  index: number;
+  value: JsonValue;
+  status: WorkflowRunItemStatus;
+  steps: WorkflowRunStepResult[];
+  outputs: WorkflowRunOutput[];
+  error?: string;
+}
+
 export interface WorkflowRunResult {
   runId: string;
   status: "running" | "completed" | "failed" | "cancelled";
   steps: WorkflowRunStepResult[];
   outputs: WorkflowRunOutput[];
+  items?: WorkflowRunItemResult[];
   error?: string;
+  cancellationReason?: string;
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
   archiveWarnings?: string[];
+  resumedFromRunId?: string;
   artifacts?: WorkflowRunArtifacts;
 }
 
@@ -211,6 +297,7 @@ export interface WorkflowRunHistoryItem {
   runId: string;
   sceneId: SceneId;
   workflowName: string;
+  runTitle?: string;
   status: WorkflowRunResult["status"];
   startedAt: string;
   finishedAt?: string;
@@ -224,7 +311,9 @@ export interface WorkflowRunHistoryItem {
 export interface WorkflowRunRecord extends WorkflowRunResult {
   sceneId: SceneId;
   workflowName: string;
+  runTitle?: string;
   inputValues: Record<string, JsonValue>;
+  workflow?: WorkflowDefinition;
 }
 
 export interface ComfyUIWorkflowSummary {

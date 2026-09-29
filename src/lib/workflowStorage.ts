@@ -1,5 +1,5 @@
 import { cloneDefaultWorkflows, createSceneWorkflow } from "../data/workflows";
-import type { SceneId, SceneModule, WorkflowDefinition, WorkflowOptionPreset, WorkflowStepDefinition } from "../types";
+import type { SceneId, SceneModule, WorkflowDefinition, WorkflowFieldType, WorkflowOptionPreset, WorkflowStepDefinition } from "../types";
 
 const storageKey = "zane-studio:workflows:v1";
 const optionPresetStorageKey = "zane-studio:option-presets:v1";
@@ -17,7 +17,7 @@ function normalizeStep(step: StoredWorkflowStep): WorkflowStepDefinition {
   return {
     ...step,
     kind,
-    inputs: kind === "hermes" ? [] : step.inputs ?? [],
+    inputs: step.inputs ?? [],
     outputs: kind === "hermes" && !step.outputs?.length
       ? [{ key: "result", label: "结构化结果", type: "json" }]
       : step.outputs ?? [],
@@ -39,6 +39,73 @@ function normalizeWorkflow(workflow: LegacyWorkflowDefinition): WorkflowDefiniti
       return preset ? { ...field, options: [...preset.options] } : { ...field, optionPresetId: undefined };
     }),
     steps: workflow.steps.map((step) => normalizeStep(step as StoredWorkflowStep)),
+  };
+}
+
+export function migrateWorkflowExecution(workflow: WorkflowDefinition): WorkflowDefinition {
+  const legacyExecution = workflow.execution;
+  if (!legacyExecution) return workflow;
+  const { execution: _legacyExecution, ...withoutLegacyExecution } = workflow;
+  if (legacyExecution.mode !== "for_each" || workflow.steps.some((step) => step.execution?.mode === "for_each")) {
+    return withoutLegacyExecution;
+  }
+  const targetIndex = workflow.steps.findIndex((step) => step.kind !== "control");
+  if (targetIndex < 0) return withoutLegacyExecution;
+  return {
+    ...withoutLegacyExecution,
+    steps: workflow.steps.map((step, index) => index === targetIndex ? { ...step, execution: legacyExecution } : step),
+  };
+}
+
+function workflowReferenceType(workflow: WorkflowDefinition, sourceRef: string): WorkflowFieldType | undefined {
+  const inputKey = /^input\.([a-zA-Z0-9_]+)$/.exec(sourceRef)?.[1];
+  if (inputKey) {
+    const type = workflow.inputs.find((field) => field.key === inputKey)?.type;
+    return type === "textarea" || type === "select" ? "text" : type;
+  }
+  const outputMatch = /^step\.([^.]+)\.outputs\.([^.]+)$/.exec(sourceRef);
+  if (!outputMatch) return undefined;
+  return workflow.steps.find((step) => step.id === outputMatch[1])?.outputs.find((output) => output.key === outputMatch[2])?.type;
+}
+
+function repairWorkflowOutputReferences(workflow: WorkflowDefinition) {
+  const stepOutputs = workflow.steps.flatMap((step) => step.outputs.map((output) => ({
+    sourceRef: `step.${step.id}.outputs.${output.key}`,
+    type: output.type,
+  })));
+  let repaired = false;
+  const outputs = workflow.outputs.map((output) => {
+    const sourceType = workflowReferenceType(workflow, output.sourceRef);
+    if (!sourceType || sourceType === output.type) return output;
+    const candidates = stepOutputs.filter((candidate) => candidate.type === output.type);
+    if (candidates.length !== 1) return output;
+    repaired = true;
+    return { ...output, sourceRef: candidates[0].sourceRef };
+  });
+  return repaired ? { ...workflow, outputs } : workflow;
+}
+
+function migrateLegacyImageToImageWorkflow(workflow: LegacyWorkflowDefinition): LegacyWorkflowDefinition {
+  return {
+    ...workflow,
+    inputs: workflow.inputs.map((field) => field.key === "reference_images" ? { ...field, type: "image_list" } : field),
+    steps: workflow.steps.map((step) => {
+      if (step.comfyui?.workflowFile !== "Zane/i2i_UI.json") return step;
+      const hasLegacyBinding = step.comfyui.bindings?.some((binding) => binding.nodeId === "471" && binding.property === "images_json");
+      if (!hasLegacyBinding) return step;
+      const bindings = (step.comfyui.bindings ?? []).map((binding) => binding.nodeId === "471" && binding.property === "images_json"
+        ? {
+          ...binding,
+          property: "images",
+          type: "image_list" as const,
+          ...(binding.sourceInputFormat ? { sourceInputFormat: { ...binding.sourceInputFormat, type: "image_list" as const } } : {}),
+        }
+        : binding);
+      return {
+        ...step,
+        comfyui: { ...step.comfyui, bindings },
+      };
+    }),
   };
 }
 
@@ -79,10 +146,31 @@ export function readWorkflows(scenes: SceneModule[]): Record<SceneId, WorkflowDe
     const saved = window.localStorage.getItem(storageKey);
     const parsed = saved ? JSON.parse(saved) as Record<string, LegacyWorkflowDefinition> : {};
     const defaults = cloneDefaultWorkflows();
-    return Object.fromEntries(scenes.map((scene) => {
-      const workflow = parsed[scene.id] ?? defaults[scene.id] ?? createSceneWorkflow(scene);
-      return [scene.id, normalizeWorkflow(workflow)];
+    let repairedSavedWorkflow = false;
+    const workflows = Object.fromEntries(scenes.map((scene) => {
+      const savedWorkflow = parsed[scene.id];
+      const defaultWorkflow = defaults[scene.id];
+      const usesLegacyImageToImageApi = scene.id === "image_to_image"
+        && savedWorkflow?.steps.some((step) => step.comfyui?.workflowFile === "Zane/Basic_Image_to_Image_Zane_API.json");
+      const usesLegacyQwenImageWrapper = scene.id === "image_to_image"
+        && savedWorkflow?.steps.some((step) => step.comfyui?.workflowFile === "Zane/i2i_UI.json"
+          && step.comfyui.bindings?.some((binding) => binding.nodeId === "471" && binding.property === "images_json"));
+      const workflow = usesLegacyImageToImageApi
+        ? defaultWorkflow
+        : usesLegacyQwenImageWrapper && savedWorkflow
+          ? migrateLegacyImageToImageWorkflow(savedWorkflow)
+          : savedWorkflow ?? defaultWorkflow ?? createSceneWorkflow(scene);
+      const normalized = normalizeWorkflow(workflow);
+      const repaired = repairWorkflowOutputReferences(normalized);
+      const migrated = migrateWorkflowExecution(repaired);
+      if (savedWorkflow && migrated !== normalized) {
+        parsed[scene.id] = migrated;
+        repairedSavedWorkflow = true;
+      }
+      return [scene.id, migrated];
     }));
+    if (repairedSavedWorkflow) window.localStorage.setItem(storageKey, JSON.stringify(parsed));
+    return workflows;
   } catch {
     const defaults = cloneDefaultWorkflows();
     return Object.fromEntries(scenes.map((scene) => [scene.id, defaults[scene.id] ?? createSceneWorkflow(scene)]));

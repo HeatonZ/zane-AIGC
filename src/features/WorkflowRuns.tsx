@@ -29,12 +29,13 @@ interface WorkflowRunsProps {
   selectedRunId: string | null;
   onSelectRun: (runId: string | null) => void;
   onCancelRun: (runId: string) => void;
+  onResumeRun: (run: WorkflowRunRecord) => Promise<void>;
   activeRunId: string | null;
   canCancelRun: boolean;
   runStartError?: string;
 }
 
-export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSelectRun, onCancelRun, activeRunId, canCancelRun, runStartError }: WorkflowRunsProps) {
+export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSelectRun, onCancelRun, onResumeRun, activeRunId, canCancelRun, runStartError }: WorkflowRunsProps) {
   const [projectDirectory, setProjectDirectory] = useState("");
   const [runs, setRuns] = useState<WorkflowRunHistoryItem[]>([]);
   const [selectedRun, setSelectedRun] = useState<WorkflowRunRecord | null>(null);
@@ -42,8 +43,29 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailsVersion, setDetailsVersion] = useState(0);
   const [error, setError] = useState("");
+  const [resumingRunIds, setResumingRunIds] = useState<Set<string>>(() => new Set());
+  const resumingRunIdsRef = useRef(new Set<string>());
   const selectedRunIdRef = useRef(selectedRunId);
   selectedRunIdRef.current = selectedRunId;
+
+  async function resumeRun(run: WorkflowRunRecord) {
+    if (resumingRunIdsRef.current.has(run.runId)) return;
+    const pendingRunIds = new Set(resumingRunIdsRef.current);
+    pendingRunIds.add(run.runId);
+    resumingRunIdsRef.current = pendingRunIds;
+    setResumingRunIds(pendingRunIds);
+    setError("");
+    try {
+      await onResumeRun(run);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法从断点继续运行");
+    } finally {
+      const remainingRunIds = new Set(resumingRunIdsRef.current);
+      remainingRunIds.delete(run.runId);
+      resumingRunIdsRef.current = remainingRunIds;
+      setResumingRunIds(remainingRunIds);
+    }
+  }
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -129,7 +151,7 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
               const scene = getScene(run.sceneId, scenes);
               return <button className={`run-history-item ${selectedRunId === run.runId ? "active" : ""}`} key={run.runId} onClick={() => { setError(""); onSelectRun(run.runId); }}>
                 <span className={`run-history-mark ${scene.accent}`}><Workflow size={16} /></span>
-                <span className="run-history-copy"><span className="run-history-title"><strong>{run.workflowName}</strong><i className={`run-status-dot ${run.status}`} /></span><small>{scene.shortTitle} · {formatDate(run.startedAt)}</small><small>{run.stepCount} 步 · {run.outputCount} 项输出 · {formatDuration(run.durationMs)}</small></span>
+                <span className="run-history-copy"><span className="run-history-title"><strong>{run.runTitle || run.workflowName}</strong><i className={`run-status-dot ${run.status}`} /></span><small>{run.runTitle ? `${run.workflowName} · ` : ""}{scene.shortTitle} · {formatDate(run.startedAt)}</small><small>{run.stepCount} 步 · {run.outputCount} 项输出 · {formatDuration(run.durationMs)}</small></span>
                 <span className={`run-status-label ${run.status}`}>{statusLabels[run.status]}</span>
               </button>;
             })}
@@ -137,8 +159,14 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
 
           <section className="run-detail" aria-label="运行详情">
             {detailLoading || (!selectedRun && activeRunId === selectedRunId) ? <div className="runs-loading"><LoaderCircle className="spin" size={17} />读取运行详情</div> : selectedRun ? <>
-              <div className="run-detail-heading"><div><span className="eyebrow"><span className="eyebrow-line" />{getScene(selectedRun.sceneId, scenes).shortTitle.toUpperCase()}</span><h2>{selectedRun.workflowName}</h2><p><Clock3 size={13} />{formatDate(selectedRun.startedAt ?? "")} · {formatDuration(selectedRun.durationMs)}</p></div><span className={`run-status-label ${selectedRun.status}`}>{statusLabels[selectedRun.status]}</span></div>
-              <WorkflowRunPanel result={selectedRun} inputValues={selectedRun.inputValues} onCancelRun={canCancelRun && selectedRun.status === "running" ? () => onCancelRun(selectedRun.runId) : undefined} />
+              <div className="run-detail-heading"><div><span className="eyebrow"><span className="eyebrow-line" />{getScene(selectedRun.sceneId, scenes).shortTitle.toUpperCase()}</span><h2>{selectedRun.runTitle || selectedRun.workflowName}</h2>{selectedRun.runTitle && <small className="run-detail-workflow-name">{selectedRun.workflowName}</small>}<p><Clock3 size={13} />{formatDate(selectedRun.startedAt ?? "")} · {formatDuration(selectedRun.durationMs)}</p></div><span className={`run-status-label ${selectedRun.status}`}>{statusLabels[selectedRun.status]}</span></div>
+              <WorkflowRunPanel
+                result={selectedRun}
+                inputValues={selectedRun.inputValues}
+                onCancelRun={canCancelRun && selectedRun.status === "running" ? () => onCancelRun(selectedRun.runId) : undefined}
+                onResumeRun={!canCancelRun && selectedRun.workflow && selectedRun.status !== "completed" && !selectedRun.items?.length && !selectedRun.workflow.steps.some((step) => step.execution?.mode === "for_each") ? () => void resumeRun(selectedRun) : undefined}
+                resumePending={resumingRunIds.has(selectedRun.runId)}
+              />
             </> : runStartError ? <div className="run-detail-empty">运行未能启动。</div> : <div className="run-detail-empty">选择一条记录查看详情。</div>}
           </section>
         </div>

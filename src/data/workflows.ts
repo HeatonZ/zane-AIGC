@@ -149,6 +149,52 @@ export const defaultWorkflows: Record<string, WorkflowDefinition> = {
     ],
     outputs: [{ key: "image", label: "生成图像", type: "image", sourceRef: "step.text_to_image.outputs.image" }],
   },
+  image_to_image: {
+    sceneId: "image_to_image",
+    name: "基础图生图流程",
+    inputs: [
+      { key: "reference_images", label: "参考图片", type: "image_list", required: true, placeholder: "按使用顺序逐张添加参考图" },
+      { key: "prompt", label: "正向提示词", type: "textarea", required: true, placeholder: "描述希望如何改动参考图片" },
+      { key: "negative_prompt", label: "反向提示词", type: "textarea", required: false, placeholder: "可留空" },
+      { key: "resolution", label: "参考图缩放基准", type: "number", required: false, placeholder: "留空保留第一张图尺寸" },
+      { key: "seed", label: "随机种子", type: "number", required: false, placeholder: "留空使用工作流默认值" },
+      { key: "steps", label: "生成步数", type: "number", required: false, placeholder: "留空使用工作流默认值" },
+      { key: "cfg", label: "CFG", type: "number", required: false, placeholder: "留空使用工作流默认值" },
+    ],
+    steps: [
+      {
+        id: "image_to_image",
+        name: "ComfyUI 图生图",
+        kind: "comfyui",
+        execution: { mode: "for_each", sourceRef: "input.reference_images", onError: "continue" },
+        inputs: [
+          { key: "reference_images", label: "参考图片", sourceRef: "input.reference_images" },
+          { key: "prompt", label: "正向提示词", sourceRef: "input.prompt" },
+          { key: "negative_prompt", label: "反向提示词", sourceRef: "input.negative_prompt" },
+          { key: "resolution", label: "参考图缩放基准", sourceRef: "input.resolution" },
+          { key: "seed", label: "随机种子", sourceRef: "input.seed" },
+          { key: "steps", label: "生成步数", sourceRef: "input.steps" },
+          { key: "cfg", label: "CFG", sourceRef: "input.cfg" },
+        ],
+        outputs: [{ key: "images", label: "生成图像", type: "image" }],
+        promptTemplate: "",
+        comfyui: {
+          workflowFile: "Zane/i2i_UI.json",
+          bindings: [
+            { key: "reference_images", label: "参考图片", direction: "input", nodeId: "471", property: "images", type: "image_list", sourceRef: "input.reference_images", required: true },
+            { key: "prompt", label: "正向提示词", direction: "input", nodeId: "471", property: "prompt", type: "text", sourceRef: "input.prompt", required: true },
+            { key: "negative_prompt", label: "反向提示词", direction: "input", nodeId: "471", property: "negative_prompt", type: "text", sourceRef: "input.negative_prompt", required: false },
+            { key: "resolution", label: "参考图缩放基准", direction: "input", nodeId: "471", property: "resolution", type: "number", sourceRef: "input.resolution", required: false },
+            { key: "seed", label: "随机种子", direction: "input", nodeId: "476", property: "seed", type: "number", sourceRef: "input.seed", required: false },
+            { key: "steps", label: "生成步数", direction: "input", nodeId: "476", property: "steps", type: "number", sourceRef: "input.steps", required: false },
+            { key: "cfg", label: "CFG", direction: "input", nodeId: "476", property: "cfg", type: "number", sourceRef: "input.cfg", required: false },
+            { key: "images", label: "生成图像", direction: "output", nodeId: "461", property: "images", type: "image" },
+          ],
+        },
+      },
+    ],
+    outputs: [{ key: "images", label: "生成图像", type: "image", sourceRef: "step.image_to_image.outputs.images" }],
+  },
 };
 
 export function cloneDefaultWorkflows() {

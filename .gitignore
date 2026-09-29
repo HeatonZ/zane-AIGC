@@ -4,6 +4,15 @@ dist-server/
 .local/
 data/
 production/
+backups/
 .env*
 !.env.example
 *.tsbuildinfo
+
+# Local backup and editor temporary files
+*.bak
+*.backup
+*.old
+*.orig
+*~
+*.swp

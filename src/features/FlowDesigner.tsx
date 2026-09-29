@@ -9,9 +9,11 @@ import {
   CircleHelp,
   FileInput,
   FileOutput,
+  History as HistoryIcon,
   ListPlus,
   Plus,
   RefreshCw,
+  Rocket,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -28,6 +30,8 @@ import type {
   HermesProfile,
   SceneId,
   SceneModule,
+  SceneVersion,
+  SceneVersionRecord,
   WorkflowDefinition,
   WorkflowConditionOperator,
   WorkflowConditionRule,
@@ -39,17 +43,24 @@ import type {
   WorkflowStepDefinition,
   WorkflowStepKind,
   WorkflowStepOutput,
+  WorkflowValueSource,
   WorkflowVariableType,
 } from "../types";
+import SceneVersionsDialog from "./SceneVersionsDialog";
+import { publishedSceneVersion, sceneDraftMatchesVersion } from "../lib/sceneVersions";
 
 interface FlowDesignerProps {
   sceneId: SceneId;
   scenes: SceneModule[];
+  scene: SceneModule;
   workflow: WorkflowDefinition;
   optionPresets: WorkflowOptionPreset[];
+  versionRecord?: SceneVersionRecord;
   onSceneChange: (sceneId: SceneId) => void;
   onChange: (workflow: WorkflowDefinition) => void;
   onOptionPresetsChange: (optionPresets: WorkflowOptionPreset[]) => void;
+  onPublish: () => SceneVersion | undefined;
+  onApplyVersion: (version: SceneVersion) => void;
   onOpenConnections: () => void;
 }
 
@@ -116,6 +127,8 @@ const fieldTypeLabels: Record<WorkflowFieldType, string> = {
   boolean: "布尔值",
   select: "选项",
   image: "图像",
+  image_list: "多图列表",
+  audio: "音频",
   video: "视频",
   json: "结构化数据",
 };
@@ -125,6 +138,7 @@ const outputTypeLabels: Record<WorkflowStepOutput["type"], string> = {
   number: "数字",
   boolean: "布尔值",
   image: "图像",
+  image_list: "多图列表",
   video: "视频",
   json: "结构化数据",
 };
@@ -141,6 +155,7 @@ const variableTypeLabels: Record<WorkflowVariableType, string> = {
   number: "数字",
   boolean: "布尔值",
   image: "图像",
+  image_list: "多图列表",
   video: "视频",
   json: "结构化数据",
 };
@@ -166,7 +181,7 @@ function conditionOperators(type?: WorkflowVariableType): WorkflowConditionOpera
 }
 
 function inputValueType(type: WorkflowFieldType): WorkflowVariableType {
-  return type === "textarea" || type === "select" ? "text" : type;
+  return type === "textarea" || type === "select" || type === "audio" ? "text" : type;
 }
 
 function newConditionRule(index: number): WorkflowConditionRule {
@@ -202,13 +217,131 @@ function allReferenceOptions(workflow: WorkflowDefinition): ReferenceOption[] {
   return [...inputReferenceOptions(workflow), ...outputReferenceOptions(workflow)];
 }
 
-function ReferenceSelect({ value, options, onChange }: { value: string; options: ReferenceOption[]; onChange: (value: string) => void }) {
-  const valid = options.some((option) => option.value === value);
-  return <div className="select-wrap ref-select"><select value={value} onChange={(event) => onChange(event.target.value)}>
-    {!valid && value && <option value={value}>失效引用：{value}</option>}
-    <option value="">选择一个输入或上游输出</option>
-    {options.map((option) => <option value={option.value} key={option.value}>{option.label}{option.type ? ` · ${variableTypeLabels[option.type]}` : ""}（{option.value}）</option>)}
-  </select><ChevronDown size={14} /></div>;
+function splitReferencePath(value: string) {
+  const match = /^(iteration\.item|input\.[a-zA-Z0-9_]+|step\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_]+)([\s\S]*)$/.exec(value);
+  if (!match) return undefined;
+  return {
+    root: match[1],
+    path: match[2].startsWith(".") && match[2].length > 1 ? match[2].slice(1) : match[2],
+  };
+}
+
+function parseJsonPath(path: string): Array<string | number> {
+  let cursor = 0;
+  if (path[cursor] === "$" && (path.length === 1 || path[cursor + 1] === "." || path[cursor + 1] === "[")) {
+    cursor += 1;
+    if (path[cursor] === ".") cursor += 1;
+  }
+
+  const segments: Array<string | number> = [];
+  while (cursor < path.length) {
+    if (path[cursor] === ".") {
+      cursor += 1;
+      const start = cursor;
+      while (cursor < path.length && path[cursor] !== "." && path[cursor] !== "[") cursor += 1;
+      const key = path.slice(start, cursor);
+      if (!key) throw new Error("字段名为空");
+      segments.push(key);
+      continue;
+    }
+
+    if (path[cursor] === "[") {
+      cursor += 1;
+      if (path[cursor] === '"') {
+        const start = cursor;
+        cursor += 1;
+        let escaped = false;
+        while (cursor < path.length) {
+          const character = path[cursor];
+          cursor += 1;
+          if (escaped) escaped = false;
+          else if (character === "\\") escaped = true;
+          else if (character === '"') break;
+        }
+        if (path[cursor] !== "]") throw new Error("括号路径格式无效");
+        const key = JSON.parse(path.slice(start, cursor)) as unknown;
+        if (typeof key !== "string") throw new Error("字段名格式无效");
+        segments.push(key);
+        cursor += 1;
+        continue;
+      }
+
+      const end = path.indexOf("]", cursor);
+      if (end < 0) throw new Error("缺少右方括号");
+      const index = path.slice(cursor, end);
+      if (!/^\d+$/.test(index) || !Number.isSafeInteger(Number(index))) throw new Error("数组下标必须是非负整数");
+      segments.push(Number(index));
+      cursor = end + 1;
+      continue;
+    }
+
+    if (segments.length) throw new Error("字段之间需要用点号或方括号分隔");
+    const start = cursor;
+    while (cursor < path.length && path[cursor] !== "." && path[cursor] !== "[") cursor += 1;
+    const key = path.slice(start, cursor);
+    if (!key) throw new Error("字段名为空");
+    segments.push(key);
+  }
+  return segments;
+}
+
+function referenceWithJsonPath(root: string, path: string) {
+  const normalized = path.trim().replace(/^\$\.?/, "").replace(/^\./, "");
+  return normalized ? `${root}${normalized.startsWith("[") ? "" : "."}${normalized}` : root;
+}
+
+function referenceOption(value: string, options: ReferenceOption[]) {
+  const parsed = splitReferencePath(value);
+  return options.find((option) => option.value === (parsed?.root ?? value));
+}
+
+function referencePathError(value: string, options: ReferenceOption[], allowJsonPath: boolean) {
+  const parsed = splitReferencePath(value);
+  const option = referenceOption(value, options);
+  if (!option) return "引用无效";
+  if (!parsed?.path) return "";
+  if (!allowJsonPath || option.type !== "json") return "字段路径只能用于结构化数据";
+  try {
+    parseJsonPath(parsed.path);
+    return "";
+  } catch {
+    return "JSON 字段路径格式无效";
+  }
+}
+
+function isWorkflowArrayReference(workflow: WorkflowDefinition, reference: ReferenceOption) {
+  if (reference.type === "image_list" || reference.type === "json") return true;
+  const outputMatch = /^step\.([^.]+)\.outputs\.[^.]+$/.exec(reference.value);
+  return outputMatch
+    ? workflow.steps.find((step) => step.id === outputMatch[1])?.execution?.mode === "for_each"
+    : false;
+}
+
+function iterationItemReferenceOption(workflow: WorkflowDefinition, sourceRef: string, sourceOptions: ReferenceOption[]): ReferenceOption | undefined {
+  const source = referenceOption(sourceRef, sourceOptions);
+  if (!source || !isWorkflowArrayReference(workflow, source) || referencePathError(sourceRef, sourceOptions, true)) return undefined;
+  const outputMatch = /^step\.([^.]+)\.outputs\.[^.]+$/.exec(source.value);
+  const sourceStep = outputMatch ? workflow.steps.find((step) => step.id === outputMatch[1]) : undefined;
+  const type = source.type === "image_list" || (source.type === "image" && sourceStep?.execution?.mode === "for_each")
+    ? "image"
+    : source.type ?? "json";
+  return { value: "iteration.item", label: "当前遍历项", type };
+}
+
+function ReferenceSelect({ value, options, onChange, allowJsonPath = false }: { value: string; options: ReferenceOption[]; onChange: (value: string) => void; allowJsonPath?: boolean }) {
+  const parsed = splitReferencePath(value);
+  const root = parsed?.root ?? value;
+  const path = parsed?.path ?? "";
+  const selected = options.find((option) => option.value === root);
+  const pathEnabled = allowJsonPath && selected?.type === "json";
+  return <div className="ref-select">
+    <div className="select-wrap ref-select-choice"><select value={selected ? root : value} onChange={(event) => onChange(event.target.value)}>
+      {!selected && value && <option value={value}>失效引用：{value}</option>}
+      <option value="">选择一个输入或上游输出</option>
+      {options.map((option) => <option value={option.value} key={option.value}>{option.label}{option.type ? ` · ${variableTypeLabels[option.type]}` : ""}（{option.value}）</option>)}
+    </select><ChevronDown size={14} /></div>
+    {pathEnabled && <DeferredInput className="text-input json-path-input" value={path} onCommit={(nextPath) => onChange(referenceWithJsonPath(root, nextPath))} placeholder="字段路径，如 [0].prompt" title="数组可写 [0].prompt；对象数组可写 shots[0].prompt" aria-label="结构化数据字段路径" />}
+  </div>;
 }
 
 function newInputField(index: number): WorkflowInputField {
@@ -249,6 +382,46 @@ function newStep(index: number, profile: string): WorkflowStepDefinition {
   };
 }
 
+function LiteralValueControl({
+  type,
+  value,
+  options,
+  onChange,
+  ariaLabel,
+}: {
+  type: WorkflowVariableType;
+  value: string;
+  options?: string[];
+  onChange: (value: string) => void;
+  ariaLabel: string;
+}) {
+  if (options?.length) {
+    return <div className="select-wrap literal-value-control"><select value={value} onChange={(event) => onChange(event.target.value)} aria-label={ariaLabel}><option value="">选择固定值</option>{options.map((option) => <option value={option} key={option}>{option}</option>)}</select><ChevronDown size={13} /></div>;
+  }
+  if (type === "boolean") {
+    return <div className="select-wrap literal-value-control"><select value={value} onChange={(event) => onChange(event.target.value)} aria-label={ariaLabel}><option value="">选择真假</option><option value="true">真</option><option value="false">假</option></select><ChevronDown size={13} /></div>;
+  }
+  if (type === "json" || type === "image_list") {
+    return <DeferredTextarea className="text-input literal-value-control literal-value-textarea" value={value} onCommit={onChange} placeholder={type === "image_list" ? "输入 JSON 数组" : "输入有效 JSON"} aria-label={ariaLabel} />;
+  }
+  return <DeferredInput className="text-input literal-value-control" type={type === "number" ? "number" : "text"} step={type === "number" ? "any" : undefined} value={value} onCommit={onChange} placeholder={type === "number" ? "输入数字" : "填写固定值"} aria-label={ariaLabel} />;
+}
+
+function literalValueError(type: WorkflowVariableType, value: string) {
+  if (type === "number") return value.trim() && Number.isFinite(Number(value)) ? "" : "固定值需要填写有效数字";
+  if (type === "boolean") return value === "true" || value === "false" ? "" : "固定值需要选择真或假";
+  if (type === "json" || type === "image_list") {
+    if (!value.trim()) return "固定值需要填写有效 JSON";
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (type === "image_list" && !Array.isArray(parsed)) return "多图列表固定值需要是 JSON 数组";
+    } catch {
+      return "固定值 JSON 格式无效";
+    }
+  }
+  return "";
+}
+
 function defaultHermesOutputs(): WorkflowStepOutput[] {
   return [{ key: "result", label: "结构化结果", type: "json" }];
 }
@@ -265,8 +438,10 @@ function inferredComfyBindings(step: WorkflowStepDefinition): ComfyUIBinding[] {
       direction: "input" as const,
       nodeId: "",
       property: "",
-      type: "text" as const,
+      type: input.literalType ?? "text" as const,
       sourceRef: input.sourceRef,
+      ...(input.valueSource ? { valueSource: input.valueSource } : {}),
+      ...(input.literalValue !== undefined ? { literalValue: input.literalValue } : {}),
     })),
     ...step.outputs.map((output) => ({
       key: output.key,
@@ -294,6 +469,9 @@ function stepWithComfyBindings(step: WorkflowStepDefinition, bindings: ComfyUIBi
       key: binding.key,
       label: binding.label,
       sourceRef: binding.sourceRef ?? "",
+      ...(binding.valueSource ? { valueSource: binding.valueSource } : {}),
+      ...(binding.literalValue !== undefined ? { literalValue: binding.literalValue } : {}),
+      ...(binding.valueSource === "literal" ? { literalType: binding.type } : {}),
     })),
     outputs: bindings.filter((binding) => binding.direction === "output").map((binding) => ({
       key: binding.key,
@@ -304,12 +482,20 @@ function stepWithComfyBindings(step: WorkflowStepDefinition, bindings: ComfyUIBi
 }
 
 function comfySourceInputKey(sourceRef: string) {
-  return /^input\.([a-zA-Z0-9_]+)$/.exec(sourceRef)?.[1];
+  const parsed = splitReferencePath(sourceRef);
+  if (parsed?.path) return undefined;
+  return /^input\.([a-zA-Z0-9_]+)$/.exec(parsed?.root ?? sourceRef)?.[1];
 }
 
 function comfySourceOutput(sourceRef: string) {
-  const match = /^step\.([a-zA-Z0-9_-]+)\.outputs\.([a-zA-Z0-9_]+)$/.exec(sourceRef);
+  const parsed = splitReferencePath(sourceRef);
+  if (parsed?.path) return undefined;
+  const match = /^step\.([a-zA-Z0-9_-]+)\.outputs\.([a-zA-Z0-9_]+)$/.exec(parsed?.root ?? sourceRef);
   return match ? { stepId: match[1], outputKey: match[2] } : undefined;
+}
+
+function bindingValueSource(binding: ComfyUIBinding): WorkflowValueSource {
+  return binding.valueSource === "literal" ? "literal" : "reference";
 }
 
 function restoreComfySourceInput(workflow: WorkflowDefinition, sourceRef: string, format: ComfyUIBinding["sourceInputFormat"] | undefined, optionPresets: WorkflowOptionPreset[]): WorkflowDefinition {
@@ -347,10 +533,12 @@ function syncComfySourceFormat(
   property?: ComfyUIPropertyInfo,
   optionPresets: WorkflowOptionPreset[] = [],
 ): { workflow: WorkflowDefinition; binding: ComfyUIBinding } {
-  const previousKey = comfySourceInputKey(previous.sourceRef ?? "");
-  const nextKey = comfySourceInputKey(next.sourceRef ?? "");
-  const previousOutput = comfySourceOutput(previous.sourceRef ?? "");
-  const nextOutput = comfySourceOutput(next.sourceRef ?? "");
+  const previousReference = bindingValueSource(previous) === "reference";
+  const nextReference = bindingValueSource(next) === "reference";
+  const previousKey = previousReference ? comfySourceInputKey(previous.sourceRef ?? "") : undefined;
+  const nextKey = nextReference ? comfySourceInputKey(next.sourceRef ?? "") : undefined;
+  const previousOutput = previousReference ? comfySourceOutput(previous.sourceRef ?? "") : undefined;
+  const nextOutput = nextReference ? comfySourceOutput(next.sourceRef ?? "") : undefined;
   const sameInput = Boolean(previousKey && previousKey === nextKey);
   const sameOutput = Boolean(previousOutput && nextOutput && previousOutput.stepId === nextOutput.stepId && previousOutput.outputKey === nextOutput.outputKey);
   let updatedWorkflow = workflow;
@@ -373,18 +561,23 @@ function syncComfySourceFormat(
     const sourceInputFormat = sameInput && previous.sourceInputFormat
       ? previous.sourceInputFormat
       : { type: field.type, required: field.required, ...(field.options ? { options: field.options } : {}), ...(field.optionPresetId ? { optionPresetId: field.optionPresetId } : {}) };
-    const inputType: WorkflowFieldType = property?.options?.length ? "select" : property!.type;
+    const audioInput = sourceInputFormat.type === "audio";
+    const inputType: WorkflowFieldType = audioInput
+      ? "audio"
+      : sourceInputFormat.type === "image_list"
+        ? "image_list"
+        : property?.options?.length ? "select" : property!.type;
     updatedWorkflow = {
       ...updatedWorkflow,
       inputs: updatedWorkflow.inputs.map((item) => {
         if (item.key !== nextKey) return item;
         const { options: _options, optionPresetId: _optionPresetId, ...withoutOptions } = item;
-        const optionPresetId = matchingOptionPresetId(optionPresets, property?.options);
+        const optionPresetId = audioInput ? undefined : matchingOptionPresetId(optionPresets, property?.options);
         return {
           ...withoutOptions,
           type: inputType,
           required: property!.required ?? sourceInputFormat.required,
-          ...(property!.options?.length ? { options: property!.options, ...(optionPresetId ? { optionPresetId } : {}) } : {}),
+          ...(!audioInput && property!.options?.length ? { options: property!.options, ...(optionPresetId ? { optionPresetId } : {}) } : {}),
         };
       }),
     };
@@ -410,7 +603,7 @@ function syncComfySourceFormat(
   return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat: undefined } };
 }
 
-export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets, onSceneChange, onChange, onOptionPresetsChange, onOpenConnections }: FlowDesignerProps) {
+export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionPresets, versionRecord, onSceneChange, onChange, onOptionPresetsChange, onPublish, onApplyVersion, onOpenConnections }: FlowDesignerProps) {
   const [selection, setSelection] = useState<Selection>({ kind: "inputs" });
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
   const [enabledProfiles, setEnabledProfiles] = useState<string[]>([]);
@@ -425,8 +618,10 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
   const [comfyNodeInfos, setComfyNodeInfos] = useState<Record<string, ComfyUINodeInfo>>({});
   const [comfyNodeLoadingTypes, setComfyNodeLoadingTypes] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
+  const [showVersions, setShowVersions] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [referenceToInsert, setReferenceToInsert] = useState("");
+  const [referencePathToInsert, setReferencePathToInsert] = useState("");
 
   useEffect(() => {
     Promise.all([loadHermesProfiles(), loadConnectionSettings()])
@@ -460,10 +655,28 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
   const priorReferenceOptions = selectedStep
     ? [...inputReferenceOptions(workflow), ...outputReferenceOptions(workflow, selectedStepIndex)]
     : [];
+  const stepIterationOptions = priorReferenceOptions.filter((option) => isWorkflowArrayReference(workflow, option));
+  const selectedIterationItemOption = selectedStep?.execution?.mode === "for_each"
+    ? iterationItemReferenceOption(workflow, selectedStep.execution.sourceRef ?? "", priorReferenceOptions)
+    : undefined;
+  const selectedStepReferenceOptions = selectedIterationItemOption
+    ? [...priorReferenceOptions, selectedIterationItemOption]
+    : priorReferenceOptions;
+  const selectedStepPromptOptions = selectedIterationItemOption
+    ? [...promptSourceOptions, selectedIterationItemOption]
+    : promptSourceOptions;
+  const promptReferenceType = referenceOption(referenceToInsert, selectedStepPromptOptions)?.type;
+  const promptReferencePath = referenceWithJsonPath(referenceToInsert, referencePathToInsert);
+  const promptReferencePathError = referencePathError(promptReferencePath, selectedStepPromptOptions, true);
   const priorConditionSteps = selectedStep
     ? workflow.steps.slice(0, selectedStepIndex).filter((step) => step.kind === "control")
     : [];
   const selectedControl = selectedStep?.control ?? defaultControlConfig();
+
+  useEffect(() => {
+    setReferenceToInsert("");
+    setReferencePathToInsert("");
+  }, [selectedStep?.id]);
 
   useEffect(() => {
     if (!selectedStep || selectedStep.kind !== "comfyui" || !selectedStep.comfyui?.workflowFile) {
@@ -488,7 +701,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
 
   function update(next: WorkflowDefinition) {
     onChange(next);
-    setNotice("已保存");
+    setNotice("已暂存");
     window.setTimeout(() => setNotice(""), 1600);
   }
 
@@ -514,7 +727,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
   function insertReference() {
     const textarea = promptRef.current;
     if (!textarea || !referenceToInsert || !selectedStep) return;
-    const token = `{{${referenceToInsert}}}`;
+    const token = `{{${promptReferencePath}}}`;
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
     const promptTemplate = `${selectedStep.promptTemplate.slice(0, start)}${token}${selectedStep.promptTemplate.slice(end)}`;
@@ -528,6 +741,18 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
   function setStepInput(index: number, key: string, value: string) {
     if (!selectedStep) return;
     updateStep(selectedStep.id, (step) => ({ ...step, inputs: step.inputs.map((input, itemIndex) => itemIndex === index ? { ...input, [key]: value } : input) }));
+  }
+
+  function setStepInputSource(index: number, valueSource: WorkflowValueSource) {
+    if (!selectedStep) return;
+    updateStep(selectedStep.id, (step) => ({
+      ...step,
+      inputs: step.inputs.map((input, itemIndex) => itemIndex !== index ? input : {
+        ...input,
+        valueSource,
+        ...(valueSource === "literal" ? { sourceRef: "", literalType: input.literalType ?? "text", literalValue: input.literalValue ?? "" } : { sourceRef: input.sourceRef ?? "" }),
+      }),
+    }));
   }
 
   function setStepOutput(index: number, key: string, value: string) {
@@ -627,7 +852,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
     const binding = bindings[index];
     if (!binding) return;
     const propertyInfo = propertyInfoForBinding(binding);
-    const result = syncComfySourceFormat(workflow, binding, { ...binding, sourceRef }, propertyInfo, optionPresets);
+    const result = syncComfySourceFormat(workflow, binding, { ...binding, valueSource: "reference", sourceRef, literalValue: undefined }, propertyInfo, optionPresets);
     const nextBindings = bindings.map((item, itemIndex) => itemIndex === index ? result.binding : item);
     update({
       ...result.workflow,
@@ -644,8 +869,9 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
     const nodeInfo = node ? comfyNodeInfos[node.type] : undefined;
     const properties = binding.direction === "input" ? nodeInfo?.inputs : nodeInfo?.outputs;
     const propertyInfo = properties?.find((property) => property.name === propertyName);
+    const isLoadAudioSelector = binding.direction === "input" && node?.type === "LoadAudio" && propertyName === "audio";
     let updated: ComfyUIBinding = propertyInfo
-      ? { ...binding, property: propertyName, type: propertyInfo.type, options: propertyInfo.options, required: propertyInfo.required }
+      ? { ...binding, property: propertyName, type: propertyInfo.type, options: isLoadAudioSelector ? undefined : propertyInfo.options, required: propertyInfo.required }
       : { ...binding, property: propertyName, options: undefined, required: undefined };
     let nextWorkflow = workflow;
     if (binding.direction === "input") {
@@ -727,7 +953,6 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
       return {
         ...withoutControl,
         kind,
-        ...(kind === "hermes" ? { inputs: [] } : {}),
         outputs: kind === "hermes" && (leavingControl || !step.outputs.length) ? defaultHermesOutputs() : leavingControl ? [] : step.outputs,
         ...(kind === "comfyui" ? { comfyui: step.comfyui ?? { workflowFile: "", bindings: [] }, hermesProfile: undefined } : {}),
         ...(kind === "hermes" ? { hermesProfile: step.hermesProfile ?? enabledProfiles[0] ?? profiles[0]?.id ?? "" } : {}),
@@ -764,8 +989,31 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
     if (workflow.inputs.some((field) => field.type === "select" && !field.options?.length)) messages.push("下拉选项字段至少需要配置一个选项");
     workflow.steps.forEach((step, index) => {
       const priorOptions = allReferenceOptions({ ...workflow, steps: workflow.steps.slice(0, index) });
-      const prior = new Set(priorOptions.map((option) => option.value));
-      if (step.inputs.some((input) => !prior.has(input.sourceRef))) messages.push(`${step.name} 存在未连接或失效的输入引用`);
+      const iterationOption = step.execution?.mode === "for_each"
+        ? iterationItemReferenceOption(workflow, step.execution.sourceRef ?? "", priorOptions)
+        : undefined;
+      const stepOptions = iterationOption ? [...priorOptions, iterationOption] : priorOptions;
+      const prior = new Set(stepOptions.map((option) => option.value));
+      if (step.execution?.mode === "for_each") {
+        const source = referenceOption(step.execution.sourceRef ?? "", priorOptions);
+        if (!source) messages.push(`${step.name} 的逐项执行需要选择列表或数组来源`);
+        else if (!isWorkflowArrayReference(workflow, source)) messages.push(`${step.name} 的逐项执行来源必须是多图列表、数组或前序逐项步骤的输出`);
+        else {
+          const error = referencePathError(step.execution.sourceRef ?? "", priorOptions, true);
+          if (error) messages.push(`${step.name} 的遍历来源 ${error}`);
+        }
+      }
+      step.inputs.forEach((input) => {
+        if ((input.valueSource ?? "reference") === "literal") {
+          const type = input.literalType ?? "text";
+          const error = literalValueError(type, input.literalValue ?? "");
+          if (error) messages.push(`${step.name} 的${input.label || input.key} ${error}`);
+        } else {
+          const error = referencePathError(input.sourceRef, stepOptions, true);
+          if (error === "引用无效") messages.push(`${step.name} 存在未连接或失效的输入引用`);
+          else if (error) messages.push(`${step.name} 的${input.label || input.key} ${error}`);
+        }
+      });
       if (step.kind === "hermes" && !step.hermesProfile) messages.push(`${step.name} 还没有选择 Hermes Profile`);
       if (step.kind === "hermes" && !step.outputs.length) messages.push(`${step.name} 至少需要定义一个步骤输出`);
       if (step.outputs.some((output) => !output.key.trim())) messages.push(`${step.name} 的输出需要设置字段 key`);
@@ -779,11 +1027,15 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
           messages.push(`${step.name} 至少需要配置一条判断规则`);
         } else {
           control.rules.forEach((rule) => {
-            const left = priorOptions.find((option) => option.value === rule.leftRef);
+            const left = referenceOption(rule.leftRef, stepOptions);
             if (!left) messages.push(`${step.name} 存在未连接或失效的判断变量`);
-            if (rule.valueSource === "reference" && !prior.has(rule.rightRef)) messages.push(`${step.name} 存在未连接或失效的比较变量`);
+            if (rule.valueSource === "reference" && !prior.has(splitReferencePath(rule.rightRef)?.root ?? rule.rightRef)) messages.push(`${step.name} 存在未连接或失效的比较变量`);
             const numericOperator = ["greater_than", "greater_or_equal", "less_than", "less_or_equal"].includes(rule.operator);
-            const right = priorOptions.find((option) => option.value === rule.rightRef);
+            const right = referenceOption(rule.rightRef, stepOptions);
+            if (rule.valueSource === "reference") {
+              const error = referencePathError(rule.rightRef, stepOptions, true);
+              if (error) messages.push(`${step.name} 的比较变量 ${error}`);
+            }
             const needsRightValue = rule.operator !== "is_empty" && rule.operator !== "is_not_empty";
             if (needsRightValue && rule.valueSource === "literal" && !rule.rightValue.trim()) messages.push(`${step.name} 的判断条件需要填写比较值`);
             if (numericOperator && left?.type !== "number") messages.push(`${step.name} 的大小比较只能用于数字变量`);
@@ -803,6 +1055,16 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
         if (bindings.some((binding) => !binding.key.trim() || !binding.nodeId.trim() || !binding.property.trim())) {
           messages.push(`${step.name} 的节点绑定还未完成`);
         }
+        bindings.filter((binding) => binding.direction === "input").forEach((binding) => {
+          if (bindingValueSource(binding) === "literal") {
+            const error = literalValueError(binding.type, binding.literalValue ?? "");
+            if (error) messages.push(`${step.name} 的${binding.label || binding.key} ${error}`);
+          } else {
+            const error = referencePathError(binding.sourceRef ?? "", stepOptions, true);
+            if (error === "引用无效") messages.push(`${step.name} 存在未连接或失效的输入引用`);
+            else if (error) messages.push(`${step.name} 的${binding.label || binding.key} ${error}`);
+          }
+        });
         for (const direction of ["input", "output"] as const) {
           const keys = bindings.filter((binding) => binding.direction === direction).map((binding) => binding.key.trim());
           if (new Set(keys).size !== keys.length) messages.push(`${step.name} 的${direction === "input" ? "输入" : "输出"}变量 key 不能重复`);
@@ -815,6 +1077,35 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
   }
 
   const validation = validationMessages();
+  const currentPublishedVersion = publishedSceneVersion(versionRecord);
+  const hasUnpublishedChanges = !sceneDraftMatchesVersion(scene, workflow, optionPresets, currentPublishedVersion);
+  const canPublish = validation.length === 0 && hasUnpublishedChanges;
+
+  function publish() {
+    const version = onPublish();
+    if (version) {
+      setNotice(`已发布 v${version.version}`);
+      window.setTimeout(() => setNotice(""), 1800);
+    }
+  }
+
+  function setComfyBindingSource(index: number, valueSource: WorkflowValueSource) {
+    if (!selectedStep || selectedStep.kind !== "comfyui") return;
+    const bindings = comfyBindings(selectedStep);
+    const binding = bindings[index];
+    if (!binding) return;
+    const nextWorkflow = valueSource === "literal" && bindingValueSource(binding) === "reference"
+      ? restoreComfySourceInput(workflow, binding.sourceRef ?? "", binding.sourceInputFormat, optionPresets)
+      : workflow;
+    const nextBinding: ComfyUIBinding = valueSource === "literal"
+      ? { ...binding, valueSource, sourceRef: "", literalValue: binding.literalValue ?? "", sourceInputFormat: undefined, sourceOutputFormat: undefined }
+      : { ...binding, valueSource, sourceRef: "", literalValue: undefined, sourceInputFormat: undefined, sourceOutputFormat: undefined };
+    update({
+      ...nextWorkflow,
+      steps: nextWorkflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, bindings.map((item, itemIndex) => itemIndex === index ? nextBinding : item)) : step),
+    });
+  }
+
   return (
     <div className="designer-page">
       <div className="designer-topline">
@@ -823,7 +1114,16 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
           <h1>流程配置</h1>
           <p className="page-subtitle">按顺序配置输入、处理步骤与最终输出。</p>
         </div>
-        <div className="designer-save-state"><Check size={14} />{notice || "自动保存在此设备"}</div>
+        <div className="designer-release-actions">
+          <span className={`designer-release-state ${currentPublishedVersion ? hasUnpublishedChanges ? "staged" : "published" : "unpublished"}`}>
+            {notice || (currentPublishedVersion ? hasUnpublishedChanges ? `暂存修改 · 当前发布 v${currentPublishedVersion.version}` : `当前发布 v${currentPublishedVersion.version}` : "尚未发布")}
+          </span>
+          <button className="button button-outline designer-versions-button" onClick={() => setShowVersions(true)}><HistoryIcon size={14} />版本管理</button>
+          <button className="button button-dark designer-publish-button" onClick={publish} disabled={!canPublish} title={validation[0] ?? undefined}>
+            {currentPublishedVersion && !hasUnpublishedChanges ? <Check size={14} /> : <Rocket size={14} />}
+            {currentPublishedVersion && !hasUnpublishedChanges ? `已发布 v${currentPublishedVersion.version}` : currentPublishedVersion ? "发布更新" : "发布场景"}
+          </button>
+        </div>
       </div>
 
       <div className="designer-scene-switch" role="tablist" aria-label="创作场景">
@@ -849,7 +1149,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
           <button className={`designer-index-item ${selection.kind === "outputs" ? "active" : ""}`} onClick={() => setSelection({ kind: "outputs" })}>
             <span className="designer-index-icon output-index-icon"><FileOutput size={16} /></span><span className="designer-index-copy"><strong>最终输出</strong><small>{workflow.outputs.length} 个字段</small></span>
           </button>
-          <div className="designer-index-footer"><CircleHelp size={14} /><span>步骤按列表顺序执行；引用只可指向输入或前序步骤输出。</span></div>
+           <div className="designer-index-footer"><CircleHelp size={14} /><span>步骤按列表顺序执行；输入可引用变量或使用固定值。</span></div>
         </aside>
 
         <main className="designer-panel">
@@ -913,6 +1213,25 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
               <div className="field-group"><label className="field-label">步骤名称</label><DeferredInput className="text-input" value={selectedStep.name} onCommit={(value) => updateStep(selectedStep.id, (step) => ({ ...step, name: value }))} /></div>
               <div className="field-group"><label className="field-label">执行方式</label><div className="select-wrap"><select value={selectedStep.kind} onChange={(event) => changeStepKind(selectedStep.id, event.target.value as WorkflowStepKind)}><option value="hermes">Hermes Agent</option><option value="comfyui">ComfyUI</option><option value="manual">人工处理</option><option value="control">控制节点 · 条件判断</option></select><ChevronDown size={14} /></div></div>
             </div>
+            <div className="designer-subsection execution-config-section step-execution-section">
+              <div className="designer-subsection-heading"><div><h3>步骤执行</h3><p>只让当前步骤按列表逐项运行，前后步骤仍按一次执行</p></div></div>
+              <div className="execution-config-row">
+                <label className="field-group"><span className="field-label">列表处理</span><div className="select-wrap"><select value={selectedStep.execution?.mode ?? "once"} onChange={(event) => {
+                  if (event.target.value === "for_each") {
+                    const currentSource = selectedStep.execution?.sourceRef && referenceOption(selectedStep.execution.sourceRef, stepIterationOptions)
+                      && !referencePathError(selectedStep.execution.sourceRef, stepIterationOptions, true)
+                      ? selectedStep.execution.sourceRef
+                      : stepIterationOptions[0]?.value ?? "";
+                    updateStep(selectedStep.id, (step) => ({ ...step, execution: { mode: "for_each", sourceRef: currentSource, onError: step.execution?.onError ?? "continue" } }));
+                  } else updateStep(selectedStep.id, (step) => { const { execution: _execution, ...withoutExecution } = step; return withoutExecution; });
+                }} aria-label="步骤列表处理方式"><option value="once">执行一次</option><option value="for_each">按列表逐项执行</option></select><ChevronDown size={13} /></div></label>
+                {selectedStep.execution?.mode === "for_each" && <>
+                  <label className="field-group"><span className="field-label">遍历来源</span><ReferenceSelect value={selectedStep.execution.sourceRef ?? ""} options={stepIterationOptions} onChange={(sourceRef) => updateStep(selectedStep.id, (step) => ({ ...step, execution: step.execution ? { ...step.execution, sourceRef } : undefined }))} allowJsonPath /></label>
+                  <label className="field-group"><span className="field-label">单项失败时</span><div className="select-wrap"><select value={selectedStep.execution.onError ?? "continue"} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, execution: step.execution ? { ...step.execution, onError: event.target.value as "continue" | "stop" } : undefined }))} aria-label="步骤单项失败时的处理方式"><option value="continue">继续下一项</option><option value="stop">停止整个流程</option></select><ChevronDown size={13} /></div></label>
+                </>}
+              </div>
+              {selectedStep.execution?.mode === "for_each" && <div className="designer-field-explainer execution-config-note"><Braces size={14} /><span>下方输入可引用“当前遍历项”；步骤输出会聚合成列表，后续步骤可以继续引用。</span></div>}
+            </div>
             {(priorConditionSteps.length > 0 || selectedStep.runCondition) && <div className="designer-subsection run-condition-section">
               <div className="designer-subsection-heading"><div><h3>执行条件</h3><p>此步骤仅在指定条件节点返回对应结果时执行</p></div></div>
               <div className="run-condition-row">
@@ -927,19 +1246,19 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
               <div className="designer-subsection-heading"><div><h3>条件判断</h3><p>比较前序数据，按全部或任一规则输出真假结果</p></div><span>输出：result · 布尔值</span></div>
               <div className="condition-match-row"><span>规则关系</span><div className="select-wrap"><select value={selectedControl.match} onChange={(event) => updateControl(selectedStep.id, (control) => ({ ...control, match: event.target.value as WorkflowControlConfig["match"] }))} aria-label="规则关系"><option value="all">满足全部条件（AND）</option><option value="any">满足任一条件（OR）</option></select><ChevronDown size={14} /></div></div>
               {selectedControl.rules.map((rule, index) => {
-                const leftType = priorReferenceOptions.find((option) => option.value === rule.leftRef)?.type;
+                const leftType = referenceOption(rule.leftRef, selectedStepReferenceOptions)?.type;
                 const operators = conditionOperators(leftType);
                 const availableOperators = operators.includes(rule.operator) ? operators : [rule.operator, ...operators];
                 const needsRightValue = rule.operator !== "is_empty" && rule.operator !== "is_not_empty";
                 return <div className="condition-rule-row" key={rule.id || index}>
                   <div className="condition-rule-main">
-                    <ReferenceSelect value={rule.leftRef} options={priorReferenceOptions} onChange={(leftRef) => updateConditionRule(index, { leftRef, operator: "equals", valueSource: "literal", rightValue: "", rightRef: "" })} />
+                    <ReferenceSelect value={rule.leftRef} options={selectedStepReferenceOptions} onChange={(leftRef) => updateConditionRule(index, { leftRef, operator: "equals", valueSource: "literal", rightValue: "", rightRef: "" })} allowJsonPath />
                     <div className="select-wrap"><select value={rule.operator} onChange={(event) => updateConditionRule(index, { operator: event.target.value as WorkflowConditionOperator })} aria-label="判断运算符">{availableOperators.map((operator) => <option value={operator} key={operator}>{conditionOperatorLabels[operator]}</option>)}</select><ChevronDown size={14} /></div>
                     <button className="icon-button schema-delete" onClick={() => updateControl(selectedStep.id, (control) => ({ ...control, rules: control.rules.filter((_, ruleIndex) => ruleIndex !== index) }))} title="删除判断规则" aria-label="删除判断规则"><Trash2 size={14} /></button>
                   </div>
                   {needsRightValue ? <div className="condition-rule-value">
                     <div className="select-wrap condition-value-source"><select value={rule.valueSource} onChange={(event) => updateConditionRule(index, { valueSource: event.target.value as WorkflowConditionRule["valueSource"] })} aria-label="比较值来源"><option value="literal">常量</option><option value="reference">引用变量</option></select><ChevronDown size={13} /></div>
-                    {rule.valueSource === "reference" ? <ReferenceSelect value={rule.rightRef} options={priorReferenceOptions} onChange={(rightRef) => updateConditionRule(index, { rightRef })} /> : leftType === "boolean" ? <div className="select-wrap"><select value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} aria-label="比较布尔值"><option value="">选择真假</option><option value="true">真</option><option value="false">假</option></select><ChevronDown size={14} /></div> : leftType === "json" ? <DeferredTextarea className="text-input condition-literal-textarea" value={rule.rightValue} onCommit={(value) => updateConditionRule(index, { rightValue: value })} placeholder="输入有效 JSON" aria-label="比较常量" /> : <DeferredInput className="text-input condition-literal-input" type={leftType === "number" ? "number" : "text"} step={leftType === "number" ? "any" : undefined} value={rule.rightValue} onCommit={(value) => updateConditionRule(index, { rightValue: value })} placeholder={leftType === "number" ? "输入数字" : "输入比较值"} aria-label="比较常量" />}
+                    {rule.valueSource === "reference" ? <ReferenceSelect value={rule.rightRef} options={selectedStepReferenceOptions} onChange={(rightRef) => updateConditionRule(index, { rightRef })} allowJsonPath /> : leftType === "boolean" ? <div className="select-wrap"><select value={rule.rightValue} onChange={(event) => updateConditionRule(index, { rightValue: event.target.value })} aria-label="比较布尔值"><option value="">选择真假</option><option value="true">真</option><option value="false">假</option></select><ChevronDown size={14} /></div> : leftType === "json" ? <DeferredTextarea className="text-input condition-literal-textarea" value={rule.rightValue} onCommit={(value) => updateConditionRule(index, { rightValue: value })} placeholder="输入有效 JSON" aria-label="比较常量" /> : <DeferredInput className="text-input condition-literal-input" type={leftType === "number" ? "number" : "text"} step={leftType === "number" ? "any" : undefined} value={rule.rightValue} onCommit={(value) => updateConditionRule(index, { rightValue: value })} placeholder={leftType === "number" ? "输入数字" : "输入比较值"} aria-label="比较常量" />}
                   </div> : <div className="condition-no-value">无需比较值</div>}
                 </div>;
               })}
@@ -961,7 +1280,7 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
                   const inputDirection = direction === "input";
                   const importableInputs = inputDirection ? workflow.inputs.filter((field) => !bindings.some((binding) => binding.key === field.key)) : [];
                   return <section className="comfy-binding-group" key={direction}>
-                    <div className="comfy-binding-heading"><div><strong>{inputDirection ? "输入变量" : "输出变量"}</strong><small>{inputDirection ? "场景或前序步骤变量写入节点属性" : "从节点属性读取，供后续步骤和最终结果引用"}</small></div><div className="comfy-binding-actions">{inputDirection && <button className="text-button comfy-import-button" onClick={() => {
+                     <div className="comfy-binding-heading"><div><strong>{inputDirection ? "输入变量" : "输出变量"}</strong><small>{inputDirection ? "引用变量或固定值写入节点属性" : "从节点属性读取，供后续步骤和最终结果引用"}</small></div><div className="comfy-binding-actions">{inputDirection && <button className="text-button comfy-import-button" onClick={() => {
                       const additions: ComfyUIBinding[] = importableInputs.map((field) => ({
                         key: field.key,
                         label: field.label,
@@ -998,9 +1317,12 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
                       const nodePropertiesLoaded = Boolean(nodeInfo);
                       const nodeLoading = Boolean(node && comfyNodeLoadingTypes.includes(node.type));
                       const selectedPropertyInfo = propertyInfos.find((property) => property.name === binding.property);
-                      return <div className={`comfy-binding-row ${inputDirection ? "input-binding" : "output-binding"}`} key={`comfy-binding-${direction}-${index}`}>
-                        <div className="comfy-binding-variable"><DeferredInput className="text-input" value={binding.label} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { label: value })} placeholder="变量名称" aria-label="变量名称" /><DeferredInput className="text-input output-key-input" value={binding.key} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { key: value.replace(/[^a-zA-Z0-9_]/g, "_") })} placeholder="variable_key" aria-label="变量 key" /></div>
-                        {inputDirection && <ReferenceSelect value={binding.sourceRef ?? ""} options={outputReferenceOptions(workflow, Math.max(0, selectedStepIndex)).concat(inputReferenceOptions(workflow))} onChange={(sourceRef) => updateComfyBindingSource(index, sourceRef)} />}
+                      const valueSource = bindingValueSource(binding);
+                      const sourceOptions = outputReferenceOptions(workflow, Math.max(0, selectedStepIndex)).concat(inputReferenceOptions(workflow));
+                      const hasJsonPath = inputDirection && valueSource === "reference" && referenceOption(binding.sourceRef ?? "", sourceOptions)?.type === "json";
+                      return <div className={`comfy-binding-row ${inputDirection ? "input-binding" : "output-binding"} ${hasJsonPath ? "has-json-path" : ""}`} key={`comfy-binding-${direction}-${index}`}>
+                         <div className="comfy-binding-variable"><DeferredInput className="text-input" value={binding.label} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { label: value })} placeholder="变量名称" aria-label="变量名称" /><DeferredInput className="text-input output-key-input" value={binding.key} onCommit={(value) => updateComfyBinding(selectedStep.id, index, { key: value.replace(/[^a-zA-Z0-9_]/g, "_") })} placeholder="variable_key" aria-label="变量 key" /></div>
+                         {inputDirection && <div className="comfy-binding-source"><div className="select-wrap comfy-source-mode"><select value={valueSource} onChange={(event) => setComfyBindingSource(index, event.target.value as WorkflowValueSource)} aria-label="输入取值来源"><option value="reference">引用变量</option><option value="literal">固定值</option></select><ChevronDown size={13} /></div>{valueSource === "literal" ? <LiteralValueControl type={binding.type} value={binding.literalValue ?? ""} options={binding.options} onChange={(literalValue) => updateComfyBinding(selectedStep.id, index, { literalValue })} ariaLabel="输入固定值" /> : <ReferenceSelect value={binding.sourceRef ?? ""} options={selectedStepReferenceOptions} onChange={(sourceRef) => updateComfyBindingSource(index, sourceRef)} allowJsonPath />}</div>}
                         <div className="comfy-node-loader"><DeferredInput className="text-input comfy-node-input" value={binding.nodeId} onCommit={(value) => { updateComfyBindingNode(index, value); setComfyNodeError(""); }} list={nodeListId} placeholder="节点 ID" aria-label="ComfyUI 节点 ID" /><button className="icon-button comfy-node-load-button" onClick={() => loadComfyNodeProperties(binding.nodeId)} title="加载节点属性" aria-label={`加载节点 ${binding.nodeId || ""} 的属性`} disabled={comfyLoading || nodeLoading}><RefreshCw className={nodeLoading ? "spin" : undefined} size={13} /></button></div>
                         <datalist id={nodeListId}>{comfyNodes.map((item) => <option value={item.id} key={item.id}>{item.type}</option>)}</datalist>
                         <DeferredInput className="text-input comfy-property-input" value={binding.property} onCommit={(value) => updateComfyBindingProperty(index, value)} list={propertyListId} placeholder={inputDirection ? "节点输入属性" : "输出属性，如 images"} aria-label="ComfyUI 节点属性" />
@@ -1016,13 +1338,19 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
               </div>}
             </div>}
 
-            {selectedStep.kind === "manual" && <div className="designer-subsection">
-              <div className="designer-subsection-heading"><div><h3>步骤输入</h3><p>为当前步骤选择场景输入或前序输出</p></div><span>{selectedStep.inputs.length} 项映射</span></div>
-              {selectedStep.inputs.map((input, index) => <div className="step-input-row" key={`step-input-${index}`}>
-                <div className="step-input-labels"><DeferredInput className="text-input" value={input.label} onCommit={(value) => setStepInput(index, "label", value)} aria-label="输入标签" placeholder="输入名称" /><DeferredInput className="text-input" value={input.key} onCommit={(value) => setStepInput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输入 key" placeholder="step_input" /></div>
-                <ReferenceSelect value={input.sourceRef} options={outputReferenceOptions(workflow, Math.max(0, selectedStepIndex)).concat(inputReferenceOptions(workflow))} onChange={(value) => setStepInput(index, "sourceRef", value)} />
-                <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, inputs: step.inputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除输入映射" aria-label={`删除${input.label}映射`}><Trash2 size={14} /></button>
-              </div>)}
+            {(selectedStep.kind === "manual" || selectedStep.kind === "hermes") && <div className="designer-subsection">
+               <div className="designer-subsection-heading"><div><h3>步骤输入</h3><p>{selectedStep.kind === "hermes" ? "把文本和结构化数据映射给 Hermes；媒体会作为附件发送，JSON 可填写字段路径" : "选择变量引用，或为当前步骤填写固定值"}</p></div><span>{selectedStep.inputs.length} 项映射</span></div>
+              {selectedStep.inputs.map((input, index) => {
+                const valueSource = input.valueSource ?? "reference";
+                const referenceOptions = selectedStepReferenceOptions;
+                const referenceType = referenceOption(input.sourceRef, referenceOptions)?.type;
+                const literalType = input.literalType ?? referenceType ?? "text";
+                return <div className="step-input-row" key={`step-input-${index}`}>
+                  <div className="step-input-labels"><DeferredInput className="text-input" value={input.label} onCommit={(value) => setStepInput(index, "label", value)} aria-label="输入标签" placeholder="输入名称" /><DeferredInput className="text-input" value={input.key} onCommit={(value) => setStepInput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输入 key" placeholder="step_input" /></div>
+                  <div className="step-input-source"><div className="select-wrap step-input-source-mode"><select value={valueSource} onChange={(event) => setStepInputSource(index, event.target.value as WorkflowValueSource)} aria-label="输入取值来源"><option value="reference">引用变量</option><option value="literal">固定值</option></select><ChevronDown size={13} /></div>{valueSource === "literal" ? <div className="step-input-literal"><div className="select-wrap step-input-literal-type"><select value={literalType} onChange={(event) => setStepInput(index, "literalType", event.target.value)} aria-label="固定值类型">{Object.entries(variableTypeLabels).map(([type, label]) => <option value={type} key={type}>{label}</option>)}</select><ChevronDown size={13} /></div><LiteralValueControl type={literalType} value={input.literalValue ?? ""} onChange={(literalValue) => setStepInput(index, "literalValue", literalValue)} ariaLabel="输入固定值" /></div> : <ReferenceSelect value={input.sourceRef} options={referenceOptions} onChange={(value) => setStepInput(index, "sourceRef", value)} allowJsonPath />}</div>
+                  <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, inputs: step.inputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除输入映射" aria-label={`删除${input.label}映射`}><Trash2 size={14} /></button>
+                </div>;
+              })}
               <button className="designer-add-field" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, inputs: [...step.inputs, { key: `input_${step.inputs.length + 1}`, label: "新输入", sourceRef: "" }] }))}><Plus size={14} />添加步骤输入</button>
             </div>}
 
@@ -1040,14 +1368,15 @@ export default function FlowDesigner({ sceneId, scenes, workflow, optionPresets,
 
             {selectedStep.kind === "hermes" && <div className="designer-subsection prompt-subsection">
               <div className="designer-subsection-heading"><div><h3>提示词模板</h3><p>使用上方步骤输入，也可直接插入场景变量引用</p></div><span><Braces size={13} />变量引用</span></div>
-              <div className="prompt-reference-tools"><div className="select-wrap"><select value={referenceToInsert} onChange={(event) => setReferenceToInsert(event.target.value)} aria-label="选择要插入的引用"><option value="">选择输入或前序输出</option>{promptSourceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}（{option.value}）</option>)}</select><ChevronDown size={14} /></div><button type="button" className="button button-outline" onClick={insertReference} disabled={!referenceToInsert}>插入引用</button></div>
+              <div className={`prompt-reference-tools ${promptReferenceType === "json" ? "has-json-path" : ""}`}><div className="select-wrap"><select value={referenceToInsert} onChange={(event) => { setReferenceToInsert(event.target.value); setReferencePathToInsert(""); }} aria-label="选择要插入的引用"><option value="">选择输入或前序输出</option>{selectedStepPromptOptions.map((option) => <option key={option.value} value={option.value}>{option.label}（{option.value}）</option>)}</select><ChevronDown size={14} /></div>{promptReferenceType === "json" && <><input className="text-input json-path-input" value={referencePathToInsert} onChange={(event) => setReferencePathToInsert(event.target.value)} placeholder="字段路径，如 [0].prompt" title="数组可写 [0].prompt；对象数组可写 shots[0].prompt" aria-label="插入引用的 JSON 字段路径" aria-invalid={Boolean(referencePathToInsert.trim() && promptReferencePathError)} />{referencePathToInsert.trim() && promptReferencePathError && <small className="json-path-error">{promptReferencePathError}</small>}</>}<button type="button" className="button button-outline" onClick={insertReference} disabled={!referenceToInsert || Boolean(promptReferencePathError)}>插入引用</button></div>
               <DeferredTextarea ref={promptRef} className="text-input prompt-textarea" value={selectedStep.promptTemplate} onCommit={(value) => updateStep(selectedStep.id, (step) => ({ ...step, promptTemplate: value }))} placeholder="编写此步骤交给 Hermes 的任务描述……" />
             </div>}
           </section>}
 
-          <div className={`designer-validation ${validation.length ? "has-errors" : ""}`}><span className="validation-mark">{validation.length ? "!" : <Check size={12} />}</span><span>{validation.length ? validation[0] : "引用关系完整"}</span><span>{validation.length ? `${validation.length} 个待处理` : "配置已保存"}</span></div>
+           <div className={`designer-validation ${validation.length ? "has-errors" : ""}`}><span className="validation-mark">{validation.length ? "!" : <Check size={12} />}</span><span>{validation.length ? validation[0] : "输入配置完整"}</span><span>{validation.length ? `${validation.length} 个待处理` : "暂存已保存"}</span></div>
         </main>
       </div>
+      {showVersions && <SceneVersionsDialog sceneTitle={scene.title} record={versionRecord} onClose={() => setShowVersions(false)} onApply={onApplyVersion} />}
     </div>
   );
 }

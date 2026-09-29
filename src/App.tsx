@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronRight, Command, RotateCw } from "lucide-react";
+import { ChevronRight, Command, Database, LoaderCircle, RotateCw, Rocket } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import Connections from "./features/Connections";
 import Dashboard from "./features/Dashboard";
@@ -9,12 +9,14 @@ import Library from "./features/Library";
 import Studio from "./features/Studio";
 import { getScene } from "./data/scenes";
 import { createSceneWorkflow } from "./data/workflows";
-import { checkConnections, runWorkflow } from "./lib/api";
-import { readDrafts, writeDrafts } from "./lib/drafts";
-import { createScene, readScenes, writeScenes } from "./lib/sceneStorage";
-import { readOptionPresets, readWorkflows, writeOptionPresets, writeWorkflows } from "./lib/workflowStorage";
+import { cancelWorkflowRun as requestWorkflowRunCancellation, checkConnections, initializeWorkspace, loadWorkspace, mergeWorkspace, runWorkflow } from "./lib/api";
+import { createScene } from "./lib/sceneStorage";
+import { hasLegacyNumericSceneVersions, readLocalWorkspace, normalizeWorkspaceSnapshot, writeLocalWorkspace } from "./lib/workspaceStorage";
+import { createId } from "./lib/ids";
+import { downloadScenePackage, parseScenePackage, prepareImportedScene } from "./lib/sceneTransfer";
+import { publishedSceneVersion, publishSceneVersion, restoreSceneVersionDraft } from "./lib/sceneVersions";
 import FlowDesigner from "./features/FlowDesigner";
-import type { ConnectorState, JsonValue, PageId, SceneDetails, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset } from "./types";
+import type { ConnectorState, JsonValue, PageId, SceneDetails, SceneId, SceneModule, SceneVersion, SceneVersionRecord, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset, WorkflowRunRecord, WorkspaceSnapshot } from "./types";
 
 const navLabels: Record<PageId, string> = {
   home: "工作台",
@@ -32,20 +34,102 @@ const initialConnectors: ConnectorState[] = [
 ];
 
 export default function App() {
+  const localWorkspaceRef = useRef<WorkspaceSnapshot | null>(null);
+  const initialWorkspace = localWorkspaceRef.current ?? readLocalWorkspace();
+  localWorkspaceRef.current = initialWorkspace;
   const [page, setPage] = useState<PageId>("home");
-  const [scenes, setScenes] = useState<SceneModule[]>(() => readScenes());
-  const [sceneId, setSceneId] = useState<SceneId>(() => readScenes()[0]?.id ?? "");
+  const [scenes, setScenes] = useState<SceneModule[]>(initialWorkspace.scenes);
+  const [sceneId, setSceneId] = useState<SceneId>(initialWorkspace.scenes[0]?.id ?? "");
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<WorkflowDraft[]>(() => readDrafts().sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+  const [drafts, setDrafts] = useState<WorkflowDraft[]>(initialWorkspace.drafts);
   const draftsRef = useRef(drafts);
-  const [workflows, setWorkflows] = useState(() => readWorkflows(readScenes()));
-  const [optionPresets, setOptionPresets] = useState<WorkflowOptionPreset[]>(() => readOptionPresets());
+  const [workflows, setWorkflows] = useState<Record<SceneId, WorkflowDefinition>>(initialWorkspace.workflows);
+  const [optionPresets, setOptionPresets] = useState<WorkflowOptionPreset[]>(initialWorkspace.optionPresets);
+  const [sceneVersions, setSceneVersions] = useState<Record<SceneId, SceneVersionRecord>>(initialWorkspace.sceneVersions);
+  const workspaceRef = useRef<WorkspaceSnapshot>(initialWorkspace);
+  const workspaceSaveQueueRef = useRef(Promise.resolve());
+  const [workspaceSyncError, setWorkspaceSyncError] = useState("");
+  const [workspaceStatus, setWorkspaceStatus] = useState<"loading" | "missing" | "ready">("loading");
+  const [workspaceInitializing, setWorkspaceInitializing] = useState(false);
+  const [workspaceLoadAttempt, setWorkspaceLoadAttempt] = useState(0);
   const [connectors, setConnectors] = useState<ConnectorState[]>(initialConnectors);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [activeRunIds, setActiveRunIds] = useState<string[]>([]);
   const [runStartErrors, setRunStartErrors] = useState<Record<string, string>>({});
   const runControllersRef = useRef(new Map<string, AbortController>());
+
+  function applyWorkspace(value: WorkspaceSnapshot) {
+    const next = normalizeWorkspaceSnapshot(value, workspaceRef.current);
+    workspaceRef.current = next;
+    draftsRef.current = next.drafts;
+    setScenes(next.scenes);
+    setWorkflows(next.workflows);
+    setOptionPresets(next.optionPresets);
+    setSceneVersions(next.sceneVersions);
+    setDrafts(next.drafts);
+    setSceneId((current) => next.scenes.some((scene) => scene.id === current) ? current : next.scenes[0]?.id ?? "");
+  }
+
+  function commitWorkspace(value: WorkspaceSnapshot) {
+    const base = workspaceRef.current;
+    const next = normalizeWorkspaceSnapshot(value, workspaceRef.current);
+    applyWorkspace(next);
+    writeLocalWorkspace(next);
+    workspaceSaveQueueRef.current = workspaceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        await mergeWorkspace(base, next);
+        setWorkspaceSyncError("");
+      })
+      .catch((error: unknown) => {
+        setWorkspaceSyncError(error instanceof Error ? error.message : "本机工作区同步失败");
+      });
+  }
+
+  useEffect(() => {
+    let disposed = false;
+    async function syncWorkspace() {
+      try {
+        const response = await loadWorkspace();
+        if (disposed) return;
+        if (!response.workspace) {
+          setWorkspaceStatus("missing");
+          return;
+        }
+        const needsVersionMigration = !Object.prototype.hasOwnProperty.call(response.workspace, "sceneVersions")
+          || hasLegacyNumericSceneVersions(response.workspace.sceneVersions);
+        const normalized = normalizeWorkspaceSnapshot(response.workspace, workspaceRef.current);
+        applyWorkspace(normalized);
+        writeLocalWorkspace(normalized);
+        if (needsVersionMigration) {
+          await mergeWorkspace(response.workspace, normalized);
+          if (disposed) return;
+        }
+        setWorkspaceStatus("ready");
+        setWorkspaceSyncError("");
+      } catch (error) {
+        if (!disposed) setWorkspaceSyncError(error instanceof Error ? error.message : "本机工作区同步失败");
+      }
+    }
+    void syncWorkspace();
+    return () => { disposed = true; };
+  }, [workspaceLoadAttempt]);
+
+  async function initializeServerWorkspace() {
+    setWorkspaceInitializing(true);
+    setWorkspaceSyncError("");
+    try {
+      const result = await initializeWorkspace(initialWorkspace);
+      applyWorkspace(result.workspace);
+      writeLocalWorkspace(result.workspace);
+      setWorkspaceStatus("ready");
+    } catch (error) {
+      setWorkspaceSyncError(error instanceof Error ? error.message : "无法初始化本机工作区");
+    } finally {
+      setWorkspaceInitializing(false);
+    }
+  }
 
   const refreshConnections = useCallback(async (enabledHermesProfiles?: string[]) => {
     setRefreshing(true);
@@ -89,19 +173,18 @@ export default function App() {
 
   function openScene(nextScene: SceneId, draftId?: string) {
     setSceneId(nextScene);
-    setActiveDraftId(draftId ?? null);
-    setPage("studio");
+    const published = publishedSceneVersion(workspaceRef.current.sceneVersions[nextScene]);
+    setActiveDraftId(published ? draftId ?? null : null);
+    setPage(published ? "studio" : "flows");
   }
 
   function saveDraft(draft: WorkflowDraft) {
     const next = [draft, ...draftsRef.current.filter((item) => item.id !== draft.id)]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    draftsRef.current = next;
-    setDrafts(next);
-    writeDrafts(next);
+    commitWorkspace({ ...workspaceRef.current, drafts: next });
   }
 
-  const startWorkflowRun = useCallback(async (workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>, runId: string) => {
+  const startWorkflowRun = useCallback(async (workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>, runId: string, runTitle?: string, resumeFromRunId?: string) => {
     const controller = new AbortController();
     runControllersRef.current.set(runId, controller);
     setSelectedRunId(runId);
@@ -109,7 +192,7 @@ export default function App() {
     setRunStartErrors((current) => ({ ...current, [runId]: "" }));
     setPage("runs");
     try {
-      return await runWorkflow(workflow, inputValues, controller.signal, runId);
+      return await runWorkflow(workflow, inputValues, controller.signal, runId, resumeFromRunId, runTitle);
     } catch (error) {
       if (!controller.signal.aborted) {
         setRunStartErrors((current) => ({
@@ -124,8 +207,15 @@ export default function App() {
     }
   }, []);
 
+  const resumeWorkflowRun = useCallback(async (source: WorkflowRunRecord) => {
+    if (!source.workflow) return;
+    const runId = createId();
+    await startWorkflowRun(source.workflow, source.inputValues, runId, source.runTitle, source.runId);
+  }, [startWorkflowRun]);
+
   const cancelWorkflowRun = useCallback((runId: string) => {
-    runControllersRef.current.get(runId)?.abort();
+    const controller = runControllersRef.current.get(runId);
+    void requestWorkflowRunCancellation(runId).catch(() => controller?.abort());
   }, []);
 
   const selectRun = useCallback((runId: string | null) => {
@@ -134,26 +224,70 @@ export default function App() {
 
   function updateWorkflow(workflow: WorkflowDefinition) {
     const next = { ...workflows, [workflow.sceneId]: workflow };
-    setWorkflows(next);
-    writeWorkflows(next);
+    commitWorkspace({ ...workspaceRef.current, workflows: next });
   }
 
   function createWorkspaceScene(details: SceneDetails) {
     const scene = createScene(details);
     const nextScenes = [...scenes, scene];
     const nextWorkflows = { ...workflows, [scene.id]: createSceneWorkflow(scene) };
-    setScenes(nextScenes);
-    writeScenes(nextScenes);
-    setWorkflows(nextWorkflows);
-    writeWorkflows(nextWorkflows);
+    const nextSceneVersions = { ...workspaceRef.current.sceneVersions, [scene.id]: { publishedVersionId: null, versions: [] } };
+    commitWorkspace({ ...workspaceRef.current, scenes: nextScenes, workflows: nextWorkflows, sceneVersions: nextSceneVersions });
     setSceneId(scene.id);
     setPage("flows");
   }
 
   function updateScene(sceneIdToUpdate: SceneId, details: SceneDetails) {
     const nextScenes = scenes.map((scene) => scene.id === sceneIdToUpdate ? { ...scene, ...details } : scene);
-    setScenes(nextScenes);
-    writeScenes(nextScenes);
+    commitWorkspace({ ...workspaceRef.current, scenes: nextScenes });
+  }
+
+  function exportWorkspaceScene(sceneIdToExport: SceneId) {
+    const scene = scenes.find((item) => item.id === sceneIdToExport);
+    if (!scene) return;
+    downloadScenePackage(scene, workflows[scene.id] ?? createSceneWorkflow(scene), optionPresets);
+  }
+
+  function publishWorkspaceScene(sceneIdToPublish: SceneId) {
+    const snapshot = workspaceRef.current;
+    const scene = snapshot.scenes.find((item) => item.id === sceneIdToPublish);
+    const workflow = snapshot.workflows[sceneIdToPublish];
+    if (!scene || !workflow) return undefined;
+    const result = publishSceneVersion(snapshot.sceneVersions[sceneIdToPublish], scene, workflow, snapshot.optionPresets);
+    if (result.created) {
+      commitWorkspace({
+        ...snapshot,
+        sceneVersions: { ...snapshot.sceneVersions, [sceneIdToPublish]: result.record },
+      });
+    }
+    return result.version;
+  }
+
+  function applyWorkspaceSceneVersion(sceneIdToUpdate: SceneId, versionId: string) {
+    const snapshot = workspaceRef.current;
+    const version = snapshot.sceneVersions[sceneIdToUpdate]?.versions.find((item) => item.id === versionId);
+    if (!version) return;
+    const restored = restoreSceneVersionDraft(version, snapshot.optionPresets);
+    const nextScenes = snapshot.scenes.map((scene) => scene.id === sceneIdToUpdate ? restored.scene : scene);
+    const nextWorkflows = { ...snapshot.workflows, [sceneIdToUpdate]: restored.workflow };
+    commitWorkspace({ ...snapshot, scenes: nextScenes, workflows: nextWorkflows, optionPresets: restored.optionPresets });
+  }
+
+  async function importWorkspaceScene(file: File) {
+    try {
+      const parsed = parseScenePackage(JSON.parse(await file.text()));
+      const imported = prepareImportedScene(parsed, optionPresets);
+      const nextScenes = [...scenes, imported.scene];
+      const nextWorkflows = { ...workflows, [imported.scene.id]: imported.workflow };
+      const nextSceneVersions = { ...workspaceRef.current.sceneVersions, [imported.scene.id]: { publishedVersionId: null, versions: [] } };
+      const importedPresetIds = new Set(imported.optionPresets.map((preset) => preset.id));
+      const nextOptionPresets = [...optionPresets.filter((preset) => !importedPresetIds.has(preset.id)), ...imported.optionPresets];
+      commitWorkspace({ ...workspaceRef.current, scenes: nextScenes, workflows: nextWorkflows, optionPresets: nextOptionPresets, sceneVersions: nextSceneVersions });
+      setSceneId(imported.scene.id);
+      setPage("flows");
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "导入场景失败，请检查文件内容");
+    }
   }
 
   function deleteScene(sceneIdToDelete: SceneId) {
@@ -165,14 +299,9 @@ export default function App() {
 
     const nextScenes = scenes.filter((item) => item.id !== sceneIdToDelete);
     const nextWorkflows = Object.fromEntries(Object.entries(workflows).filter(([id]) => id !== sceneIdToDelete));
+    const nextSceneVersions = Object.fromEntries(Object.entries(workspaceRef.current.sceneVersions).filter(([id]) => id !== sceneIdToDelete));
     const nextDrafts = drafts.filter((draft) => draft.sceneId !== sceneIdToDelete);
-    setScenes(nextScenes);
-    writeScenes(nextScenes);
-    setWorkflows(nextWorkflows);
-    writeWorkflows(nextWorkflows);
-    setDrafts(nextDrafts);
-    draftsRef.current = nextDrafts;
-    writeDrafts(nextDrafts);
+    commitWorkspace({ ...workspaceRef.current, scenes: nextScenes, workflows: nextWorkflows, drafts: nextDrafts, sceneVersions: nextSceneVersions });
     if (sceneId === sceneIdToDelete) setSceneId(nextScenes[0]?.id ?? "");
     if (activeDraftId && sceneDrafts.some((draft) => draft.id === activeDraftId)) setActiveDraftId(null);
     if (sceneId === sceneIdToDelete && page === "studio") setPage("home");
@@ -204,18 +333,39 @@ export default function App() {
       });
       return [id, { ...workflow, inputs, steps }];
     })) as Record<SceneId, WorkflowDefinition>;
-    setOptionPresets(nextOptionPresets);
-    writeOptionPresets(nextOptionPresets);
-    setWorkflows(nextWorkflows);
-    writeWorkflows(nextWorkflows);
+    commitWorkspace({ ...workspaceRef.current, optionPresets: nextOptionPresets, workflows: nextWorkflows });
   }
 
-  const currentScene = getScene(sceneId, scenes);
   const selectedScene = scenes.find((scene) => scene.id === sceneId);
   const selectedWorkflow = workflows[sceneId];
+  const selectedVersionRecord = sceneVersions[sceneId];
+  const selectedPublishedVersion = publishedSceneVersion(selectedVersionRecord);
+  const currentScene = selectedPublishedVersion?.scene ?? getScene(sceneId, scenes);
   const activeDraft = activeDraftId ? drafts.find((draft) => draft.id === activeDraftId) : undefined;
   const title = page === "studio" ? currentScene.title : navLabels[page];
   const dateLabel = new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
+
+  if (workspaceStatus !== "ready") {
+    return <main className="workspace-bootstrap">
+      <section className="workspace-bootstrap-panel">
+        <div className="workspace-bootstrap-icon"><Database size={20} /></div>
+        <p className="eyebrow"><span className="eyebrow-line" />本机共享工作区</p>
+        <h1>{workspaceStatus === "loading" ? "连接本机工作区" : "选择要同步的现有配置"}</h1>
+        {workspaceStatus === "loading" ? <p className="workspace-bootstrap-copy">正在读取 8799 服务上的共享场景、流程和草稿。</p> : <>
+          <p className="workspace-bootstrap-copy">服务端还没有工作区。请在保存着你现有 AI 生图、AI 生视频场景的设备上初始化；当前浏览器的配置将成为电脑和手机共同使用的数据。</p>
+          <div className="workspace-bootstrap-scenes"><strong>当前设备将导入 {initialWorkspace.scenes.length} 个场景</strong>
+            {initialWorkspace.scenes.length ? <ul>{initialWorkspace.scenes.map((scene) => <li key={scene.id}>{scene.title}</li>)}</ul> : <span>没有找到已保存的场景</span>}
+          </div>
+          <button className="button button-dark" onClick={() => void initializeServerWorkspace()} disabled={workspaceInitializing || !initialWorkspace.scenes.length}>
+            {workspaceInitializing ? <LoaderCircle className="spin" size={15} /> : <Database size={15} />}
+            {workspaceInitializing ? "正在初始化…" : "用当前设备配置初始化本机工作区"}
+          </button>
+        </>}
+        {workspaceSyncError && <div className="workspace-bootstrap-error" role="alert">{workspaceSyncError}</div>}
+        {workspaceStatus === "loading" && workspaceSyncError && <button className="button button-outline" onClick={() => { setWorkspaceSyncError(""); setWorkspaceLoadAttempt((attempt) => attempt + 1); }}><RotateCw size={14} />重试连接</button>}
+      </section>
+    </main>;
+  }
 
   return (
     <div className="app-shell">
@@ -225,6 +375,7 @@ export default function App() {
           <div className="topbar-context"><span className="topbar-workspace"><span className="workspace-dot" />本地工作区</span><ChevronRight size={14} /><span>{title}</span></div>
           <div className="topbar-actions">
             <span className="topbar-date">{dateLabel}</span>
+            {workspaceSyncError && <span className="workspace-sync-status" title={workspaceSyncError}>本机配置未同步</span>}
             <button className="icon-button refresh-button" title="刷新连接状态" aria-label="刷新连接状态" onClick={() => refreshConnections().catch(() => undefined)} disabled={refreshing}>
               <RotateCw className={refreshing ? "spin" : ""} size={15} />
             </button>
@@ -235,13 +386,14 @@ export default function App() {
 
         <div className="page-scroll">
           <div className="page-content" key={page === "studio" ? `${page}-${sceneId}` : page}>
-            {page === "home" && <Dashboard drafts={drafts} scenes={scenes} connectors={connectors} onNavigate={setPage} onOpenScene={openScene} onCreateScene={createWorkspaceScene} onUpdateScene={updateScene} onDeleteScene={deleteScene} />}
-            {page === "studio" && selectedScene && selectedWorkflow && <Studio sceneId={sceneId} scene={selectedScene} workflow={selectedWorkflow} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} onStartRun={startWorkflowRun} onCancelRun={cancelWorkflowRun} />}
+            {page === "home" && <Dashboard drafts={drafts} scenes={scenes} workflows={workflows} optionPresets={optionPresets} sceneVersions={sceneVersions} connectors={connectors} onNavigate={setPage} onOpenScene={openScene} onCreateScene={createWorkspaceScene} onUpdateScene={updateScene} onDeleteScene={deleteScene} onExportScene={exportWorkspaceScene} onImportScene={importWorkspaceScene} />}
+            {page === "studio" && selectedPublishedVersion && <Studio sceneId={sceneId} scene={selectedPublishedVersion.scene} workflow={selectedPublishedVersion.workflow} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} onStartRun={startWorkflowRun} onCancelRun={cancelWorkflowRun} />}
+            {page === "studio" && !selectedPublishedVersion && <section className="scene-unpublished"><span className="scene-unpublished-icon"><Rocket size={17} /></span><div><h2>这个场景还没有发布版本</h2><p>暂存配置不会用于创作。完成流程配置并发布后，场景才可使用。</p></div><button className="button button-dark" onClick={() => setPage("flows")}>前往流程配置</button></section>}
             {page === "history" && <History drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} />}
-            {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} selectedRunId={selectedRunId} onSelectRun={selectRun} onCancelRun={cancelWorkflowRun} activeRunId={selectedRunId !== null && activeRunIds.includes(selectedRunId) ? selectedRunId : null} canCancelRun={selectedRunId !== null && activeRunIds.includes(selectedRunId)} runStartError={selectedRunId ? runStartErrors[selectedRunId] : undefined} />}
+            {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} selectedRunId={selectedRunId} onSelectRun={selectRun} onCancelRun={cancelWorkflowRun} onResumeRun={resumeWorkflowRun} activeRunId={selectedRunId !== null && activeRunIds.includes(selectedRunId) ? selectedRunId : null} canCancelRun={selectedRunId !== null && activeRunIds.includes(selectedRunId)} runStartError={selectedRunId ? runStartErrors[selectedRunId] : undefined} />}
             {page === "assets" && <Library drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} />}
             {page === "connections" && <Connections connectors={connectors} onRefresh={refreshConnections} />}
-            {page === "flows" && selectedScene && selectedWorkflow && <FlowDesigner sceneId={sceneId} scenes={scenes} workflow={selectedWorkflow} optionPresets={optionPresets} onSceneChange={setSceneId} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onOpenConnections={() => setPage("connections")} />}
+            {page === "flows" && selectedScene && selectedWorkflow && <FlowDesigner sceneId={sceneId} scenes={scenes} scene={selectedScene} workflow={selectedWorkflow} optionPresets={optionPresets} versionRecord={selectedVersionRecord} onSceneChange={setSceneId} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onPublish={() => publishWorkspaceScene(sceneId)} onApplyVersion={(version: SceneVersion) => applyWorkspaceSceneVersion(sceneId, version.id)} onOpenConnections={() => setPage("connections")} />}
           </div>
           <footer className="app-footer"><span>在本地专注创作</span><span><Command size={12} /> ZANE STUDIO</span></footer>
         </div>

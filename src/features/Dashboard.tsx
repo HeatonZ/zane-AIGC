@@ -1,30 +1,43 @@
-import { ArrowRight, ArrowUpRight, Cable, Clock3, Image, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, ArrowUpRight, Cable, Clock3, Download, Image, Pencil, Plus, Sparkles, Trash2, Upload } from "lucide-react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { getScene } from "../data/scenes";
-import type { ConnectorState, PageId, SceneDetails, SceneId, SceneModule, WorkflowDraft } from "../types";
+import { publishedSceneVersion, sceneDraftMatchesVersion } from "../lib/sceneVersions";
+import type { ConnectorState, PageId, SceneDetails, SceneId, SceneModule, SceneVersionRecord, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset } from "../types";
 import ConnectorBadge, { ConnectorMark } from "../components/ConnectorBadge";
 import SceneEditorDialog from "./SceneEditorDialog";
 
 interface DashboardProps {
   drafts: WorkflowDraft[];
   scenes: SceneModule[];
+  workflows: Record<SceneId, WorkflowDefinition>;
+  optionPresets: WorkflowOptionPreset[];
+  sceneVersions: Record<SceneId, SceneVersionRecord>;
   connectors: ConnectorState[];
   onNavigate: (page: PageId) => void;
   onOpenScene: (sceneId: SceneId, draftId?: string) => void;
   onCreateScene: (details: SceneDetails) => void;
   onUpdateScene: (sceneId: SceneId, details: SceneDetails) => void;
   onDeleteScene: (sceneId: SceneId) => void;
+  onExportScene: (sceneId: SceneId) => void;
+  onImportScene: (file: File) => void | Promise<void>;
 }
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
-export default function Dashboard({ drafts, scenes, connectors, onNavigate, onOpenScene, onCreateScene, onUpdateScene, onDeleteScene }: DashboardProps) {
+export default function Dashboard({ drafts, scenes, workflows, optionPresets, sceneVersions, connectors, onNavigate, onOpenScene, onCreateScene, onUpdateScene, onDeleteScene, onExportScene, onImportScene }: DashboardProps) {
   const [creatingScene, setCreatingScene] = useState(false);
   const [editingScene, setEditingScene] = useState<SceneModule | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const recentDrafts = drafts.slice(0, 3);
   const connectorMap = new Map(connectors.map((connector) => [connector.id, connector]));
+
+  function handleImportChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) void onImportScene(file);
+  }
 
   return (
     <div className="dashboard-page">
@@ -42,11 +55,19 @@ export default function Dashboard({ drafts, scenes, connectors, onNavigate, onOp
       <section className="scene-section">
         <div className="section-heading">
           <div><h2>创作场景</h2><p>选择一个业务，继续你的工作流</p></div>
-          <div className="scene-section-actions"><span className="section-meta">{String(scenes.length).padStart(2, "0")} 个场景</span><button className="button button-outline scene-add-button" onClick={() => setCreatingScene(true)}><Plus size={14} />添加场景</button></div>
+          <div className="scene-section-actions"><span className="section-meta">{String(scenes.length).padStart(2, "0")} 个场景</span><button className="button button-outline scene-transfer-button" onClick={() => importInputRef.current?.click()}><Upload size={14} />导入场景</button><button className="button button-outline scene-add-button" onClick={() => setCreatingScene(true)}><Plus size={14} />添加场景</button><input ref={importInputRef} className="scene-import-input" type="file" accept="application/json,.json" onChange={handleImportChange} /></div>
         </div>
         {scenes.length ? <div className="scene-grid">
           {scenes.map((scene, index) => (
             <article className={`scene-card scene-${scene.accent}`} key={scene.id}>
+              {(() => {
+                const versionRecord = sceneVersions[scene.id];
+                const published = publishedSceneVersion(versionRecord);
+                const matches = published && sceneDraftMatchesVersion(scene, workflows[scene.id], optionPresets, published);
+                return <span className={`scene-release-status ${published ? matches ? "published" : "staged" : "unpublished"}`}>
+                  {published ? matches ? `已发布 v${published.version}` : `暂存修改 · v${published.version}` : "尚未发布"}
+                </span>;
+              })()}
               <div className="scene-cover">
                 {scene.cover && <img src={scene.cover} alt="" style={{ objectPosition: scene.coverPosition }} />}
                 <div className="scene-cover-shade" />
@@ -66,7 +87,7 @@ export default function Dashboard({ drafts, scenes, connectors, onNavigate, onOp
                     <span key={stage}>{stage}{stageIndex < scene.stages.length - 1 && <i>·</i>}</span>
                   ))}
                 </div>
-                <div className="scene-card-actions"><button className="text-button" onClick={() => onOpenScene(scene.id)}>进入工作流 <ArrowRight size={14} /></button><div><button className="icon-button" onClick={() => setEditingScene(scene)} title={`编辑${scene.title}`} aria-label={`编辑${scene.title}`}><Pencil size={14} /></button><button className="icon-button scene-delete-action" onClick={() => onDeleteScene(scene.id)} title={`删除${scene.title}`} aria-label={`删除${scene.title}`}><Trash2 size={14} /></button></div></div>
+                <div className="scene-card-actions"><button className="text-button" onClick={() => onOpenScene(scene.id)}>{sceneVersions[scene.id]?.publishedVersionId ? "进入工作流" : "编辑并发布"} <ArrowRight size={14} /></button><div><button className="icon-button" onClick={() => onExportScene(scene.id)} title={`导出${scene.title}`} aria-label={`导出${scene.title}`}><Download size={14} /></button><button className="icon-button" onClick={() => setEditingScene(scene)} title={`编辑${scene.title}`} aria-label={`编辑${scene.title}`}><Pencil size={14} /></button><button className="icon-button scene-delete-action" onClick={() => onDeleteScene(scene.id)} title={`删除${scene.title}`} aria-label={`删除${scene.title}`}><Trash2 size={14} /></button></div></div>
               </div>
             </article>
           ))}

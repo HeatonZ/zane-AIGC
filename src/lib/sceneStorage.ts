@@ -1,7 +1,9 @@
 import { defaultScenes } from "../data/scenes";
+import { createId } from "./ids";
 import type { SceneDetails, SceneModule } from "../types";
 
 const storageKey = "zane-studio:scenes:v1";
+const imageToImageSceneMigrationKey = "zane-studio:scenes:image-to-image-v2";
 
 function normalizeScene(value: unknown, index: number): SceneModule | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -24,15 +26,25 @@ function normalizeScene(value: unknown, index: number): SceneModule | undefined 
 export function readScenes(): SceneModule[] {
   try {
     const saved = window.localStorage.getItem(storageKey);
-    if (saved === null) return structuredClone(defaultScenes);
+    if (saved === null) {
+      window.localStorage.setItem(imageToImageSceneMigrationKey, "done");
+      return structuredClone(defaultScenes);
+    }
     const parsed: unknown = JSON.parse(saved);
     if (!Array.isArray(parsed)) return structuredClone(defaultScenes);
     const seen = new Set<string>();
-    return parsed.map(normalizeScene).filter((scene): scene is SceneModule => {
+    const scenes = parsed.map(normalizeScene).filter((scene): scene is SceneModule => {
       if (!scene || seen.has(scene.id)) return false;
       seen.add(scene.id);
       return true;
     });
+    if (window.localStorage.getItem(imageToImageSceneMigrationKey) !== "done") {
+      const imageToImageScene = defaultScenes.find((scene) => scene.id === "image_to_image");
+      if (imageToImageScene && !seen.has(imageToImageScene.id)) scenes.push(structuredClone(imageToImageScene));
+      window.localStorage.setItem(storageKey, JSON.stringify(scenes));
+      window.localStorage.setItem(imageToImageSceneMigrationKey, "done");
+    }
+    return scenes;
   } catch {
     return structuredClone(defaultScenes);
   }
@@ -43,5 +55,5 @@ export function writeScenes(scenes: SceneModule[]) {
 }
 
 export function createScene(details: SceneDetails): SceneModule {
-  return { ...details, id: `scene_${crypto.randomUUID()}` };
+  return { ...details, id: `scene_${createId()}` };
 }

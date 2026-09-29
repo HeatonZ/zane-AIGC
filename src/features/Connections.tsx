@@ -12,6 +12,7 @@ const initialSettings: ConnectionSettings = {
   enabledHermesProfiles: ["default"],
   comfyuiBaseUrl: "http://127.0.0.1:8188",
   projectDirectory: "",
+  workflowTimeoutMinutes: 10,
 };
 
 export default function Connections({ connectors, onRefresh }: ConnectionsProps) {
@@ -50,6 +51,7 @@ export default function Connections({ connectors, onRefresh }: ConnectionsProps)
         enabledHermesProfiles: settings.enabledHermesProfiles,
         comfyuiBaseUrl: settings.comfyuiBaseUrl,
         projectDirectory: settings.projectDirectory,
+        workflowTimeoutMinutes: settings.workflowTimeoutMinutes,
       });
       setSettings(updated);
       setNotice("集成设置和项目目录已保存。");
@@ -114,11 +116,16 @@ export default function Connections({ connectors, onRefresh }: ConnectionsProps)
         <small className="field-help profile-help">运行任务时将以对应的 <code>hermes -p Profile</code> 隔离上下文。选择列表保存在本机工作区。</small>
 
         <div className="connection-section-heading comfy-heading"><div><span className="section-index coral-index">02</span><div><h2>ComfyUI</h2><p>提交工作流并生成图像与视频</p></div></div><StatusText state={comfyui} /></div>
-        <div className="connection-fields single-field">
+        <div className="connection-fields">
           <div className="field-group">
             <label className="field-label" htmlFor="comfyui-url">服务地址</label>
             <input id="comfyui-url" className="text-input mono-input" value={settings.comfyuiBaseUrl} onChange={(event) => setSettings({ ...settings, comfyuiBaseUrl: event.target.value })} disabled={loading} placeholder="http://127.0.0.1:8188" />
             <small className="field-help">检查 ComfyUI 的 /system_stats 接口；默认端口为 8188。</small>
+          </div>
+          <div className="field-group">
+            <label className="field-label" htmlFor="workflow-timeout">单步运行超时</label>
+            <input id="workflow-timeout" className="text-input" type="number" min={1} max={1440} step={1} value={settings.workflowTimeoutMinutes} onChange={(event) => setSettings({ ...settings, workflowTimeoutMinutes: Number(event.target.value) })} disabled={loading} />
+            <small className="field-help">ComfyUI 等待生成结果和 Hermes 单次 API 请求的最长时间，范围 1–1440 分钟；从下一次运行生效。</small>
           </div>
         </div>
 

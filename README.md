@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Vite 默认使用 `5173`，并把 `/api` 代理到 `127.0.0.1:8799`。API 的开发数据默认写入项目下的 `.local/`，因此不会和正式环境的数据混用。需要调整端口或代理地址时，复制 `.env.example` 为 `.env.development` 后修改。
+Vite 默认使用 `5174`，开发 API 默认使用 `8798`，前端会把 `/api` 代理到 `127.0.0.1:8798`。正式环境默认使用 `8799`，两套服务的端口和数据目录都分开。开发 API 的数据默认写入项目下的 `.local/`，正式环境默认写入 `data/production/`。需要调整开发端口或代理地址时，复制 `.env.example` 为 `.env.development` 后修改。
 
 ## 正式环境
 
@@ -33,7 +33,10 @@ Vite 默认使用 `5173`，并把 `/api` 代理到 `127.0.0.1:8799`。API 的开
    API_PORT=8799
    APP_DATA_DIR=F:/zane-studio-data/production
    HERMES_HOME=C:/Users/Windows11/.hermes
-   HERMES_BIN=hermes.exe
+   HERMES_API_BASE_URL=
+   HERMES_API_KEY=
+   FFMPEG_BIN=ffmpeg.exe
+   FFPROBE_BIN=ffprobe.exe
    COMFYUI_BASE_URL=http://127.0.0.1:8188
    ```
 
@@ -48,7 +51,21 @@ Vite 默认使用 `5173`，并把 `/api` 代理到 `127.0.0.1:8799`。API 的开
 
    也可以用 `npm run start:prod` 一次完成构建和启动。启动后打开 `http://127.0.0.1:8799`（如果修改了端口则使用对应端口）。`npm run start` 会提供 `dist/` 下的前端文件和 `/api` 接口，不需要再启动 `npm run dev` 或 `vite preview`。
 
-正式环境的连接设置保存在 `APP_DATA_DIR/connections.json`，开发环境仍保存在 `.local/connections.json`。浏览器的工作流和草稿也按访问地址分别保存在各自的 localStorage 中。发布新版本时重新执行 `npm run build`，然后重启 `npm run start`。
+正式环境的连接设置保存在 `APP_DATA_DIR/connections.json`，工作区的场景、流程、选项预设、草稿和场景发布版本保存在同一目录的 `workspace.json`。开发环境默认使用 `.local/`。发布新版本时重新执行 `npm run build`，然后重启 `npm run start`。
+
+## Hermes API Server
+
+Hermes 步骤通过 Hermes API Server 的 OpenAI 兼容接口执行。请在 Hermes Home 的 `.env` 中启用 API Server 并设置 `API_SERVER_KEY`，然后重启 Gateway：
+
+```dotenv
+API_SERVER_ENABLED=true
+API_SERVER_KEY=替换为本机专用密钥
+API_SERVER_PORT=8642
+```
+
+多 Profile Gateway 还需要在每个被调用 Profile 的 `profiles/<profile>/.env` 中设置该 Profile 自己的 `API_SERVER_KEY`。应用会自动读取密钥和端口；`HERMES_API_BASE_URL` 可覆盖自动推导的本机地址。只有在远程 API Server 或所有 Profile 共用同一个密钥时，才在应用 `.env` 中设置 `HERMES_API_KEY`。
+
+图片以 `data:image/...` 多模态内容发送。Hermes API 不接收视频，视频输入会由 `ffprobe` 读取时长，再用 `ffmpeg` 抽取最多 6 张代表帧；可通过 `FFMPEG_BIN` 和 `FFPROBE_BIN` 指定可执行文件路径。
 
 ## 项目目录与运行归档
 
@@ -66,9 +83,11 @@ Vite 默认使用 `5173`，并把 `/api` 代理到 `127.0.0.1:8799`。API 的开
 
 也可以通过 `ZANE_PROJECT_DIR` 设置默认项目目录。应用内“运行记录”页可查看输入、状态和结果，并复制单次运行目录路径。运行记录保存在项目目录中，不依赖浏览器草稿存储。
 
+应用内“集成连接”页的“单步运行超时”控制每个 ComfyUI 或 Hermes 步骤的最长执行时间，默认 10 分钟，可设置为 1–1440 分钟。也可以通过 `ZANE_WORKFLOW_TIMEOUT_MINUTES` 设置默认值；连接页保存的值优先。
+
 ## 更新正式环境而不覆盖配置
 
-流程配置和草稿目前保存在浏览器中：开发地址 `http://127.0.0.1:5173` 与正式地址 `http://127.0.0.1:8799` 使用不同的 localStorage。重新构建前端、替换 `dist/`、重启 Node 服务都不会清除正式地址的流程配置。正式环境的连接设置则由 `APP_DATA_DIR/connections.json` 持久化。
+场景、流程、选项预设、草稿和场景发布版本由 8799 服务端统一保存在 `APP_DATA_DIR/workspace.json`，手机和电脑访问同一个 8799 服务时使用同一份工作区。首次启动会列出当前浏览器已有的场景，需在保存着目标配置的设备上明确点击初始化；其他设备不会自动写入默认场景。初始化后，服务端是共享来源，浏览器的 localStorage 只作本地副本。
 
 发布更新时按下面的顺序操作：
 
@@ -77,23 +96,29 @@ Vite 默认使用 `5173`，并把 `/api` 代理到 `127.0.0.1:8799`。API 的开
 3. 更新代码并执行 `npm run build`。
 4. 重新执行 `npm run start`，仍然使用原来的正式地址和端口。
 
-不要清除正式地址的浏览器站点数据，也不要改用新的域名或端口后再判断配置是否丢失；浏览器会把新地址视为另一份 localStorage。若需要把正式配置迁移到新地址，当前版本需要在浏览器侧单独导出或迁移 localStorage。
+不要在服务端工作区已初始化后用另一台设备的旧 localStorage 覆盖配置；服务端 `workspace.json` 是统一来源。更换 `APP_DATA_DIR` 会切换到另一份本机工作区，需要同时迁移该文件；单个场景仍可以使用工作台提供的 JSON 导入导出。
 
-`.env.example` 列出了常用配置项。`API_HOST`、`API_PORT`、`APP_DATA_DIR`、`DIST_DIR`、`HERMES_HOME`、`HERMES_BIN`、`COMFYUI_BASE_URL`、`ZANE_PROJECT_DIR` 用于 API；`VITE_API_PROXY_TARGET` 只用于开发环境代理。
+工作台的场景卡片支持导出和导入场景。导出的 JSON 包含场景展示信息、对应流程配置，以及该流程引用的选项预设；导入时会创建一个新的场景并自动处理选项预设 ID 冲突。
+
+场景和流程编辑会自动保存为暂存内容，创作页与运行流程始终使用最近一次发布的版本。完成编辑后，在“流程配置”页发布即可让暂存内容生效；“版本管理”可将历史发布版本一键应用到暂存内容，之后仍需再次发布才会生效。版本标识是场景内容快照 MD5 的前 8 位；每个场景最多保留最近 10 个发布版本。场景导出包含当前暂存内容；导入后作为未发布的新场景，需要检查并发布后才能使用。
+
+`.env.example` 列出了常用配置项。`API_HOST`、`API_PORT`、`APP_DATA_DIR`、`DIST_DIR`、`HERMES_HOME`、`HERMES_API_BASE_URL`、`HERMES_API_KEY`、`FFMPEG_BIN`、`FFPROBE_BIN`、`COMFYUI_BASE_URL`、`ZANE_PROJECT_DIR`、`ZANE_WORKFLOW_TIMEOUT_MINUTES` 用于 API；`VITE_API_PROXY_TARGET` 只用于开发环境代理。
 
 ## 当前能力
 
 - `流程配置` 使用表单编辑场景输入、按顺序执行的步骤、每步输入/输出和场景最终输出，不提供图形画布。
-- 步骤输入可引用场景字段或前序步骤的输出；最终输出可引用场景字段或任意步骤输出。Hermes 提示词可插入这些引用。
+- 工作台支持将单个场景导出为 JSON，也可以从 JSON 导入场景和对应流程配置。
+- 步骤输入和 ComfyUI 输入绑定可引用场景字段、前序步骤输出，也可以配置带类型的固定值；最终输出可引用场景字段或任意步骤输出。Hermes 提示词可插入这些引用。
 - 场景输入表单随流程定义生成；流程与草稿保存在浏览器本地存储，运行输入、状态和输出归档到配置的项目目录。
-- 集成页可启用多个 Hermes Profile，并检查本机 Profile Gateway；ComfyUI 使用 `/system_stats` 检查。
+- 集成页可启用多个 Hermes Profile，并通过 API Server 的 `/v1/models` 检查认证和连通性；ComfyUI 使用 `/system_stats` 检查。
 - Hermes 运行不经过全局队列，不同运行请求可以并行启动独立会话；ComfyUI 步骤进入进程级串行队列，自动等待前一个任务结束。
-- 运行中的流程可以点击“取消运行”。客户端会中止请求，Hermes 子进程会收到终止信号，ComfyUI 会调用 `/interrupt`；“继续编辑”会恢复草稿输入和上次运行结果。
-- Hermes Profile 从 `HERMES_HOME` 下的 `config.yaml` 和 `profiles/*/config.yaml` 发现。Hermes 不按 OpenAI 兼容 `/models` 接口探测。若 API 进程找不到 CLI，可设置 `HERMES_BIN` 为 `hermes.exe` 完整路径。
+- 运行中的流程可以点击“取消运行”。客户端会中止 Hermes API 请求，ComfyUI 会调用 `/interrupt`；“继续编辑”会恢复草稿输入和上次运行结果。
+- 失败记录可以在“运行记录”页点击“从失败步骤继续”；取消记录或服务重启后仍标记为运行中的记录可以点击“从断点继续”。操作会按原记录的工作流快照创建新运行，复用连续已完成或已跳过步骤的状态和输出，从第一个未完成步骤开始重新执行后续流程；原记录和输入文件会保留。
+- Hermes Profile 从 `HERMES_HOME` 下的 `config.yaml` 和 `profiles/*/config.yaml` 发现。Hermes 连接状态按 Profile 检查 API Server 和 API 密钥。
 - ComfyUI 工作流支持直接选择画布（UI）格式；后台在读取和运行时会实时转换为 `/prompt` 所需的 API 图，不需要用户手动导出 API JSON。
 - 连接设置写入 `.local/connections.json`，该目录已加入 `.gitignore`。
 
-目前流程定义和输入/输出引用已可编辑、保存；任务执行引擎会按步骤调用 Hermes 和 ComfyUI。集成页显示的 Hermes 状态表示 Profile Gateway 可用；ComfyUI 画布工作流会在后台转换后提交。
+目前流程定义和输入/输出引用已可编辑、保存；任务执行引擎会按步骤调用 Hermes API Server 和 ComfyUI。集成页显示的 Hermes 状态表示所选 Profile 的 API Server 可用；ComfyUI 画布工作流会在后台转换后提交。
 
 ## 代码入口
 

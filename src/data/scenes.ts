@@ -14,6 +14,17 @@ export const defaultScenes: SceneModule[] = [
     stages: ["提示词", "节点绑定", "参数设置", "图像生成"],
   },
   {
+    id: "image_to_image",
+    title: "基础图生图",
+    shortTitle: "图生图",
+    summary: "按顺序上传多张参考图并进行图生图",
+    description: "按上传顺序将参考图作为图生图条件",
+    cover: "https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?auto=format&fit=crop&w=1200&q=85",
+    coverPosition: "center 42%",
+    accent: "coral",
+    stages: ["参考图片", "提示词", "ComfyUI 图生图", "生成结果"],
+  },
+  {
     id: "comic",
     title: "漫剧制作",
     shortTitle: "漫剧",
