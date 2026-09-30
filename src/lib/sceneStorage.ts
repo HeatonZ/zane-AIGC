@@ -1,6 +1,6 @@
 import { defaultScenes } from "../data/scenes";
 import { createId } from "./ids";
-import type { SceneDetails, SceneModule } from "../types";
+import type { SceneDetails, SceneId, SceneModule } from "../types";
 
 const storageKey = "zane-studio:scenes:v1";
 const imageToImageSceneMigrationKey = "zane-studio:scenes:image-to-image-v2";
@@ -52,6 +52,15 @@ export function readScenes(): SceneModule[] {
 
 export function writeScenes(scenes: SceneModule[]) {
   window.localStorage.setItem(storageKey, JSON.stringify(scenes));
+}
+
+export function moveScene(scenes: SceneModule[], sceneId: SceneId, targetIndex: number): SceneModule[] {
+  const currentIndex = scenes.findIndex((scene) => scene.id === sceneId);
+  if (currentIndex < 0 || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= scenes.length || currentIndex === targetIndex) return scenes;
+  const nextScenes = [...scenes];
+  const [scene] = nextScenes.splice(currentIndex, 1);
+  nextScenes.splice(targetIndex, 0, scene);
+  return nextScenes;
 }
 
 export function createScene(details: SceneDetails): SceneModule {

@@ -4,6 +4,8 @@
 
 ## 开发环境
 
+需要 Node 24 或以上版本（运行存储使用原生 `node:sqlite`）。
+
 开发环境由 Vite 前端和本地 API 两个进程组成：
 
 ```powershell
@@ -51,7 +53,7 @@ Vite 默认使用 `5174`，开发 API 默认使用 `8798`，前端会把 `/api` 
 
    也可以用 `npm run start:prod` 一次完成构建和启动。启动后打开 `http://127.0.0.1:8799`（如果修改了端口则使用对应端口）。`npm run start` 会提供 `dist/` 下的前端文件和 `/api` 接口，不需要再启动 `npm run dev` 或 `vite preview`。
 
-正式环境的连接设置保存在 `APP_DATA_DIR/connections.json`，工作区的场景、流程、选项预设、草稿和场景发布版本保存在同一目录的 `workspace.json`。开发环境默认使用 `.local/`。发布新版本时重新执行 `npm run build`，然后重启 `npm run start`。
+正式环境的连接设置保存在 `APP_DATA_DIR/connections.json`，工作区、运行索引和事件以同一目录的 `zane.db` 为权威存储，`workspace.json` 保留为兼容导出镜像。开发环境默认使用 `.local/`。发布新版本时重新执行 `npm run build`，然后重启 `npm run start`。
 
 ## Hermes API Server
 
@@ -81,13 +83,13 @@ API_SERVER_PORT=8642
   outputs/media/          # ComfyUI 生成媒体副本
 ```
 
-也可以通过 `ZANE_PROJECT_DIR` 设置默认项目目录。应用内“运行记录”页可查看输入、状态和结果，并复制单次运行目录路径。运行记录保存在项目目录中，不依赖浏览器草稿存储。
+也可以通过 `ZANE_PROJECT_DIR` 设置默认项目目录。应用内“运行记录”页可查看输入、状态和结果，并复制单次运行目录路径。运行元数据与事件存入 SQLite，输入/输出文件继续归档到项目目录，不依赖浏览器草稿存储。
 
 应用内“集成连接”页的“单步运行超时”控制每个 ComfyUI 或 Hermes 步骤的最长执行时间，默认 10 分钟，可设置为 1–1440 分钟。也可以通过 `ZANE_WORKFLOW_TIMEOUT_MINUTES` 设置默认值；连接页保存的值优先。
 
 ## 更新正式环境而不覆盖配置
 
-场景、流程、选项预设、草稿和场景发布版本由 8799 服务端统一保存在 `APP_DATA_DIR/workspace.json`，手机和电脑访问同一个 8799 服务时使用同一份工作区。首次启动会列出当前浏览器已有的场景，需在保存着目标配置的设备上明确点击初始化；其他设备不会自动写入默认场景。初始化后，服务端是共享来源，浏览器的 localStorage 只作本地副本。
+场景、流程、选项预设、草稿和场景发布版本由 8799 服务端统一保存在 `APP_DATA_DIR/zane.db`（`workspace.json` 为导出镜像），手机和电脑访问同一个 8799 服务时使用同一份工作区。首次启动会列出当前浏览器已有的场景，需在保存着目标配置的设备上明确点击初始化；其他设备不会自动写入默认场景。初始化后，服务端是共享来源，浏览器的 localStorage 只作本地副本。
 
 发布更新时按下面的顺序操作：
 
@@ -96,7 +98,7 @@ API_SERVER_PORT=8642
 3. 更新代码并执行 `npm run build`。
 4. 重新执行 `npm run start`，仍然使用原来的正式地址和端口。
 
-不要在服务端工作区已初始化后用另一台设备的旧 localStorage 覆盖配置；服务端 `workspace.json` 是统一来源。更换 `APP_DATA_DIR` 会切换到另一份本机工作区，需要同时迁移该文件；单个场景仍可以使用工作台提供的 JSON 导入导出。
+不要在服务端工作区已初始化后用另一台设备的旧 localStorage 覆盖配置；服务端 SQLite 是统一来源。更换 `APP_DATA_DIR` 会切换到另一份本机工作区，应停服后迁移整个数据目录及项目归档；单个场景仍可以使用工作台提供的 JSON 导入导出。
 
 工作台的场景卡片支持导出和导入场景。导出的 JSON 包含场景展示信息、对应流程配置，以及该流程引用的选项预设；导入时会创建一个新的场景并自动处理选项预设 ID 冲突。
 
@@ -109,11 +111,11 @@ API_SERVER_PORT=8642
 - `流程配置` 使用表单编辑场景输入、按顺序执行的步骤、每步输入/输出和场景最终输出，不提供图形画布。
 - 工作台支持将单个场景导出为 JSON，也可以从 JSON 导入场景和对应流程配置。
 - 步骤输入和 ComfyUI 输入绑定可引用场景字段、前序步骤输出，也可以配置带类型的固定值；最终输出可引用场景字段或任意步骤输出。Hermes 提示词可插入这些引用。
-- 场景输入表单随流程定义生成；流程与草稿保存在浏览器本地存储，运行输入、状态和输出归档到配置的项目目录。
+- 场景输入表单随流程定义生成；流程与草稿由共享工作区保存，浏览器保留本地副本和待同步 outbox；运行元数据存入 SQLite，文件归档到项目目录。
 - 集成页可启用多个 Hermes Profile，并通过 API Server 的 `/v1/models` 检查认证和连通性；ComfyUI 使用 `/system_stats` 检查。
-- Hermes 运行不经过全局队列，不同运行请求可以并行启动独立会话；ComfyUI 步骤进入进程级串行队列，自动等待前一个任务结束。
-- 运行中的流程可以点击“取消运行”。客户端会中止 Hermes API 请求，ComfyUI 会调用 `/interrupt`；“继续编辑”会恢复草稿输入和上次运行结果。
-- 失败记录可以在“运行记录”页点击“从失败步骤继续”；取消记录或服务重启后仍标记为运行中的记录可以点击“从断点继续”。操作会按原记录的工作流快照创建新运行，复用连续已完成或已跳过步骤的状态和输出，从第一个未完成步骤开始重新执行后续流程；原记录和输入文件会保留。
+- 后台 Worker 默认允许 2 个流程并发，可通过 `ZANE_MAX_ACTIVE_RUNS` 调整；步骤启用 `for_each` 后可配置 `execution.maxConcurrency`（1–32），ComfyUI 同一上游地址按已请求的最大并行数限流，不同地址互不阻塞。
+- 运行中的流程可以点击“取消运行”。服务端会中止 Hermes API 请求，ComfyUI 会调用 `/interrupt`；关闭页面不会取消后台任务。“继续编辑”会恢复草稿输入和上次运行结果。
+- 失败记录可以在“运行记录”页点击“从失败步骤继续”；取消记录或服务重启后标记为“待恢复”的记录可以点击“从断点继续”。操作会按原记录的工作流快照创建新运行，复用已完成或已跳过步骤及已完成的逐项结果，只重试未完成的逐项并继续后续步骤；原记录和输入文件会保留。服务中断时正在执行的步骤或逐项可能被外部服务实际完成但尚未保存，续跑时可能重复执行。
 - Hermes Profile 从 `HERMES_HOME` 下的 `config.yaml` 和 `profiles/*/config.yaml` 发现。Hermes 连接状态按 Profile 检查 API Server 和 API 密钥。
 - ComfyUI 工作流支持直接选择画布（UI）格式；后台在读取和运行时会实时转换为 `/prompt` 所需的 API 图，不需要用户手动导出 API JSON。
 - 连接设置写入 `.local/connections.json`，该目录已加入 `.gitignore`。
@@ -126,4 +128,24 @@ API_SERVER_PORT=8642
 - `src/features/Studio.tsx`：根据场景流程定义动态生成输入表单并保存草稿。
 - `src/features/FlowDesigner.tsx`：表单式场景流程定义。
 - `src/features/Dashboard.tsx`：工作台场景入口、最近草稿和服务状态。
-- `server/index.ts`：本地设置存储、工作流执行，以及 Hermes、ComfyUI 连通性检查和 ComfyUI 工作流转换。
+- `server/index.ts`：启动与连接器组装；`server/services`、`server/execution`、`server/storage`、`server/api` 分别负责业务、执行、持久化和路由。
+
+## 基建、迁移与检查
+
+异步运行、SQLite 迁移、SSE、取消/重启语义、配置参数与 WAL 备份注意事项见 `docs/infrastructure.md`。一个数据目录只支持一个 API 进程。
+
+```powershell
+npm run check       # 类型检查、自动发现测试、构建和隔离冒烟验证
+```
+
+运行测试不会调用真实 Hermes/ComfyUI 生成服务。后续资产去重、工作流编译与进一步连接器拆分尚未包含在本轮改造中。
+
+## 电商套图（独立场景）
+
+新增多平台电商套图场景，复用现有工作台，支持AI场景重绘、原图保真排版、准确文案后置、多平台尺寸覆盖及ZIP导出。使用与安装说明见 `docs/commerce-pack.md`。已有共享工作区运行 `npm run scene:install:commerce` 只追加并发布新场景，不替换原有场景。
+
+## 长文出视频（原生有声片段）
+
+提供长文/剧情、人物/场景/道具资产与参考音色，Writer直接生成制作级分镜，H3原生生成对白和视频片段，本机FFmpeg顺序合成。无独立配音、关键帧或模型质检节点，每个片段提示词禁止音乐。
+
+构建并重启服务后执行 `npm run scene:install:long-video` 安装并发布独立场景（保留已有场景与草稿）。配置与执行协议见 [长文出视频说明](docs/long-text-video.md)，模拟完整链路验证执行 `npm run test:long-video:smoke`（不调用真实生成模型）。

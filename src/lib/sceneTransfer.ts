@@ -1,5 +1,6 @@
 import { createScene } from "./sceneStorage";
 import { createId } from "./ids";
+import { canonicalWorkflowType, migrateLegacyComfyInputFormats, normalizeWorkflowMediaTypes } from "./workflowMigration";
 import type {
   SceneModule,
   WorkflowDefinition,
@@ -8,6 +9,7 @@ import type {
   WorkflowStepDefinition,
   WorkflowValueSource,
   WorkflowVariableType,
+  WorkflowMediaSelection,
 } from "../types";
 
 const packageFormat = "zane-studio-scene";
@@ -28,8 +30,8 @@ export interface ImportedScene {
   optionPresets: WorkflowOptionPreset[];
 }
 
-const workflowFieldTypes: WorkflowFieldType[] = ["text", "textarea", "number", "boolean", "select", "image", "image_list", "audio", "video", "json"];
-const workflowVariableTypes: WorkflowVariableType[] = ["text", "number", "boolean", "image", "image_list", "video", "json"];
+const workflowFieldTypes: WorkflowFieldType[] = ["text", "textarea", "number", "boolean", "select", "image_list", "video_list", "audio_list", "json"];
+const workflowVariableTypes: WorkflowVariableType[] = ["text", "number", "boolean", "image_list", "video_list", "audio_list", "json"];
 const workflowExecutionModes = ["once", "for_each"] as const;
 const workflowIterationErrorPolicies = ["continue", "stop"] as const;
 const workflowStepKinds: WorkflowStepDefinition["kind"][] = ["hermes", "comfyui", "manual", "control"];
@@ -54,6 +56,24 @@ function optionalString(value: unknown, fallback = ""): string {
 function enumValue<T extends string>(value: unknown, values: T[], label: string): T {
   if (typeof value !== "string" || !values.includes(value as T)) throw new Error(`场景包中的${label}无效`);
   return value as T;
+}
+
+function normalizeMaxConcurrency(value: unknown, label: string) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 32) {
+    throw new Error(`场景包中的${label}无效`);
+  }
+  return value;
+}
+
+function normalizeMediaSelection(value: unknown, label: string): WorkflowMediaSelection | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error(`场景包中的${label}媒体选择无效`);
+  const mode = enumValue(value.mode, ["all", "item", "for_each"] as const, `${label}媒体选择方式`);
+  if (mode !== "item") return { mode };
+  if (typeof value.index !== "number" || !Number.isSafeInteger(value.index) || value.index < 0) {
+    throw new Error(`场景包中的${label}媒体序号无效`);
+  }
+  return { mode, index: value.index };
 }
 
 function normalizeScene(value: unknown): SceneModule {
@@ -86,6 +106,8 @@ function normalizeStepReference(value: unknown, label: string) {
   if (value.valueSource !== undefined) result.valueSource = enumValue(value.valueSource, ["literal", "reference"] as WorkflowValueSource[], `${label}取值来源`);
   if (typeof value.literalValue === "string") result.literalValue = value.literalValue;
   if (value.literalType !== undefined) result.literalType = enumValue(value.literalType, workflowVariableTypes, `${label}固定值类型`);
+  const selection = normalizeMediaSelection(value.selection, label);
+  if (selection) result.selection = selection;
   if (result.valueSource === "literal" && result.literalValue === undefined) result.literalValue = "";
   return result;
 }
@@ -96,9 +118,10 @@ function normalizeWorkflowInput(value: unknown, index: number) {
   const input: WorkflowDefinition["inputs"][number] = {
     key: requiredString(value.key, `第 ${index + 1} 个场景输入 key`),
     label: requiredString(value.label, `第 ${index + 1} 个场景输入名称`),
-    type: enumValue(value.type, workflowFieldTypes, `第 ${index + 1} 个场景输入类型`),
+    type: enumValue(canonicalWorkflowType(value.type), workflowFieldTypes, `第 ${index + 1} 个场景输入类型`),
     required: value.required,
   };
+  if (typeof value.defaultValue === "string" || typeof value.defaultValue === "number" || typeof value.defaultValue === "boolean" || value.defaultValue === null) input.defaultValue = value.defaultValue;
   if (typeof value.placeholder === "string") input.placeholder = value.placeholder;
   if (Array.isArray(value.options)) {
     if (value.options.some((option) => typeof option !== "string")) throw new Error(`场景包中的场景输入“${input.label}”选项无效`);
@@ -113,7 +136,7 @@ function normalizeStepOutput(value: unknown, index: number) {
   const output: WorkflowStepDefinition["outputs"][number] = {
     key: requiredString(value.key, `第 ${index + 1} 个步骤输出 key`),
     label: requiredString(value.label, `第 ${index + 1} 个步骤输出名称`),
-    type: enumValue(value.type, workflowVariableTypes, `第 ${index + 1} 个步骤输出类型`),
+    type: enumValue(canonicalWorkflowType(value.type), workflowVariableTypes, `第 ${index + 1} 个步骤输出类型`),
   };
   if (typeof value.description === "string") output.description = value.description;
   return output;
@@ -159,12 +182,14 @@ function normalizeComfyBinding(value: unknown, index: number) {
     direction,
     nodeId: requiredString(value.nodeId, `第 ${index + 1} 个 ComfyUI 绑定节点`),
     property: requiredString(value.property, `第 ${index + 1} 个 ComfyUI 绑定属性`),
-    type: enumValue(value.type, workflowVariableTypes, `第 ${index + 1} 个 ComfyUI 绑定类型`),
+    type: enumValue(canonicalWorkflowType(value.type), workflowVariableTypes, `第 ${index + 1} 个 ComfyUI 绑定类型`),
   };
   if (typeof value.required === "boolean") binding.required = value.required;
   if (typeof value.sourceRef === "string") binding.sourceRef = value.sourceRef;
   if (value.valueSource !== undefined) binding.valueSource = enumValue(value.valueSource, ["literal", "reference"] as WorkflowValueSource[], `第 ${index + 1} 个 ComfyUI 绑定取值来源`);
   if (typeof value.literalValue === "string") binding.literalValue = value.literalValue;
+  const selection = normalizeMediaSelection(value.selection, `第 ${index + 1} 个 ComfyUI 绑定`);
+  if (selection) binding.selection = selection;
   if (binding.valueSource === "literal" && binding.literalValue === undefined) binding.literalValue = "";
   if (Array.isArray(value.options)) {
     if (value.options.some((option) => typeof option !== "string")) throw new Error(`场景包中的 ComfyUI 绑定选项无效`);
@@ -174,7 +199,7 @@ function normalizeComfyBinding(value: unknown, index: number) {
     const format = value.sourceInputFormat;
     if (typeof format.required !== "boolean") throw new Error("场景包中的 ComfyUI 输入格式无效");
     binding.sourceInputFormat = {
-      type: enumValue(format.type, workflowFieldTypes, "ComfyUI 输入格式类型"),
+       type: enumValue(canonicalWorkflowType(format.type), workflowFieldTypes, "ComfyUI 输入格式类型"),
       required: format.required,
       ...(Array.isArray(format.options) ? { options: format.options.filter((option): option is string => typeof option === "string") } : {}),
       ...(typeof format.optionPresetId === "string" && format.optionPresetId ? { optionPresetId: format.optionPresetId } : {}),
@@ -184,7 +209,7 @@ function normalizeComfyBinding(value: unknown, index: number) {
     binding.sourceOutputFormat = {
       stepId: requiredString(value.sourceOutputFormat.stepId, "ComfyUI 输出格式步骤"),
       outputKey: requiredString(value.sourceOutputFormat.outputKey, "ComfyUI 输出格式 key"),
-      type: enumValue(value.sourceOutputFormat.type, workflowVariableTypes, "ComfyUI 输出格式类型"),
+       type: enumValue(canonicalWorkflowType(value.sourceOutputFormat.type), workflowVariableTypes, "ComfyUI 输出格式类型"),
     };
   }
   return binding;
@@ -208,6 +233,7 @@ function normalizeWorkflowStep(value: unknown, index: number): WorkflowStepDefin
       mode: enumValue(rawExecution.mode, [...workflowExecutionModes], `第 ${index + 1} 个步骤执行方式`),
       ...(typeof rawExecution.sourceRef === "string" && rawExecution.sourceRef.trim() ? { sourceRef: rawExecution.sourceRef.trim() } : {}),
       ...(rawExecution.onError === undefined ? {} : { onError: enumValue(rawExecution.onError, [...workflowIterationErrorPolicies], `第 ${index + 1} 个步骤逐项失败策略`) }),
+      ...(rawExecution.maxConcurrency === undefined ? {} : { maxConcurrency: normalizeMaxConcurrency(rawExecution.maxConcurrency, `第 ${index + 1} 个步骤最大并行数`) }),
     };
   }
   if (typeof value.hermesProfile === "string") step.hermesProfile = value.hermesProfile;
@@ -217,7 +243,21 @@ function normalizeWorkflowStep(value: unknown, index: number): WorkflowStepDefin
       workflowFile: optionalString(value.comfyui.workflowFile),
       bindings: value.comfyui.bindings.map(normalizeComfyBinding),
     };
+    if (value.comfyui.adapter !== undefined) {
+      step.comfyui.adapter = enumValue(value.comfyui.adapter, ["h3_long_video", "commerce_pack", "long_text_video", "video_concat"] as const, "ComfyUI 执行适配器");
+      if (step.comfyui.adapter === "h3_long_video") {
+        const config = value.comfyui.h3LongVideo;
+        if (!isRecord(config)) throw new Error("H3 长视频步骤缺少分段和素材引用");
+        step.comfyui.h3LongVideo = {
+          planRef: requiredString(config.planRef, "H3 分段方案引用"),
+          promptRowsRef: requiredString(config.promptRowsRef, "H3 提示词列表引用"),
+          referenceImagesRef: requiredString(config.referenceImagesRef, "H3 参考图引用"),
+          ...(typeof config.materialNoteRef === "string" && config.materialNoteRef.trim() ? { materialNoteRef: config.materialNoteRef } : {}),
+        };
+      }
+    }
   }
+
   if (value.control !== undefined) step.control = normalizeControlConfig(value.control, index);
   if (value.runCondition !== undefined) step.runCondition = normalizeRunCondition(value.runCondition, index);
   return step;
@@ -228,11 +268,13 @@ function normalizeWorkflow(value: unknown, sceneId: string): WorkflowDefinition 
   if (!Array.isArray(value.inputs) || !Array.isArray(value.steps) || !Array.isArray(value.outputs)) throw new Error("场景包中的流程配置不完整");
   const outputs = value.outputs.map((output, index) => {
     if (!isRecord(output)) throw new Error(`场景包中的第 ${index + 1} 个最终输出无效`);
+    const selection = normalizeMediaSelection(output.selection, `第 ${index + 1} 个最终输出`);
     return {
       key: requiredString(output.key, `第 ${index + 1} 个最终输出 key`),
       label: requiredString(output.label, `第 ${index + 1} 个最终输出名称`),
-      type: enumValue(output.type, workflowVariableTypes, `第 ${index + 1} 个最终输出类型`),
+      type: enumValue(canonicalWorkflowType(output.type), workflowVariableTypes, `第 ${index + 1} 个最终输出类型`),
       sourceRef: requiredString(output.sourceRef, `第 ${index + 1} 个最终输出引用`),
+      ...(selection ? { selection } : {}),
     };
   });
   const rawExecution = isRecord(value.execution) ? value.execution : undefined;
@@ -241,16 +283,17 @@ function normalizeWorkflow(value: unknown, sceneId: string): WorkflowDefinition 
       mode: enumValue(rawExecution.mode, [...workflowExecutionModes], "流程执行方式"),
       ...(typeof rawExecution.sourceRef === "string" && rawExecution.sourceRef.trim() ? { sourceRef: rawExecution.sourceRef.trim() } : {}),
       ...(rawExecution.onError === undefined ? {} : { onError: enumValue(rawExecution.onError, [...workflowIterationErrorPolicies], "逐项失败策略") }),
+      ...(rawExecution.maxConcurrency === undefined ? {} : { maxConcurrency: normalizeMaxConcurrency(rawExecution.maxConcurrency, "流程最大并行数") }),
     }
     : undefined;
-  return {
+  return normalizeWorkflowMediaTypes(migrateLegacyComfyInputFormats({
     sceneId,
     name: requiredString(value.name, "流程名称"),
     inputs: value.inputs.map(normalizeWorkflowInput),
     steps: value.steps.map(normalizeWorkflowStep),
     outputs,
     ...(execution ? { execution } : {}),
-  };
+  }));
 }
 
 function normalizeOptionPresets(value: unknown): WorkflowOptionPreset[] {

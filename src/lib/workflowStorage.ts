@@ -1,4 +1,5 @@
 import { cloneDefaultWorkflows, createSceneWorkflow } from "../data/workflows";
+import { migrateLegacyComfyInputFormats, normalizeWorkflowMediaTypes } from "./workflowMigration";
 import type { SceneId, SceneModule, WorkflowDefinition, WorkflowFieldType, WorkflowOptionPreset, WorkflowStepDefinition } from "../types";
 
 const storageKey = "zane-studio:workflows:v1";
@@ -26,19 +27,20 @@ function normalizeStep(step: StoredWorkflowStep): WorkflowStepDefinition {
 }
 
 function normalizeWorkflow(workflow: LegacyWorkflowDefinition): WorkflowDefinition {
+  const migratedWorkflow = normalizeWorkflowMediaTypes(migrateLegacyComfyInputFormats(workflow));
   const optionPresets = Array.isArray(workflow.optionPresets)
     ? normalizeOptionPresets(workflow.optionPresets)
     : [];
   const optionPresetMap = new Map(optionPresets.map((preset) => [preset.id, preset]));
-  const { optionPresets: _legacyOptionPresets, ...withoutLegacyOptionPresets } = workflow;
+  const { optionPresets: _legacyOptionPresets, ...withoutLegacyOptionPresets } = migratedWorkflow;
   return {
     ...withoutLegacyOptionPresets,
-    inputs: workflow.inputs.map((field) => {
+    inputs: migratedWorkflow.inputs.map((field) => {
       if (field.type !== "select" || !field.optionPresetId) return field;
       const preset = optionPresetMap.get(field.optionPresetId);
       return preset ? { ...field, options: [...preset.options] } : { ...field, optionPresetId: undefined };
     }),
-    steps: workflow.steps.map((step) => normalizeStep(step as StoredWorkflowStep)),
+    steps: migratedWorkflow.steps.map((step) => normalizeStep(step as StoredWorkflowStep)),
   };
 }
 

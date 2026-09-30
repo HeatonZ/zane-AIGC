@@ -16,3 +16,4 @@ backups/
 *.orig
 *~
 *.swp
+.tmp*

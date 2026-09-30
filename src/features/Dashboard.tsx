@@ -1,4 +1,4 @@
-import { ArrowRight, ArrowUpRight, Cable, Clock3, Download, Image, Pencil, Plus, Sparkles, Trash2, Upload } from "lucide-react";
+import { ArrowDownUp, ArrowRight, ArrowUpRight, Cable, Clock3, Download, Image, Pencil, Plus, Sparkles, Trash2, Upload } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { getScene } from "../data/scenes";
 import { publishedSceneVersion, sceneDraftMatchesVersion } from "../lib/sceneVersions";
@@ -20,13 +20,14 @@ interface DashboardProps {
   onDeleteScene: (sceneId: SceneId) => void;
   onExportScene: (sceneId: SceneId) => void;
   onImportScene: (file: File) => void | Promise<void>;
+  onSortScenes: () => void;
 }
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
-export default function Dashboard({ drafts, scenes, workflows, optionPresets, sceneVersions, connectors, onNavigate, onOpenScene, onCreateScene, onUpdateScene, onDeleteScene, onExportScene, onImportScene }: DashboardProps) {
+export default function Dashboard({ drafts, scenes, workflows, optionPresets, sceneVersions, connectors, onNavigate, onOpenScene, onCreateScene, onUpdateScene, onDeleteScene, onExportScene, onImportScene, onSortScenes }: DashboardProps) {
   const [creatingScene, setCreatingScene] = useState(false);
   const [editingScene, setEditingScene] = useState<SceneModule | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -55,7 +56,7 @@ export default function Dashboard({ drafts, scenes, workflows, optionPresets, sc
       <section className="scene-section">
         <div className="section-heading">
           <div><h2>创作场景</h2><p>选择一个业务，继续你的工作流</p></div>
-          <div className="scene-section-actions"><span className="section-meta">{String(scenes.length).padStart(2, "0")} 个场景</span><button className="button button-outline scene-transfer-button" onClick={() => importInputRef.current?.click()}><Upload size={14} />导入场景</button><button className="button button-outline scene-add-button" onClick={() => setCreatingScene(true)}><Plus size={14} />添加场景</button><input ref={importInputRef} className="scene-import-input" type="file" accept="application/json,.json" onChange={handleImportChange} /></div>
+          <div className="scene-section-actions"><span className="section-meta">{String(scenes.length).padStart(2, "0")} 个场景</span><button className="button button-outline scene-order-button" onClick={onSortScenes} disabled={scenes.length < 2}><ArrowDownUp size={14} />场景排序</button><button className="button button-outline scene-transfer-button" onClick={() => importInputRef.current?.click()}><Upload size={14} />导入场景</button><button className="button button-outline scene-add-button" onClick={() => setCreatingScene(true)}><Plus size={14} />添加场景</button><input ref={importInputRef} className="scene-import-input" type="file" accept="application/json,.json" onChange={handleImportChange} /></div>
         </div>
         {scenes.length ? <div className="scene-grid">
           {scenes.map((scene, index) => (

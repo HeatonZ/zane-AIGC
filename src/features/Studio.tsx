@@ -4,7 +4,9 @@ import { loadConnectionSettings, pickLocalMediaFile, uploadComfyUIAudio, uploadC
 import { createId } from "../lib/ids";
 import JsonEditor from "../components/JsonEditor";
 import WorkflowRunPanel from "../components/WorkflowRunPanel";
-import type { ComfyAudioAttachment, ComfyImageAttachment, JsonValue, PageId, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowInputField, WorkflowRunResult } from "../types";
+import { canonicalWorkflowMediaType } from "../lib/workflowMigration";
+import { appendMediaInputValue, mediaInputLabel, mediaInputPreviewUrl, mediaListValues, moveMediaInputValue, removeMediaInputValue } from "../lib/mediaInput";
+import type { JsonValue, PageId, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowInputField, WorkflowRunResult } from "../types";
 
 interface StudioProps {
   sceneId: SceneId;
@@ -21,42 +23,15 @@ interface StudioProps {
 function draftInputValues(workflow: WorkflowDefinition, draft?: WorkflowDraft): Record<string, string> {
   return Object.fromEntries(workflow.inputs.map((field) => {
     const value = draft?.inputValues?.[field.key];
-    if (value === undefined || value === null) return [field.key, ""];
+    if (value === undefined) {
+      const defaultValue = field.defaultValue;
+      return [field.key, defaultValue === undefined || defaultValue === null ? "" : String(defaultValue)];
+    }
+    if (value === null) return [field.key, ""];
     if (typeof value === "boolean") return [field.key, value ? "true" : "false"];
     if (typeof value === "object") return [field.key, JSON.stringify(value)];
     return [field.key, String(value)];
   }));
-}
-
-function imageAttachments(value: string): ComfyImageAttachment[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is ComfyImageAttachment => {
-      if (typeof item !== "object" || item === null) return false;
-      const candidate = item as Partial<ComfyImageAttachment>;
-      return typeof candidate.id === "string" && typeof candidate.filename === "string" && typeof candidate.url === "string";
-    });
-  } catch {
-    return [];
-  }
-}
-
-function audioAttachment(value: string): ComfyAudioAttachment | null {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const candidate = parsed as Partial<ComfyAudioAttachment>;
-    return typeof candidate.id === "string"
-      && typeof candidate.filename === "string"
-      && typeof candidate.subfolder === "string"
-      && candidate.type === "input"
-      && typeof candidate.url === "string"
-      ? candidate as ComfyAudioAttachment
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function DynamicField({
@@ -66,7 +41,6 @@ function DynamicField({
   onPickFile,
   onPickImage,
   onPickAudio,
-  onChangeImageOrder,
   picking,
   pickerBusy,
 }: {
@@ -76,7 +50,6 @@ function DynamicField({
   onPickFile: (type: "image" | "video") => void;
   onPickImage: (file: File) => void;
   onPickAudio: (file: File) => void;
-  onChangeImageOrder: (attachments: ComfyImageAttachment[]) => void;
   picking: boolean;
   pickerBusy: boolean;
 }) {
@@ -85,8 +58,10 @@ function DynamicField({
   const controlClass = `text-input studio-dynamic-control${multiline ? " text-area" : ""}`;
   const imageFileInputRef = useRef<HTMLInputElement>(null);
   const audioFileInputRef = useRef<HTMLInputElement>(null);
-  const attachments = field.type === "image_list" ? imageAttachments(value) : [];
-  const audio = field.type === "audio" ? audioAttachment(value) : null;
+  const mediaType = canonicalWorkflowMediaType(field.type);
+  const imageValues = mediaType === "image_list" ? mediaListValues(value) : [];
+  const videoValues = mediaType === "video_list" ? mediaListValues(value) : [];
+  const audios = mediaType === "audio_list" ? mediaListValues(value) : [];
 
   return (
     <div className={`studio-dynamic-field ${multiline ? "wide-field" : ""}`}>
@@ -106,7 +81,7 @@ function DynamicField({
           <option value="">请选择</option>
           {(field.options ?? []).map((option) => <option value={option} key={option}>{option}</option>)}
         </select><ChevronDown size={15} /></div>
-      ) : field.type === "image_list" ? (
+      ) : mediaType === "image_list" ? (
         <div className="studio-image-list-control">
           <input ref={imageFileInputRef} className="studio-hidden-file-input" type="file" accept="image/*" onChange={(event) => {
             const file = event.target.files?.[0];
@@ -114,34 +89,30 @@ function DynamicField({
             if (file) onPickImage(file);
           }} />
           <div className="studio-image-list-toolbar">
-            <span>{attachments.length ? `已添加 ${attachments.length} 张，按序作为参考图` : "还没有添加参考图"}</span>
-            <button className="button button-outline studio-add-image" type="button" onClick={() => imageFileInputRef.current?.click()} disabled={pickerBusy}>
+            <span>{imageValues.length ? `已添加 ${imageValues.length} 张，按序作为参考图` : "还没有添加参考图"}</span>
+            <div className="studio-image-list-actions"><button className="button button-outline studio-add-image" type="button" onClick={() => imageFileInputRef.current?.click()} disabled={pickerBusy}>
               {picking ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}
               <span>{picking ? "上传中" : "逐张添加"}</span>
-            </button>
+            </button><button className="button button-outline studio-add-image" type="button" onClick={() => onPickFile("image")} disabled={pickerBusy}><FolderOpen size={14} /><span>添加路径</span></button></div>
           </div>
-          {attachments.length > 0 && <ol className="studio-image-list">
-            {attachments.map((attachment, index) => <li key={attachment.id}>
-              <img src={attachment.url} alt="" />
-              <span className="studio-image-index">{String(index + 1).padStart(2, "0")}</span>
-              <span className="studio-image-name" title={attachment.filename}>{attachment.filename}</span>
-              <div className="studio-image-actions">
-                <button className="tiny-icon-button" type="button" title="上移" aria-label="上移" disabled={index === 0} onClick={() => {
-                  const next = [...attachments];
-                  [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                  onChangeImageOrder(next);
-                }}><ArrowUp size={13} /></button>
-                <button className="tiny-icon-button" type="button" title="下移" aria-label="下移" disabled={index === attachments.length - 1} onClick={() => {
-                  const next = [...attachments];
-                  [next[index], next[index + 1]] = [next[index + 1], next[index]];
-                  onChangeImageOrder(next);
-                }}><ArrowDown size={13} /></button>
-                <button className="tiny-icon-button studio-remove-image" type="button" title="移除" aria-label="移除" onClick={() => onChangeImageOrder(attachments.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={13} /></button>
-              </div>
-            </li>)}
+          {imageValues.length > 0 && <ol className="studio-image-list">
+            {imageValues.map((item, index) => {
+              const previewUrl = mediaInputPreviewUrl(item);
+              const label = mediaInputLabel(item, "图片");
+              return <li key={`${label}-${index}`}>
+                {previewUrl ? <img src={previewUrl} alt="" /> : <ImageIcon size={18} />}
+                <span className="studio-image-index">{String(index + 1).padStart(2, "0")}</span>
+                <span className="studio-image-name" title={label}>{label}</span>
+                <div className="studio-image-actions">
+                  <button className="tiny-icon-button" type="button" title="上移" aria-label="上移" disabled={index === 0} onClick={() => onChange(JSON.stringify(moveMediaInputValue(imageValues, index, -1)))}><ArrowUp size={13} /></button>
+                  <button className="tiny-icon-button" type="button" title="下移" aria-label="下移" disabled={index === imageValues.length - 1} onClick={() => onChange(JSON.stringify(moveMediaInputValue(imageValues, index, 1)))}><ArrowDown size={13} /></button>
+                  <button className="tiny-icon-button studio-remove-image" type="button" title="移除" aria-label="移除" onClick={() => onChange(JSON.stringify(removeMediaInputValue(imageValues, index)))}><Trash2 size={13} /></button>
+                </div>
+              </li>;
+            })}
           </ol>}
         </div>
-      ) : field.type === "audio" ? (
+      ) : mediaType === "audio_list" ? (
         <div className="studio-audio-control">
           <input ref={audioFileInputRef} className="studio-hidden-file-input" type="file" accept="audio/*,.aac,.aif,.aiff,.flac,.m4a,.mp3,.ogg,.opus,.wav" onChange={(event) => {
             const file = event.target.files?.[0];
@@ -149,24 +120,28 @@ function DynamicField({
             if (file) onPickAudio(file);
           }} />
           <div className="studio-audio-row">
-            <span className="studio-audio-name" title={audio?.filename ?? ""}>{audio ? <><Music2 size={14} />{audio.filename}</> : "尚未上传音频"}</span>
+            <span className="studio-audio-name">{audios.length ? <><Music2 size={14} />已添加 {audios.length} 个音频</> : "尚未上传音频"}</span>
             <div className="studio-audio-actions">
-              {audio && <button className="icon-button studio-audio-remove" type="button" title="移除音频" aria-label="移除音频" onClick={() => onChange("")}><Trash2 size={14} /></button>}
+              {audios.length > 0 && <button className="icon-button studio-audio-remove" type="button" title="移除全部音频" aria-label="移除全部音频" onClick={() => onChange("")}><Trash2 size={14} /></button>}
               <button className="button button-outline studio-file-picker" type="button" onClick={() => audioFileInputRef.current?.click()} disabled={pickerBusy}>
                 {picking ? <LoaderCircle className="spin" size={14} /> : <FolderOpen size={14} />}
-                <span>{picking ? "上传中" : audio ? "更换音频" : "选择音频"}</span>
+                <span>{picking ? "上传中" : "添加音频"}</span>
               </button>
             </div>
           </div>
-          {audio && <audio controls preload="metadata" src={audio.url} />}
+          {audios.length > 0 && <ol className="studio-media-list">{audios.map((audio, index) => {
+            const label = mediaInputLabel(audio, "音频");
+            const previewUrl = mediaInputPreviewUrl(audio);
+            return <li key={`${label}-${index}`}><Music2 size={14} /><span title={label}>{label}</span>{previewUrl && <audio controls preload="metadata" src={previewUrl} />}<button className="icon-button" type="button" title="移除音频" aria-label="移除音频" onClick={() => onChange(JSON.stringify(removeMediaInputValue(audios, index)))}><Trash2 size={14} /></button></li>;
+          })}</ol>}
         </div>
-      ) : field.type === "image" || field.type === "video" ? (
-        <div className="studio-media-control">
-          <input id={id} className={controlClass} type="text" value={value} onChange={(event) => onChange(event.target.value)} placeholder={field.placeholder ?? "输入资源 URL 或文件路径"} required={field.required} />
-          <button className="button button-outline studio-file-picker" type="button" onClick={() => onPickFile(field.type as "image" | "video")} disabled={pickerBusy}>
-            {picking ? <LoaderCircle className="spin" size={14} /> : <FolderOpen size={14} />}
-            <span>{picking ? "打开中" : "选择文件"}</span>
-          </button>
+      ) : mediaType === "video_list" ? (
+        <div className="studio-media-control studio-media-list-control">
+          <div className="studio-media-list-toolbar"><span>{videoValues.length ? `已添加 ${videoValues.length} 个视频` : "还没有添加视频"}</span><button className="button button-outline studio-file-picker" type="button" onClick={() => onPickFile("video")} disabled={pickerBusy}>{picking ? <LoaderCircle className="spin" size={14} /> : <FolderOpen size={14} />}<span>{picking ? "打开中" : "添加视频"}</span></button></div>
+          {videoValues.length > 0 && <ol className="studio-media-list">{videoValues.map((item, index) => {
+            const label = mediaInputLabel(item, "视频");
+            return <li key={`${label}-${index}`}><Film size={14} /><span title={label}>{label}</span><button className="icon-button" type="button" title="移除视频" aria-label="移除视频" onClick={() => onChange(JSON.stringify(removeMediaInputValue(videoValues, index)))}><Trash2 size={14} /></button></li>;
+          })}</ol>}
         </div>
       ) : (
         <input id={id} className={controlClass} type={field.type === "number" ? "number" : "text"} step={field.type === "number" ? "any" : undefined} value={value} onChange={(event) => onChange(event.target.value)} placeholder={field.placeholder} required={field.required} />
@@ -204,8 +179,8 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     return () => { active = false; };
   }, []);
 
-  function updateValue(key: string, value: string) {
-    setValues((current) => ({ ...current, [key]: value }));
+  function updateValue(key: string, value: string | ((previous: string) => string)) {
+    setValues((current) => ({ ...current, [key]: typeof value === "function" ? value(current[key] ?? "") : value }));
     setFormError("");
     setRunResult(null);
   }
@@ -215,17 +190,19 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     for (const field of workflow.inputs) {
       const value = values[field.key] ?? "";
       if (field.required && value.trim() === "") throw new Error(`请填写必填字段：${field.label}`);
-      if (field.type === "image_list") {
-        const attachments = imageAttachments(value);
-        if (field.required && attachments.length === 0) throw new Error(`${field.label} 至少需要一张图片`);
+      const mediaType = canonicalWorkflowMediaType(field.type);
+      if (mediaType === "image_list") {
+        const imageSources = mediaListValues(value);
+        if (field.required && imageSources.length === 0) throw new Error(`${field.label} 至少需要一张图片`);
+        inputValues[field.key] = imageSources as unknown as JsonValue;
+      } else if (mediaType === "video_list") {
+        const videos = mediaListValues(value);
+        if (field.required && videos.length === 0) throw new Error(`${field.label} 至少需要一个视频`);
+        inputValues[field.key] = videos as unknown as JsonValue;
+      } else if (mediaType === "audio_list") {
+        const attachments = mediaListValues(value);
+        if (field.required && attachments.length === 0) throw new Error(`${field.label} 至少需要一个音频`);
         inputValues[field.key] = attachments as unknown as JsonValue;
-      } else if (field.type === "audio") {
-        if (!value.trim()) inputValues[field.key] = null;
-        else {
-          const attachment = audioAttachment(value);
-          if (!attachment) throw new Error(`${field.label} 需要选择有效的音频文件`);
-          inputValues[field.key] = attachment as unknown as JsonValue;
-        }
       } else if (field.type === "number") {
         if (!value.trim()) inputValues[field.key] = null;
         else {
@@ -255,7 +232,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     const summary = workflow.inputs
       .map((field) => ({ field, value: inputValues[field.key] }))
       .filter(({ value }) => value !== "" && value !== undefined && value !== null)
-      .map(({ field, value }) => `${field.label}：${(field.type === "image_list" || field.type === "audio") && value && typeof value === "object" && !Array.isArray(value) && "filename" in value ? String(value.filename) : field.type === "image_list" && Array.isArray(value) ? value.map((item) => typeof item === "object" && item !== null && "filename" in item ? String(item.filename) : "图片").join("、") : typeof value === "boolean" ? (value ? "是" : "否") : typeof value === "object" ? JSON.stringify(value) : value}`)
+      .map(({ field, value }) => `${field.label}：${canonicalWorkflowMediaType(field.type) ? Array.isArray(value) ? value.map((item) => typeof item === "object" && item !== null && "filename" in item ? String(item.filename) : typeof item === "string" ? item : "媒体").join("、") : String(value) : typeof value === "boolean" ? (value ? "是" : "否") : typeof value === "object" ? JSON.stringify(value) : value}`)
       .join(" · ");
     return {
       id: draftIdRef.current ?? (draftIdRef.current = createId()),
@@ -308,7 +285,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     setFormError("");
     try {
       const filePath = await pickLocalMediaFile(type);
-      if (filePath) updateValue(key, filePath);
+      if (filePath) updateValue(key, (current) => appendMediaInputValue(current, filePath));
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "无法打开文件选择器");
     } finally {
@@ -325,8 +302,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     setFormError("");
     try {
       const attachment = await uploadComfyUIImage(file);
-      const attachments = imageAttachments(values[key] ?? "");
-      updateValue(key, JSON.stringify([...attachments, attachment]));
+      updateValue(key, (current) => appendMediaInputValue(current, { ...attachment }));
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "无法上传图片");
     } finally {
@@ -339,7 +315,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     setFormError("");
     try {
       const attachment = await uploadComfyUIAudio(file);
-      updateValue(key, JSON.stringify(attachment));
+      updateValue(key, (current) => appendMediaInputValue(current, { ...attachment }));
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "无法上传音频");
     } finally {
@@ -370,7 +346,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
               <label className="field-label" htmlFor="studio-run-title">作品标题（可选）</label>
               <input id="studio-run-title" className="text-input studio-dynamic-control" type="text" maxLength={120} value={runTitle} onChange={(event) => { setRunTitle(event.target.value); setFormError(""); setRunResult(null); }} placeholder="方便在运行记录中查找" />
             </div>
-            {workflow.inputs.map((field) => <DynamicField key={field.key} field={field} value={values[field.key] ?? ""} onChange={(value) => updateValue(field.key, value)} onPickFile={(type) => void pickFile(field.key, type)} onPickImage={(file) => void addImage(field.key, file)} onPickAudio={(file) => void addAudio(field.key, file)} onChangeImageOrder={(attachments) => updateValue(field.key, JSON.stringify(attachments))} picking={pickingField === field.key} pickerBusy={pickingField !== null} />)}
+            {workflow.inputs.map((field) => <DynamicField key={field.key} field={field} value={values[field.key] ?? ""} onChange={(value) => updateValue(field.key, value)} onPickFile={(type) => void pickFile(field.key, type)} onPickImage={(file) => void addImage(field.key, file)} onPickAudio={(file) => void addAudio(field.key, file)} picking={pickingField === field.key} pickerBusy={pickingField !== null} />)}
           </div>
 
           <div className="workflow-preview">

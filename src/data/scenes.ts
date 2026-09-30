@@ -1,6 +1,8 @@
+import commercePackPackage from "../../examples/scenes/commerce-pack.json";
 import type { SceneModule } from "../types";
 
 export const defaultScenes: SceneModule[] = [
+  commercePackPackage.scene as SceneModule,
   {
     id: "text_to_image",
     title: "基础文生图",

@@ -1,343 +1,72 @@
-import express from "express";
-import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { isDeepStrictEqual, promisify } from "node:util";
-import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { runCommercePackStep } from "./commerce/adapter.js";
+import { createCommercePackRouter } from "./api/commercePackRoutes.js";
+import { createMediaRouter } from "./api/mediaRoutes.js";
+import { runH3SceneAdapter } from "./h3SceneAdapter.js";
+import { SqliteStore } from "./storage/sqliteStore.js";
+import { WorkspaceService } from "./services/workspaceService.js";
+import { RunService } from "./services/runService.js";
+import { ExecutorRegistry } from "./execution/executorRegistry.js";
+import { createRunRouter } from "./api/runRoutes.js";
+import { HttpError } from "./errors.js";
+import { fetchHermesWithRetry } from "./hermesTransport.js";
+import { log } from "./observability/logger.js";
+import { databaseFile, maxActiveRuns, shutdownTimeoutMs } from "./config.js";
 import os from "node:os";
+import { validateProjectDirectory, mediaContentTypeExtension } from "./artifacts/runArtifacts.js";
+import { writeJsonFile } from "./storage/jsonFileStore.js";
+import type { SavedSettings, HermesProfile, HermesApiConnection, ComfyUIWorkflowSummary, ComfyUIWorkflowNode, ComfyUIPropertyInfo, ComfyUINodeInfo, JsonValue, RunInputField, RunComfyBinding, RunStep } from "./domain/types.js";
+import { normalizeMediaList, externalizeRuntimeValue, asRecord, uniqueStrings, workflowReferenceRoot, resolveWorkflowReference, parseWorkflowLiteral, resolveWorkflowValue, resolvePromptTemplate, toJsonValue } from "./domain/workflowValues.js";
+import { cancellationError, throwIfAborted, delayWithAbort } from "./execution/cancellation.js";
+import { ResourceQueues } from "./execution/resourceQueue.js";
+import { runLongTextVideoStep } from "./execution/longTextVideo.js";
+import { runVideoConcatStep } from "./execution/videoConcat.js";
+import { bindComfyAudioPaths, comfyAutogrowInputNames, groupComfyMediaBindings } from "./execution/comfyMediaBindings.js";
+import { defaultWorkflowTimeoutMinutes, minimumWorkflowTimeoutMinutes, maximumWorkflowTimeoutMinutes, parseWorkflowTimeoutMinutes, normalizeWorkflowTimeoutMinutes, workflowTimeoutMs, workflowTimeoutLabel, parseEnvFile, nonEmpty, isProduction, port, host, localDirectory, settingsFile, workspaceFile, distDirectory, hermesHome, ffmpegBinary, ffprobeBinary, execFileAsync, defaults } from "./config.js";
+import express from "express";
+import { randomUUID } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  createRuntimeMediaValue,
+  isRuntimeMediaValue,
+  mediaKindFromWorkflowType,
+  selectRuntimeMedia,
+} from "./runtimeValue.js";
 
-interface SavedSettings {
-  enabledHermesProfiles: string[];
-  comfyuiBaseUrl: string;
-  projectDirectory: string;
-  workflowTimeoutMinutes: number;
-}
-
-interface HermesProfile {
-  id: string;
-  isDefault: boolean;
-}
-
-interface HermesApiConnection {
-  baseUrl: string;
-  apiKey: string;
-}
-
-interface ComfyUIWorkflowSummary {
-  filename: string;
-  size?: number;
-  modified?: number;
-}
-
-interface ComfyUIWorkflowNode {
-  id: string;
-  type: string;
-  inputProperties: string[];
-  outputProperties: string[];
-}
-
-interface ComfyUIPropertyInfo {
-  name: string;
-  type: "text" | "number" | "boolean" | "image" | "image_list" | "video" | "json";
-  options?: string[];
-  required?: boolean;
-}
-
-interface ComfyUINodeInfo {
-  type: string;
-  inputs: ComfyUIPropertyInfo[];
-  outputs: ComfyUIPropertyInfo[];
-}
-
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-
-const defaultWorkflowTimeoutMinutes = 10;
-const minimumWorkflowTimeoutMinutes = 1;
-const maximumWorkflowTimeoutMinutes = 24 * 60;
-
-function parseWorkflowTimeoutMinutes(value: unknown) {
-  const numeric = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
-  return Number.isInteger(numeric) && numeric >= minimumWorkflowTimeoutMinutes && numeric <= maximumWorkflowTimeoutMinutes
-    ? numeric
-    : undefined;
-}
-
-function normalizeWorkflowTimeoutMinutes(value: unknown, fallback = defaultWorkflowTimeoutMinutes) {
-  return parseWorkflowTimeoutMinutes(value) ?? fallback;
-}
-
-function workflowTimeoutMs(minutes: number) {
-  return minutes * 60 * 1000;
-}
-
-function workflowTimeoutLabel(minutes: number) {
-  return `${minutes} 分钟`;
-}
-
-interface RunInputField {
-  key: string;
-  type: string;
-  required?: boolean;
-  options?: string[];
-}
-
-interface RunStepOutput {
-  key: string;
-  label?: string;
-  description?: string;
-  type: string;
-}
-
-interface RunComfyBinding {
-  key: string;
-  label?: string;
-  direction: "input" | "output";
-  nodeId: string;
-  property: string;
-  type: string;
-  options?: string[];
-  required?: boolean;
-  sourceRef?: string;
-  valueSource?: "literal" | "reference";
-  literalValue?: string;
-}
-
-interface RunStepInput {
-  key: string;
-  label?: string;
-  sourceRef?: string;
-  valueSource?: "literal" | "reference";
-  literalValue?: string;
-  literalType?: string;
-}
-
-interface RunStep {
-  id: string;
-  name: string;
-  kind: string;
-  hermesProfile?: string;
-  inputs?: RunStepInput[];
-  outputs?: RunStepOutput[];
-  promptTemplate?: string;
-  execution?: {
-    mode?: "once" | "for_each";
-    sourceRef?: string;
-    onError?: "continue" | "stop";
-  };
-  comfyui?: {
-    workflowFile: string;
-    bindings?: RunComfyBinding[];
-  };
-  control?: {
-    type: "condition";
-    match: "all" | "any";
-    rules: Array<{
-      id: string;
-      leftRef: string;
-      operator: string;
-      valueSource: "literal" | "reference";
-      rightValue: string;
-      rightRef: string;
-    }>;
-  };
-  runCondition?: { conditionStepId: string; expectedResult: boolean };
-}
-
-interface RunWorkflowDefinition {
-  sceneId?: string;
-  name?: string;
-  inputs: RunInputField[];
-  steps: RunStep[];
-  outputs: Array<{ key: string; label?: string; type: string; sourceRef: string }>;
-  execution?: {
-    mode?: "once" | "for_each";
-    sourceRef?: string;
-    onError?: "continue" | "stop";
-  };
-}
-
-interface RunStepRecord {
-  stepId: string;
-  name: string;
-  status: "running" | "completed" | "skipped" | "failed" | "cancelled";
-  message?: string;
-  inputs?: Record<string, JsonValue>;
-  inputLabels?: Record<string, string>;
-  outputs?: Record<string, JsonValue>;
-  outputLabels?: Record<string, string>;
-  outputTypes?: Record<string, string>;
-  items?: RunStepItemRecord[];
-}
-
-interface RunStepItemRecord {
-  index: number;
-  value: JsonValue;
-  status: "running" | "completed" | "skipped" | "failed" | "cancelled";
-  inputs?: Record<string, JsonValue>;
-  outputs?: Record<string, JsonValue>;
-  error?: string;
-}
-
-interface RunItemResult {
-  index: number;
-  value: JsonValue;
-  status: "completed" | "failed" | "cancelled";
-  steps: RunStepRecord[];
-  outputs: Array<{ key: string; label: string; type: string; value: JsonValue }>;
-  error?: string;
-}
-
-interface RunArtifactPaths {
-  directory: string;
-  inputs: string;
-  workflow: string;
-  runtime: string;
-  output: string;
-}
-
-function parseEnvFile(text: string) {
-  const values: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (!match) continue;
-    let value = match[2];
-    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    values[match[1]] = value;
-  }
-  return values;
-}
-
-function loadEnvironmentFiles(environment: string) {
-  const values: Record<string, string> = {};
-  const filenames = [
-    ".env",
-    ".env.local",
-    `.env.${environment}`,
-    `.env.${environment}.local`,
-  ];
-  for (const filename of filenames) {
-    try {
-      Object.assign(values, parseEnvFile(readFileSync(path.resolve(process.cwd(), filename), "utf8")));
-    } catch {
-      // Environment files are optional; deployment variables still work.
-    }
-  }
-  for (const [key, value] of Object.entries(values)) {
-    if (process.env[key] === undefined) process.env[key] = value;
-  }
-}
-
-function nonEmpty(value: string | undefined) {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-const productionFlag = process.argv.includes("--production");
-const runtimeEnvironment = productionFlag ? "production" : (process.env.NODE_ENV ?? "development");
-if (productionFlag) process.env.NODE_ENV = "production";
-loadEnvironmentFiles(runtimeEnvironment);
-
-const isProduction = runtimeEnvironment === "production";
 const app = express();
-const activeWorkflowRunCancellations = new Map<string, (reason: string) => void>();
-const activeWorkflowRunResumes = new Set<string>();
-const port = Number(process.env.API_PORT ?? (isProduction ? 8799 : 8798));
-const host = nonEmpty(process.env.API_HOST) ?? (isProduction ? "0.0.0.0" : "127.0.0.1");
-const localDirectory = path.resolve(nonEmpty(process.env.APP_DATA_DIR) ?? (isProduction ? path.join("data", "production") : ".local"));
-const settingsFile = path.join(localDirectory, "connections.json");
-const workspaceFile = path.join(localDirectory, "workspace.json");
-const distDirectory = path.resolve(nonEmpty(process.env.DIST_DIR) ?? "dist");
-const hermesHome = path.resolve(nonEmpty(process.env.HERMES_HOME) ?? nonEmpty(process.env.HERMES_INSTALL_ROOT) ?? path.join(os.homedir(), ".hermes"));
-const configuredComfyuiBaseUrl = nonEmpty(process.env.COMFYUI_BASE_URL)?.replace(/\/+$/, "");
-const configuredWorkflowTimeoutMinutes = normalizeWorkflowTimeoutMinutes(process.env.ZANE_WORKFLOW_TIMEOUT_MINUTES);
-const ffmpegBinary = nonEmpty(process.env.FFMPEG_BIN) ?? "ffmpeg";
-const ffprobeBinary = nonEmpty(process.env.FFPROBE_BIN) ?? "ffprobe";
-const execFileAsync = promisify(execFile);
-const defaults: SavedSettings = {
-  enabledHermesProfiles: ["default"],
-  comfyuiBaseUrl: configuredComfyuiBaseUrl ?? "http://127.0.0.1:8188",
-  projectDirectory: nonEmpty(process.env.ZANE_PROJECT_DIR) ? path.resolve(process.env.ZANE_PROJECT_DIR as string) : "",
-  workflowTimeoutMinutes: configuredWorkflowTimeoutMinutes,
-};
-
+const comfyuiQueues = new ResourceQueues();
+const metadataStore = new SqliteStore(databaseFile);
+const workspaceService = new WorkspaceService(metadataStore, workspaceFile);
+const executors = new ExecutorRegistry()
+  .register({ kind: "control", async execute({ step, inputValues, stepValues, types }) {
+    const control = step.control;
+    if (!control || control.type !== "condition" || !control.rules.length) throw new Error("条件节点至少需要一条规则");
+    const results = control.rules.map((rule) => evaluateCondition(rule, inputValues, stepValues, types));
+    return { result: control.match === "all" ? results.every(Boolean) : results.some(Boolean) };
+  } })
+  .register({ kind: "hermes", execute: ({ step, inputValues, stepValues, types, settings, signal }) => runHermesStep(step, inputValues, stepValues, types, settings, signal) })
+  .register({ kind: "comfyui", execute: (context) => {
+    const generate = ({ step, inputValues, stepValues, types, settings, inputFields, signal }: typeof context) => comfyuiQueues.run(settings.comfyuiBaseUrl, () => runComfyUIStep(step, inputValues, stepValues, settings.comfyuiBaseUrl, signal, inputFields, types, workflowTimeoutMs(settings.workflowTimeoutMinutes)), signal, step.execution?.mode === "for_each" ? step.execution.maxConcurrency ?? 1 : 1);
+    switch (context.step.comfyui?.adapter) {
+      case "commerce_pack": return runCommercePackStep(context, generate);
+      case "long_text_video": return runLongTextVideoStep(context, generate);
+      case "video_concat": return runVideoConcatStep(context);
+      default: return generate(context);
+    }
+  } });
+const runService = new RunService({ store: metadataStore, executors, loadSettings: readSettings, maxActiveRuns });
+app.use((request, response, next) => {
+  const requestId = randomUUID();
+  const started = performance.now();
+  response.set("X-Request-ID", requestId);
+  response.once("finish", () => log("info", "http.request", { requestId, method: request.method, path: request.path, status: response.statusCode, durationMs: Math.round(performance.now() - started) }));
+  next();
+});
 app.use(express.json({ limit: "16mb" }));
+app.use(createRunRouter(runService, readSettings));
+app.use(createMediaRouter(readSettings));
+app.use(createCommercePackRouter(readSettings, (project, id) => runService.getRun(project, id)));
 
-function cancellationError() {
-  const error = new Error("运行已取消");
-  error.name = "AbortError";
-  return error;
-}
-
-function throwIfAborted(signal?: AbortSignal) {
-  if (signal?.aborted) throw cancellationError();
-}
-
-function waitForAbortable<T>(promise: Promise<T>, signal?: AbortSignal) {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(cancellationError());
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(cancellationError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
-
-function delayWithAbort(ms: number, signal?: AbortSignal) {
-  if (!signal) return new Promise<void>((resolve) => setTimeout(resolve, ms));
-  if (signal.aborted) return Promise.reject(cancellationError());
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-      reject(cancellationError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-class SerialTaskQueue {
-  private tail: Promise<void> = Promise.resolve();
-
-  run<T>(task: () => Promise<T>, signal?: AbortSignal) {
-    const previous = this.tail;
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
-    this.tail = previous.then(() => current);
-
-    return (async () => {
-      try {
-        await waitForAbortable(previous, signal);
-        throwIfAborted(signal);
-        return await task();
-      } finally {
-        release();
-      }
-    })();
-  }
-}
-
-// Hermes steps run directly and may execute in parallel. Every ComfyUI step
-// goes through this queue so a single ComfyUI instance is never overrun.
-const comfyuiQueue = new SerialTaskQueue();
 
 async function readSettings(): Promise<SavedSettings> {
   try {
@@ -374,241 +103,6 @@ function normalizeProjectDirectory(value: unknown, fallback: string) {
   return path.resolve(value.trim());
 }
 
-function runArtifactPaths(projectDirectory: string, runId: string): RunArtifactPaths {
-  const directory = path.join(projectDirectory, ".zane", "runs", runId);
-  return {
-    directory,
-    inputs: path.join(directory, "inputs", "input.json"),
-    workflow: path.join(directory, "workflow.json"),
-    runtime: path.join(directory, "runtime.json"),
-    output: path.join(directory, "outputs", "result.json"),
-  };
-}
-
-async function writeJsonFile(filename: string, value: unknown) {
-  await mkdir(path.dirname(filename), { recursive: true });
-  await writeFile(filename, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-async function validateProjectDirectory(directory: string) {
-  if (!directory) return "";
-  await mkdir(directory, { recursive: true });
-  if (!(await stat(directory)).isDirectory()) throw new Error("项目目录必须是文件夹");
-  const dataDirectory = path.join(directory, ".zane");
-  await mkdir(dataDirectory, { recursive: true });
-  const marker = path.join(dataDirectory, `.write-check-${randomUUID()}`);
-  await writeFile(marker, "ok", { flag: "wx" });
-  await unlink(marker);
-  return directory;
-}
-
-function artifactPublicPaths(paths: RunArtifactPaths) {
-  return {
-    directory: paths.directory,
-    inputs: paths.inputs,
-    workflow: paths.workflow,
-    runtime: paths.runtime,
-    output: paths.output,
-  };
-}
-
-async function prepareRunArtifacts(settings: SavedSettings, runId: string, workflow: RunWorkflowDefinition, inputValues: Record<string, JsonValue>, startedAt: string, runTitle?: string) {
-  if (!settings.projectDirectory) throw new Error("请先在集成连接中配置项目目录");
-  const paths = runArtifactPaths(settings.projectDirectory, runId);
-  await mkdir(paths.directory, { recursive: true });
-  const inputFiles: Array<{ key: string; path: string; originalPath: string }> = [];
-  for (const field of workflow.inputs) {
-    const value = inputValues[field.key];
-    if ((field.type !== "image" && field.type !== "video") || typeof value !== "string" || !value.trim() || /^(https?:|data:)/i.test(value)) continue;
-    const originalPath = path.resolve(value.trim());
-    try {
-      if (!(await stat(originalPath)).isFile()) continue;
-      const extension = path.extname(originalPath).replace(/[^.A-Za-z0-9]/g, "").slice(0, 12);
-      const filename = `${field.key.replace(/[^A-Za-z0-9_-]/g, "_") || "input"}${extension}`;
-      const relativePath = path.posix.join("inputs", "files", filename);
-      const destination = path.join(paths.directory, ...relativePath.split("/"));
-      await mkdir(path.dirname(destination), { recursive: true });
-      await copyFile(originalPath, destination);
-      inputFiles.push({ key: field.key, path: relativePath, originalPath });
-    } catch {
-      // The input remains in the JSON snapshot if it is not an accessible local file.
-    }
-  }
-  await Promise.all([
-    writeJsonFile(paths.inputs, {
-      format: "zane-studio.input/v1",
-      runId,
-      createdAt: startedAt,
-      sceneId: workflow.sceneId ?? null,
-      workflowName: workflow.name ?? "未命名工作流",
-      ...(runTitle ? { runTitle } : {}),
-      values: inputValues,
-      files: inputFiles,
-    }),
-    writeJsonFile(paths.workflow, {
-      format: "zane-studio.workflow/v1",
-      runId,
-      createdAt: startedAt,
-      workflow,
-    }),
-    writeJsonFile(paths.runtime, {
-      format: "zane-studio.runtime/v1",
-      runId,
-      status: "running",
-      startedAt,
-      sceneId: workflow.sceneId ?? null,
-      workflowName: workflow.name ?? "未命名工作流",
-      ...(runTitle ? { runTitle } : {}),
-      artifacts: artifactPublicPaths(paths),
-      steps: [],
-    }),
-  ]);
-  return paths;
-}
-
-function mediaContentTypeExtension(contentType: string | null) {
-  const type = contentType?.split(";")[0].trim().toLowerCase();
-  return ({
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-    "video/mp4": ".mp4",
-    "video/webm": ".webm",
-  } as Record<string, string>)[type ?? ""] ?? ".bin";
-}
-
-async function archiveOutputMedia(value: JsonValue, runId: string, paths: RunArtifactPaths, comfyuiBaseUrl: string, cache: Map<string, JsonValue>, warnings: string[]): Promise<JsonValue> {
-  if (Array.isArray(value)) return Promise.all(value.map((item) => archiveOutputMedia(item, runId, paths, comfyuiBaseUrl, cache, warnings)));
-  if (!value || typeof value !== "object") return value;
-  const media = value as Record<string, JsonValue>;
-  if (typeof media.filename === "string" && (typeof media.url === "string" || typeof media.type === "string")) {
-    const subfolder = typeof media.subfolder === "string" ? media.subfolder : "";
-    const type = typeof media.type === "string" ? media.type : "output";
-    const cacheKey = `${media.filename}\n${subfolder}\n${type}`;
-    const existing = cache.get(cacheKey);
-    if (existing) return existing;
-    const query = new URLSearchParams({ filename: media.filename, subfolder, type });
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-    try {
-      const response = await fetch(`${comfyuiBaseUrl}/view?${query}`, { signal: controller.signal });
-      if (!response.ok) throw new Error(`ComfyUI 媒体返回 ${response.status}`);
-      const bytes = Buffer.from(await response.arrayBuffer());
-      const extension = path.extname(path.basename(media.filename)).replace(/[^.A-Za-z0-9]/g, "").slice(0, 12) || mediaContentTypeExtension(response.headers.get("content-type"));
-      const base = path.basename(media.filename, path.extname(media.filename)).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 60) || "output";
-      const suffix = createHash("sha1").update(cacheKey).digest("hex").slice(0, 8);
-      const filename = `${base}-${suffix}${extension}`;
-      const mediaDirectory = path.join(paths.directory, "outputs", "media");
-      await mkdir(mediaDirectory, { recursive: true });
-      await writeFile(path.join(mediaDirectory, filename), bytes);
-      const archived: JsonValue = {
-        ...media,
-        file: `outputs/media/${filename}`,
-        url: `/api/workflows/runs/${runId}/media/${encodeURIComponent(filename)}`,
-      };
-      cache.set(cacheKey, archived);
-      return archived;
-    } catch (error) {
-      warnings.push(`${media.filename}: ${error instanceof Error ? error.message : "归档媒体失败"}`);
-      return value;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-  const entries = await Promise.all(Object.entries(media).map(async ([key, item]) => [key, await archiveOutputMedia(item, runId, paths, comfyuiBaseUrl, cache, warnings)] as const));
-  return Object.fromEntries(entries);
-}
-
-function isRunId(value: string) {
-  return /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value);
-}
-
-function runStatus(value: unknown): "running" | "completed" | "failed" | "cancelled" {
-  return value === "running" || value === "completed" || value === "cancelled" ? value : "failed";
-}
-
-async function readJsonFile(filename: string) {
-  try {
-    return asRecord(JSON.parse(await readFile(filename, "utf8")));
-  } catch {
-    return undefined;
-  }
-}
-
-async function readRunRecord(projectDirectory: string, runId: string) {
-  const paths = runArtifactPaths(projectDirectory, runId);
-  const [runtime, inputs, output, workflowFile] = await Promise.all([
-    readJsonFile(paths.runtime),
-    readJsonFile(paths.inputs),
-    readJsonFile(paths.output),
-    readJsonFile(paths.workflow),
-  ]);
-  if (!runtime || !inputs) return undefined;
-  const sceneId = typeof runtime.sceneId === "string" ? runtime.sceneId : typeof inputs.sceneId === "string" ? inputs.sceneId : "comic";
-  const workflowName = typeof runtime.workflowName === "string" ? runtime.workflowName : typeof inputs.workflowName === "string" ? inputs.workflowName : "未命名工作流";
-  const rawRunTitle = runtime.runTitle ?? inputs.runTitle;
-  const runTitle = typeof rawRunTitle === "string" && rawRunTitle.trim() ? rawRunTitle.trim() : undefined;
-  const workflow = asRecord(workflowFile?.workflow);
-  const workflowSteps = Array.isArray(workflow?.steps) ? workflow.steps.map(asRecord).filter((step): step is Record<string, unknown> => Boolean(step)) : [];
-  const savedSteps = Array.isArray(output?.steps) ? output.steps : Array.isArray(runtime.steps) ? runtime.steps : [];
-  const inputValues = asRecord(inputs.values) as Record<string, JsonValue> | undefined ?? {};
-  const stepValues = new Map<string, Record<string, JsonValue>>();
-  const steps = savedSteps.map((savedStep) => {
-    const recorded = asRecord(savedStep);
-    if (!recorded || typeof recorded.stepId !== "string") return savedStep;
-    const definition = workflowSteps.find((step) => step.id === recorded.stepId);
-    const configuredInputs = Array.isArray(definition?.inputs) ? definition.inputs : [];
-    const resolvedInputs = asRecord(recorded.inputs) ?? Object.fromEntries(configuredInputs.flatMap((item) => {
-      const field = asRecord(item);
-      if (typeof field?.key !== "string") return [];
-      try {
-        return [[field.key, resolveWorkflowValue(field as unknown as RunStepInput, inputValues, stepValues) ?? null]];
-      } catch {
-        return [[field.key, null]];
-      }
-    }));
-    const configuredOutputs = Array.isArray(definition?.outputs) ? definition.outputs : [];
-    const inputLabels = asRecord(recorded.inputLabels) ?? Object.fromEntries(configuredInputs.flatMap((item) => {
-      const field = asRecord(item);
-      return typeof field?.key === "string" ? [[field.key, typeof field.label === "string" ? field.label : field.key]] : [];
-    }));
-    const outputLabels = asRecord(recorded.outputLabels) ?? Object.fromEntries(configuredOutputs.flatMap((item) => {
-      const field = asRecord(item);
-      return typeof field?.key === "string" ? [[field.key, typeof field.label === "string" ? field.label : field.key]] : [];
-    }));
-    const outputTypes = asRecord(recorded.outputTypes) ?? Object.fromEntries(configuredOutputs.flatMap((item) => {
-      const field = asRecord(item);
-      return typeof field?.key === "string" && typeof field.type === "string" ? [[field.key, field.type]] : [];
-    }));
-    const recordedOutputs = asRecord(recorded.outputs) as Record<string, JsonValue> | undefined;
-    if (recordedOutputs) stepValues.set(recorded.stepId, recordedOutputs);
-    return { ...recorded, inputs: resolvedInputs, inputLabels, outputLabels, outputTypes };
-  });
-  const outputs = Array.isArray(output?.outputs) ? output.outputs : [];
-  const items = Array.isArray(output?.items) ? output.items : Array.isArray(runtime.items) ? runtime.items : undefined;
-  return {
-    runId,
-    sceneId,
-    workflowName,
-    ...(runTitle ? { runTitle } : {}),
-    status: runStatus(output?.status ?? runtime.status),
-    startedAt: typeof runtime.startedAt === "string" ? runtime.startedAt : typeof inputs.createdAt === "string" ? inputs.createdAt : "",
-    ...(typeof (output?.finishedAt ?? runtime.finishedAt) === "string" ? { finishedAt: output?.finishedAt ?? runtime.finishedAt } : {}),
-    ...(typeof (output?.durationMs ?? runtime.durationMs) === "number" ? { durationMs: output?.durationMs ?? runtime.durationMs } : {}),
-    steps,
-    outputs,
-    ...(items ? { items } : {}),
-    ...(typeof output?.error === "string" ? { error: output.error } : {}),
-    ...(typeof (output?.cancellationReason ?? runtime.cancellationReason) === "string" ? { cancellationReason: output?.cancellationReason ?? runtime.cancellationReason } : {}),
-    ...(Array.isArray(output?.archiveWarnings) ? { archiveWarnings: output.archiveWarnings } : Array.isArray(runtime.archiveWarnings) ? { archiveWarnings: runtime.archiveWarnings } : {}),
-    ...(typeof (output?.resumedFromRunId ?? runtime.resumedFromRunId) === "string" ? { resumedFromRunId: output?.resumedFromRunId ?? runtime.resumedFromRunId } : {}),
-    inputValues,
-    ...(workflow ? { workflow } : {}),
-    artifacts: artifactPublicPaths(paths),
-  };
-}
-
 async function probe(
   id: "comfyui",
   name: string,
@@ -623,6 +117,9 @@ async function probe(
   const timeout = setTimeout(() => controller.abort(), 4500);
   try {
     const response = await fetch(url, { headers, signal: controller.signal });
+    // Probes must consume their response body so repeated checks do not leave
+    // undici keep-alive connections in an indeterminate state.
+    await response.arrayBuffer();
     if (!response.ok) {
       return {
         id,
@@ -678,142 +175,6 @@ async function readHermesProfileEnvironment(profile: string) {
   }
 }
 
-let workspaceMutation: Promise<void> = Promise.resolve();
-
-function withWorkspaceLock<T>(operation: () => Promise<T>) {
-  const result = workspaceMutation.then(operation, operation);
-  workspaceMutation = result.then(() => undefined, () => undefined);
-  return result;
-}
-
-async function readWorkspaceFile(): Promise<Record<string, unknown> | undefined> {
-  let contents: string;
-  try {
-    contents = await readFile(workspaceFile, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(contents);
-  } catch {
-    throw new Error("服务端工作区文件无法解析，已停止初始化以保护现有数据");
-  }
-  return normalizeWorkspacePayload(parsed);
-}
-
-function normalizeWorkspacePayload(value: unknown) {
-  const body = asRecord(value);
-  const workflows = body ? asRecord(body.workflows) : undefined;
-  const sceneVersions = body && body.sceneVersions !== undefined ? asRecord(body.sceneVersions) : undefined;
-  if (body?.format !== undefined && body.format !== "zane-studio.workspace/v1") {
-    throw new Error("服务端工作区版本不兼容，已停止初始化以保护现有数据");
-  }
-  if (!body || !Array.isArray(body.scenes) || !workflows || !Array.isArray(body.optionPresets) || !Array.isArray(body.drafts)
-    || (body.sceneVersions !== undefined && !sceneVersions)) {
-    throw new Error("工作区数据格式无效");
-  }
-  if (body.scenes.length > 500 || Object.keys(workflows).length > 500 || body.optionPresets.length > 500 || body.drafts.length > 5000
-    || (sceneVersions && Object.keys(sceneVersions).length > 500)) {
-    throw new Error("工作区数据规模超出限制");
-  }
-  if (sceneVersions && Object.values(sceneVersions).some((record) => {
-    const candidate = asRecord(record);
-    return candidate && Array.isArray(candidate.versions) && candidate.versions.length > 10;
-  })) throw new Error("每个场景最多保存 10 个已发布版本");
-  return {
-    format: "zane-studio.workspace/v1",
-    scenes: body.scenes,
-    workflows,
-    optionPresets: body.optionPresets,
-    drafts: body.drafts,
-    ...(sceneVersions ? { sceneVersions } : {}),
-  };
-}
-
-function identifiedRecords(values: unknown[], key: string) {
-  const records = new Map<string, unknown>();
-  for (const value of values) {
-    const record = asRecord(value);
-    if (typeof record?.[key] === "string") records.set(record[key] as string, value);
-  }
-  return records;
-}
-
-function mergeIdentifiedCollection(base: unknown[], desired: unknown[], current: unknown[], key: string) {
-  const baseById = identifiedRecords(base, key);
-  const desiredById = identifiedRecords(desired, key);
-  const mergedById = identifiedRecords(current, key);
-  const changedIds = new Set([...baseById.keys(), ...desiredById.keys()]);
-
-  for (const id of changedIds) {
-    const wasPresent = baseById.has(id);
-    const isPresent = desiredById.has(id);
-    if (wasPresent === isPresent && (!isPresent || isDeepStrictEqual(baseById.get(id), desiredById.get(id)))) continue;
-    if (isPresent) mergedById.set(id, desiredById.get(id));
-    else mergedById.delete(id);
-  }
-
-  const result: unknown[] = [];
-  const emitted = new Set<string>();
-  for (const value of current) {
-    const record = asRecord(value);
-    const id = typeof record?.[key] === "string" ? record[key] as string : undefined;
-    if (!id) result.push(value);
-    else if (mergedById.has(id) && !emitted.has(id)) {
-      result.push(mergedById.get(id));
-      emitted.add(id);
-    }
-  }
-  for (const [id] of desiredById) {
-    if (mergedById.has(id) && !emitted.has(id)) result.push(mergedById.get(id));
-  }
-  return result;
-}
-
-function mergeRecordByKey(base: Record<string, unknown>, desired: Record<string, unknown>, current: Record<string, unknown>) {
-  const merged = { ...current };
-  const changedIds = new Set([...Object.keys(base), ...Object.keys(desired)]);
-  for (const id of changedIds) {
-    const wasPresent = Object.prototype.hasOwnProperty.call(base, id);
-    const isPresent = Object.prototype.hasOwnProperty.call(desired, id);
-    if (wasPresent === isPresent && (!isPresent || isDeepStrictEqual(base[id], desired[id]))) continue;
-    if (isPresent) merged[id] = desired[id];
-    else delete merged[id];
-  }
-  return merged;
-}
-
-function mergeWorkspacePayload(base: ReturnType<typeof normalizeWorkspacePayload>, desired: ReturnType<typeof normalizeWorkspacePayload>, current: ReturnType<typeof normalizeWorkspacePayload>) {
-  const baseWorkflows = base.workflows;
-  const desiredWorkflows = desired.workflows;
-  const workflows = { ...current.workflows };
-  const workflowIds = new Set([...Object.keys(baseWorkflows), ...Object.keys(desiredWorkflows)]);
-  for (const id of workflowIds) {
-    const wasPresent = Object.prototype.hasOwnProperty.call(baseWorkflows, id);
-    const isPresent = Object.prototype.hasOwnProperty.call(desiredWorkflows, id);
-    if (wasPresent === isPresent && (!isPresent || isDeepStrictEqual(baseWorkflows[id], desiredWorkflows[id]))) continue;
-    if (isPresent) workflows[id] = desiredWorkflows[id];
-    else delete workflows[id];
-  }
-  const drafts = mergeIdentifiedCollection(base.drafts, desired.drafts, current.drafts, "id")
-    .sort((left, right) => {
-      const leftCreatedAt = asRecord(left)?.createdAt;
-      const rightCreatedAt = asRecord(right)?.createdAt;
-      return String(rightCreatedAt ?? "").localeCompare(String(leftCreatedAt ?? ""));
-    });
-  const sceneVersions = mergeRecordByKey(base.sceneVersions ?? {}, desired.sceneVersions ?? {}, current.sceneVersions ?? {});
-  return {
-    format: "zane-studio.workspace/v1",
-    scenes: mergeIdentifiedCollection(base.scenes, desired.scenes, current.scenes, "id"),
-    workflows,
-    optionPresets: mergeIdentifiedCollection(base.optionPresets, desired.optionPresets, current.optionPresets, "id"),
-    drafts,
-    sceneVersions,
-  };
-}
-
 async function readHermesApiConnection(profile: string): Promise<HermesApiConnection> {
   const [rootEnvironment, profileEnvironment] = await Promise.all([
     readHermesProfileEnvironment("default"),
@@ -864,10 +225,14 @@ async function probeHermesApiProfile(profile: string, connection: HermesApiConne
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(hermesApiEndpoint(connection.baseUrl, profile, "models"), {
+    const response = await fetchHermesWithRetry(hermesApiEndpoint(connection.baseUrl, profile, "models"), {
       headers: { Authorization: `Bearer ${connection.apiKey}` },
       signal: controller.signal,
     });
+    // Always drain the small /models response. Leaving undici response bodies
+    // unread can retain stale keep-alive sockets after Gateway reloads and make
+    // later probes fail with a misleading connection error.
+    await response.arrayBuffer();
     if (response.status === 401 || response.status === 403) throw new Error(`Hermes Profile「${profile}」API 密钥认证失败`);
     if (!response.ok) throw new Error(`Hermes API Server 返回 ${response.status}`);
   } catch (error) {
@@ -920,16 +285,6 @@ async function checkHermesProfiles(enabledIds: string[]) {
   };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function uniqueStrings(values: unknown[]) {
-  return [...new Set(values.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim()))];
-}
-
 function comfyPropertyType(value: unknown): ComfyUIPropertyInfo["type"] {
   switch (typeof value === "string" ? value.toUpperCase() : "") {
     case "INT":
@@ -937,8 +292,9 @@ function comfyPropertyType(value: unknown): ComfyUIPropertyInfo["type"] {
     case "NUMBER": return "number";
     case "BOOLEAN": return "boolean";
     case "IMAGE":
-    case "MASK": return "image";
-    case "VIDEO": return "video";
+    case "MASK": return "image_list";
+    case "VIDEO": return "video_list";
+    case "AUDIO": return "audio_list";
     case "STRING":
     case "COMBO": return "text";
     default: return "json";
@@ -946,25 +302,7 @@ function comfyPropertyType(value: unknown): ComfyUIPropertyInfo["type"] {
 }
 
 function comfyAutogrowImageInputNames(rawSchema: unknown) {
-  if (!Array.isArray(rawSchema) || rawSchema[0] !== "COMFY_AUTOGROW_V3") return [];
-  const details = asRecord(rawSchema[1]);
-  const template = asRecord(details?.template);
-  const templateInputs = asRecord(template?.input);
-  const hasImageTemplate = ["required", "optional"].some((section) => {
-    const entries = asRecord(templateInputs?.[section]);
-    return Object.values(entries ?? {}).some((entry) => {
-      const schema = Array.isArray(entry) ? entry : [entry];
-      return comfyPropertyType(schema[0]) === "image";
-    });
-  });
-  if (!hasImageTemplate) return [];
-  if (Array.isArray(template?.names)) {
-    return template.names.filter((name): name is string => typeof name === "string" && Boolean(name));
-  }
-  if (typeof template?.prefix === "string" && typeof template.max === "number" && Number.isInteger(template.max)) {
-    return Array.from({ length: Math.max(0, template.max) }, (_value, index) => `${template.prefix}${index}`);
-  }
-  return [];
+  return comfyAutogrowInputNames(rawSchema, "image");
 }
 
 function comfyNodeInputSchema(payload: unknown, nodeType: string, property: string) {
@@ -991,7 +329,8 @@ function summarizeComfyUINodeInfo(payload: unknown, nodeType: string): ComfyUINo
         ? uniqueStrings(rawType.map((option) => typeof option === "string" ? option : typeof option === "number" ? String(option) : ""))
         : [];
       const typeToken = options.length ? "COMBO" : rawType;
-      const type = comfyAutogrowImageInputNames(rawSchema).length ? "image_list" : comfyPropertyType(typeToken);
+      const type = comfyAutogrowImageInputNames(rawSchema).length ? "image_list"
+        : comfyAutogrowInputNames(rawSchema, "audio").length ? "audio_list" : comfyPropertyType(typeToken);
       return [{ name, type, required: section === "required", ...(options.length ? { options } : {}) }];
     });
   });
@@ -1438,172 +777,6 @@ async function fetchJson(url: string, init: RequestInit = {}, parentSignal?: Abo
   }
 }
 
-function splitWorkflowReference(reference: string) {
-  const match = /^(iteration\.item|input\.[a-zA-Z0-9_]+|step\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_]+)([\s\S]*)$/.exec(reference);
-  if (!match) return undefined;
-  const suffix = match[2];
-  return {
-    root: match[1],
-    path: suffix.startsWith(".") && suffix.length > 1 ? suffix.slice(1) : suffix,
-  };
-}
-
-function parseWorkflowJsonPath(path: string): Array<string | number> {
-  let cursor = 0;
-  if (path[cursor] === "$" && (path.length === 1 || path[cursor + 1] === "." || path[cursor + 1] === "[")) {
-    cursor += 1;
-    if (path[cursor] === ".") cursor += 1;
-  }
-
-  const segments: Array<string | number> = [];
-  while (cursor < path.length) {
-    if (path[cursor] === ".") {
-      cursor += 1;
-      const start = cursor;
-      while (cursor < path.length && path[cursor] !== "." && path[cursor] !== "[") cursor += 1;
-      const key = path.slice(start, cursor);
-      if (!key) throw new Error("字段名为空");
-      segments.push(key);
-      continue;
-    }
-
-    if (path[cursor] === "[") {
-      cursor += 1;
-      if (path[cursor] === '"') {
-        const start = cursor;
-        cursor += 1;
-        let escaped = false;
-        while (cursor < path.length) {
-          const character = path[cursor];
-          cursor += 1;
-          if (escaped) escaped = false;
-          else if (character === "\\") escaped = true;
-          else if (character === '"') break;
-        }
-        if (path[cursor] !== "]") throw new Error("括号路径格式无效");
-        let key: unknown;
-        try {
-          key = JSON.parse(path.slice(start, cursor));
-        } catch {
-          throw new Error("带引号的字段名格式无效");
-        }
-        if (typeof key !== "string") throw new Error("字段名格式无效");
-        segments.push(key);
-        cursor += 1;
-        continue;
-      }
-
-      const end = path.indexOf("]", cursor);
-      if (end < 0) throw new Error("缺少右方括号");
-      const index = path.slice(cursor, end);
-      if (!/^\d+$/.test(index) || !Number.isSafeInteger(Number(index))) throw new Error("数组下标必须是非负整数");
-      segments.push(Number(index));
-      cursor = end + 1;
-      continue;
-    }
-
-    if (segments.length) throw new Error("字段之间需要用点号或方括号分隔");
-    const start = cursor;
-    while (cursor < path.length && path[cursor] !== "." && path[cursor] !== "[") cursor += 1;
-    const key = path.slice(start, cursor);
-    if (!key) throw new Error("字段名为空");
-    segments.push(key);
-  }
-  return segments;
-}
-
-function workflowReferenceRoot(reference: string) {
-  return splitWorkflowReference(reference)?.root ?? reference;
-}
-
-function resolveWorkflowReference(reference: string, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>) {
-  const parsed = splitWorkflowReference(reference);
-  if (!parsed) throw new Error(`不支持的数据引用：${reference || "（空）"}`);
-  const inputMatch = /^input\.([a-zA-Z0-9_]+)$/.exec(parsed.root);
-  const outputMatch = /^step\.([a-zA-Z0-9_-]+)\.outputs\.([a-zA-Z0-9_]+)$/.exec(parsed.root);
-  let value: JsonValue | undefined;
-  if (parsed.root === "iteration.item") value = inputs["iteration.item"];
-  else if (inputMatch) value = inputs[inputMatch[1]];
-  else if (outputMatch) value = stepValues.get(outputMatch[1])?.[outputMatch[2]];
-  else throw new Error(`不支持的数据引用：${reference || "（空）"}`);
-
-  if (!parsed.path) return value;
-  let segments: Array<string | number>;
-  try {
-    segments = parseWorkflowJsonPath(parsed.path);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "路径格式无效";
-    throw new Error(`JSON 字段路径无效：${reference}（${detail}）`);
-  }
-  for (const segment of segments) {
-    if (Array.isArray(value) && typeof segment === "number") value = value[segment];
-    else if (value !== null && typeof value === "object" && !Array.isArray(value) && typeof segment === "string" && Object.prototype.hasOwnProperty.call(value, segment)) value = value[segment];
-    else value = undefined;
-    if (value === undefined) throw new Error(`JSON 字段路径不存在：${reference}`);
-  }
-  return value;
-}
-
-function parseWorkflowLiteral(value: unknown, type: string | undefined, label: string): JsonValue {
-  const raw = typeof value === "string" ? value : value === undefined ? "" : JSON.stringify(value) ?? String(value);
-  const normalizedType = type === "textarea" || type === "select" || !type ? "text" : type;
-  if (normalizedType === "number") {
-    const number = raw.trim() ? Number(raw) : NaN;
-    if (!Number.isFinite(number)) throw new Error(`${label} 的固定值需要有效数字`);
-    return number;
-  }
-  if (normalizedType === "boolean") {
-    if (!/^(true|false)$/i.test(raw.trim())) throw new Error(`${label} 的固定值需要布尔值`);
-    return raw.trim().toLowerCase() === "true";
-  }
-  if (normalizedType === "json" || normalizedType === "image_list") {
-    if (!raw.trim()) throw new Error(`${label} 的固定值需要有效 JSON`);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error(`${label} 的固定值 JSON 格式无效`);
-    }
-    if (normalizedType === "image_list" && !Array.isArray(parsed)) throw new Error(`${label} 的固定值需要 JSON 数组`);
-    return toJsonValue(parsed);
-  }
-  return raw;
-}
-
-function resolveWorkflowValue(input: RunStepInput, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>) {
-  if (input.valueSource === "literal") return parseWorkflowLiteral(input.literalValue, input.literalType, input.label ?? input.key);
-  return resolveWorkflowReference(input.sourceRef ?? "", inputs, stepValues);
-}
-
-function resolveStepInputs(step: RunStep, inputValues: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>) {
-  return Object.fromEntries((step.inputs ?? []).map((input) => {
-    try {
-      return [input.key, resolveWorkflowValue(input, inputValues, stepValues) ?? null];
-    } catch {
-      return [input.key, null];
-    }
-  }));
-}
-
-function resolvePromptTemplate(template: string, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types?: Map<string, string>) {
-  return template.replace(/\{\{([^{}]+)\}\}/g, (_match, reference: string) => {
-    const sourceRef = reference.trim();
-    const type = types?.get(workflowReferenceRoot(sourceRef));
-    if (type === "image" || type === "image_list") return "[图片已作为附件提供]";
-    if (type === "video") return "[视频代表帧已作为图片附件提供]";
-    const value = resolveWorkflowReference(sourceRef, inputs, stepValues);
-    if (value === undefined || value === null) return "";
-    return typeof value === "string" ? value : JSON.stringify(value);
-  });
-}
-
-function toJsonValue(value: unknown): JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) return value.map(toJsonValue);
-  if (typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toJsonValue(item)]));
-  return String(value);
-}
-
 function parseHermesJson(text: string): unknown {
   const trimmed = text.trim();
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
@@ -1623,9 +796,9 @@ function coerceHermesOutput(value: unknown, type: string): JsonValue {
     throw new Error("Hermes 输出不是有效布尔值");
   }
   if (type === "json") return toJsonValue(typeof value === "string" ? parseHermesJson(value) : value);
-  if (type === "image" || type === "video") {
-    if (typeof value === "string") return value;
-    return toJsonValue(value);
+  const mediaKind = mediaKindFromWorkflowType(type);
+  if (mediaKind) {
+    return createRuntimeMediaValue(mediaKind, value);
   }
   return toJsonValue(value);
 }
@@ -1642,17 +815,19 @@ function evaluateCondition(rule: NonNullable<RunStep["control"]>["rules"][number
         : leftType === "json" && rule.rightValue.trim() !== ""
           ? JSON.parse(rule.rightValue) as JsonValue
           : rule.rightValue;
+  const comparableLeft = externalizeRuntimeValue(left);
+  const comparableRight = externalizeRuntimeValue(right);
   switch (rule.operator) {
-    case "equals": return JSON.stringify(left) === JSON.stringify(right);
-    case "not_equals": return JSON.stringify(left) !== JSON.stringify(right);
-    case "greater_than": return Number(left) > Number(right);
-    case "greater_or_equal": return Number(left) >= Number(right);
-    case "less_than": return Number(left) < Number(right);
-    case "less_or_equal": return Number(left) <= Number(right);
-    case "contains": return Array.isArray(left) ? left.some((item) => JSON.stringify(item) === JSON.stringify(right)) : typeof left === "string" ? left.includes(String(right ?? "")) : typeof left === "object" && left !== null ? String(right) in left : false;
-    case "not_contains": return Array.isArray(left) ? !left.some((item) => JSON.stringify(item) === JSON.stringify(right)) : typeof left === "string" ? !left.includes(String(right ?? "")) : typeof left === "object" && left !== null ? !(String(right) in left) : true;
-    case "is_empty": return left === undefined || left === null || left === "" || (Array.isArray(left) && left.length === 0) || (typeof left === "object" && left !== null && Object.keys(left).length === 0);
-    case "is_not_empty": return !(left === undefined || left === null || left === "" || (Array.isArray(left) && left.length === 0) || (typeof left === "object" && left !== null && Object.keys(left).length === 0));
+    case "equals": return JSON.stringify(comparableLeft) === JSON.stringify(comparableRight);
+    case "not_equals": return JSON.stringify(comparableLeft) !== JSON.stringify(comparableRight);
+    case "greater_than": return Number(comparableLeft) > Number(comparableRight);
+    case "greater_or_equal": return Number(comparableLeft) >= Number(comparableRight);
+    case "less_than": return Number(comparableLeft) < Number(comparableRight);
+    case "less_or_equal": return Number(comparableLeft) <= Number(comparableRight);
+    case "contains": return Array.isArray(comparableLeft) ? comparableLeft.some((item) => JSON.stringify(item) === JSON.stringify(comparableRight)) : typeof comparableLeft === "string" ? comparableLeft.includes(String(comparableRight ?? "")) : typeof comparableLeft === "object" && comparableLeft !== null ? String(comparableRight) in comparableLeft : false;
+    case "not_contains": return Array.isArray(comparableLeft) ? !comparableLeft.some((item) => JSON.stringify(item) === JSON.stringify(comparableRight)) : typeof comparableLeft === "string" ? !comparableLeft.includes(String(comparableRight ?? "")) : typeof comparableLeft === "object" && comparableLeft !== null ? !(String(comparableRight) in comparableLeft) : true;
+    case "is_empty": return comparableLeft === undefined || comparableLeft === null || comparableLeft === "" || (Array.isArray(comparableLeft) && comparableLeft.length === 0) || (typeof comparableLeft === "object" && comparableLeft !== null && Object.keys(comparableLeft).length === 0);
+    case "is_not_empty": return !(comparableLeft === undefined || comparableLeft === null || comparableLeft === "" || (Array.isArray(comparableLeft) && comparableLeft.length === 0) || (typeof comparableLeft === "object" && comparableLeft !== null && Object.keys(comparableLeft).length === 0));
     default: throw new Error(`不支持的条件运算符：${rule.operator}`);
   }
 }
@@ -1690,7 +865,16 @@ async function readWorkflowApiGraph(payload: unknown, baseUrl?: string, signal?:
 }
 
 function comfyOutputMedia(value: unknown) {
-  return (Array.isArray(value) ? value : value === undefined ? [] : [value]).flatMap((item) => {
+  const items: unknown[] = [];
+  const collect = (candidate: unknown) => {
+    if (Array.isArray(candidate)) {
+      candidate.forEach(collect);
+      return;
+    }
+    if (candidate !== undefined && candidate !== null) items.push(candidate);
+  };
+  collect(value);
+  return items.flatMap((item) => {
     const media = asRecord(item);
     return media && typeof media.filename === "string" ? [{
       filename: media.filename,
@@ -1709,6 +893,14 @@ function isComfyVideoMedia(media: { filename: string }) {
   return [".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"].includes(path.extname(media.filename).toLowerCase());
 }
 
+function isComfyAudioMedia(media: { filename: string }) {
+  return [".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"].includes(path.extname(media.filename).toLowerCase());
+}
+
+function isComfyImageMedia(media: { filename: string }) {
+  return !isComfyVideoMedia(media) && !isComfyAudioMedia(media);
+}
+
 function readComfyOutputValue(history: unknown, promptId: string, nodeId: string, property: string, type: string): JsonValue {
   const prompt = asRecord(history)?.[promptId];
   const outputs = asRecord(asRecord(prompt)?.outputs);
@@ -1725,9 +917,11 @@ function readComfyOutputValue(history: unknown, promptId: string, nodeId: string
   let outputRecord = directOutputProperty ? nodeOutput : uiOutput;
   let propertyValue = outputProperty ? outputRecord?.[outputProperty] : undefined;
   let media = comfyOutputMedia(propertyValue);
-  if (type === "video" && !media.some(isComfyVideoMedia) && nodeOutput) {
+  const mediaKind = mediaKindFromWorkflowType(type);
+  const isExpectedMedia = mediaKind === "video" ? isComfyVideoMedia : mediaKind === "audio" ? isComfyAudioMedia : isComfyImageMedia;
+  if (mediaKind && !media.some(isExpectedMedia) && nodeOutput) {
     const videoCandidates = Object.entries(nodeOutput).flatMap(([name, value]) => {
-      const candidateMedia = comfyOutputMedia(value).filter(isComfyVideoMedia);
+      const candidateMedia = comfyOutputMedia(value).filter(isExpectedMedia);
       return candidateMedia.length ? [{ name, value, media: candidateMedia }] : [];
     });
     if (videoCandidates.length === 1) {
@@ -1735,14 +929,14 @@ function readComfyOutputValue(history: unknown, promptId: string, nodeId: string
       propertyValue = videoCandidates[0].value;
       media = videoCandidates[0].media;
     } else if (videoCandidates.length > 1) {
-      throw new Error(`ComfyUI 节点 ${nodeId} 找到多个视频输出属性：${videoCandidates.map((candidate) => candidate.name).join("、")}`);
+      throw new Error(`ComfyUI 节点 ${nodeId} 找到多个${mediaKind === "audio" ? "音频" : mediaKind === "video" ? "视频" : "图像"}输出属性：${videoCandidates.map((candidate) => candidate.name).join("、")}`);
     }
   }
-  if (type === "video" && !media.some(isComfyVideoMedia) && outputs) {
+  if (mediaKind && !media.some(isExpectedMedia) && outputs) {
     const videoCandidates = Object.entries(outputs).flatMap(([candidateNodeId, rawOutput]) => {
       if (candidateNodeId === nodeId) return [];
       return Object.entries(asRecord(rawOutput) ?? {}).flatMap(([name, value]) => {
-        const candidateMedia = comfyOutputMedia(value).filter(isComfyVideoMedia);
+        const candidateMedia = comfyOutputMedia(value).filter(isExpectedMedia);
         return candidateMedia.length ? [{ nodeId: candidateNodeId, name, value, media: candidateMedia }] : [];
       });
     });
@@ -1753,24 +947,24 @@ function readComfyOutputValue(history: unknown, promptId: string, nodeId: string
       media = videoCandidates[0].media;
     } else if (videoCandidates.length > 1) {
       const candidates = videoCandidates.map((candidate) => `${candidate.nodeId}.${candidate.name}`);
-      throw new Error(`ComfyUI 节点 ${nodeId}.${property} 没有输出记录，执行结果中找到多个视频：${candidates.join("、")}`);
+      throw new Error(`ComfyUI 节点 ${nodeId}.${property} 没有输出记录，执行结果中找到多个${mediaKind === "audio" ? "音频" : mediaKind === "video" ? "视频" : "图像"}：${candidates.join("、")}`);
     }
   }
   if (!resolvedNodeId || !outputProperty) {
     const available = Object.keys(nodeOutput ?? {});
-    const videoOutputs = Object.entries(outputs ?? {}).flatMap(([candidateNodeId, rawOutput]) =>
-      Object.entries(asRecord(rawOutput) ?? {}).flatMap(([name, value]) => comfyOutputMedia(value).filter(isComfyVideoMedia).length ? [`${candidateNodeId}.${name}`] : []),
+    const mediaOutputs = Object.entries(outputs ?? {}).flatMap(([candidateNodeId, rawOutput]) =>
+      Object.entries(asRecord(rawOutput) ?? {}).flatMap(([name, value]) => comfyOutputMedia(value).filter(mediaKind ? isExpectedMedia : isComfyVideoMedia).length ? [`${candidateNodeId}.${name}`] : []),
     );
-    throw new Error(`ComfyUI 节点 ${nodeId} 没有输出属性 ${property}${available.length ? `（可用属性：${available.join("、")}）` : "（节点没有返回输出字段）"}${type === "video" && videoOutputs.length ? `；检测到视频：${videoOutputs.join("、")}` : ""}`);
+    throw new Error(`ComfyUI 节点 ${nodeId} 没有输出属性 ${property}${available.length ? `（可用属性：${available.join("、")}）` : "（节点没有返回输出字段）"}${mediaOutputs.length ? `；检测到媒体：${mediaOutputs.join("、")}` : ""}`);
   }
-  if (type === "image" || type === "video") {
-    const previewMedia = type === "video" ? media.filter(isComfyVideoMedia) : media;
-    if (!previewMedia.length) throw new Error(`ComfyUI 属性 ${resolvedNodeId}.${outputProperty} 中没有可预览${type === "video" ? "视频" : "媒体"}`);
-    return previewMedia.length === 1 ? previewMedia[0] : previewMedia;
+  if (mediaKind) {
+    const previewMedia = media.filter(isExpectedMedia);
+    if (!previewMedia.length) throw new Error(`ComfyUI 属性 ${resolvedNodeId}.${outputProperty} 中没有可预览${mediaKind === "audio" ? "音频" : mediaKind === "video" ? "视频" : "图像"}`);
+    return createRuntimeMediaValue(mediaKind, previewMedia);
   }
   let value = propertyValue;
   if (value === undefined) return null;
-  if (type !== "image_list" && Array.isArray(value) && value.length === 1) value = value[0];
+  if (!mediaKind && Array.isArray(value) && value.length === 1) value = value[0];
   if (type === "json" && typeof value === "string") {
     try {
       return toJsonValue(JSON.parse(value) as unknown);
@@ -1805,8 +999,17 @@ function coerceComfyInputValue(value: JsonValue | undefined, binding: RunComfyBi
     if (typeof value === "string" && /^(true|false)$/i.test(value.trim())) return value.trim().toLowerCase() === "true";
     throw new Error(`${stepName} 的 ${binding.property} 需要布尔值`);
   }
-  if (binding.type === "text") return typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
-  return toJsonValue(value);
+  if (binding.type === "text") {
+    const external = externalizeRuntimeValue(value);
+    return typeof external === "string" ? external : JSON.stringify(external) ?? String(external);
+  }
+  const mediaKind = mediaKindFromWorkflowType(binding.type);
+  if (mediaKind) {
+    const media = normalizeMediaList(externalizeRuntimeValue(value));
+    if (media.length !== 1) throw new Error(`${stepName} 的 ${binding.property} 需要一个${mediaKind === "audio" ? "音频" : mediaKind === "video" ? "视频" : "图像"}，请在引用中选择单项或启用逐项执行`);
+    return media[0];
+  }
+  return toJsonValue(externalizeRuntimeValue(value));
 }
 
 function comfyInputBaseType(rawSchema: unknown) {
@@ -1827,6 +1030,205 @@ function comfyInputImagePath(value: unknown, stepName: string, imageIndex: numbe
   return [subfolder.replace(/[\\/]+$/, "").replace(/[\\/]/g, "/"), filename].filter(Boolean).join("/");
 }
 
+function isComfyInputImageAttachment(value: unknown) {
+  const attachment = asRecord(value);
+  return typeof attachment?.filename === "string"
+    && typeof attachment.subfolder === "string"
+    && attachment.type === "input"
+    && typeof attachment.url === "string";
+}
+
+async function uploadComfyImageSource(value: unknown, baseUrl: string, stepName: string, signal?: AbortSignal) {
+  if (isComfyInputImageAttachment(value)) return value;
+  let filename = "input.png";
+  let contentType = "image/png";
+  let bytes: Buffer;
+  const candidate = asRecord(value);
+  const source = typeof value === "string" ? value.trim()
+    : typeof candidate?.path === "string" ? candidate.path.trim()
+      : typeof candidate?.url === "string" ? candidate.url.trim() : "";
+  if (candidate?.filename && typeof candidate.filename === "string") filename = candidate.filename;
+  if (typeof value === "string") filename = path.basename(value) || filename;
+  if (candidate?.url && typeof candidate.url === "string") filename = path.basename(new URL(candidate.url, "http://localhost").pathname) || filename;
+  if (candidate?.filename && typeof candidate.filename === "string") {
+    filename = candidate.filename;
+    const mediaType = candidate.type === "input" || candidate.type === "output" ? candidate.type : "output";
+    const query = new URLSearchParams({
+      filename,
+      subfolder: typeof candidate.subfolder === "string" ? candidate.subfolder : "",
+      type: mediaType,
+    });
+    const fetched = await fetchMediaResponse(`${baseUrl}/view?${query}`, signal, 100_000_000, `${stepName} 的图片超过 100 MB 限制`);
+    bytes = fetched.bytes;
+    contentType = fetched.contentType || mimeTypeForMediaPath(filename, contentType);
+  } else if (/^data:image\//i.test(source)) {
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i.exec(source);
+    if (!match) throw new Error(`${stepName} 的图片 data URL 格式无效`);
+    bytes = Buffer.from(match[2].replace(/\s/g, ""), "base64");
+    contentType = match[1];
+    filename = `input${mediaContentTypeExtension(contentType)}`;
+  } else if (/^https?:\/\//i.test(source)) {
+    const fetched = await fetchMediaResponse(source, signal, 100_000_000, `${stepName} 的图片超过 100 MB 限制`);
+    bytes = fetched.bytes;
+    contentType = fetched.contentType || mimeTypeForMediaPath(filename, contentType);
+  } else if (source) {
+    const localPath = path.resolve(source);
+    const info = await stat(localPath).catch(() => undefined);
+    if (!info?.isFile()) throw new Error(`${stepName} 无法读取图片文件：${source}`);
+    if (info.size > 100_000_000) throw new Error(`${stepName} 的图片超过 100 MB 限制`);
+    bytes = await readFile(localPath, { signal });
+    filename = path.basename(localPath) || filename;
+    contentType = mimeTypeForMediaPath(filename, contentType);
+  } else {
+    throw new Error(`${stepName} 的图片输入缺少可读取的路径、URL 或 ComfyUI 附件`);
+  }
+  const form = new FormData();
+  form.set("image", new Blob([new Uint8Array(bytes)], { type: contentType }), filename);
+  form.set("type", "input");
+  form.set("subfolder", "zane-studio");
+  form.set("overwrite", "false");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  const abortFromParent = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", abortFromParent, { once: true });
+  }
+  try {
+    const response = await fetch(`${baseUrl}/upload/image`, { method: "POST", body: form, signal: controller.signal });
+    const payload = await response.json().catch(() => null) as unknown;
+    const uploaded = asRecord(payload);
+    if (!response.ok || typeof uploaded?.name !== "string") {
+      const detail = typeof uploaded?.error === "string" ? uploaded.error : `ComfyUI 返回 ${response.status}`;
+      throw new Error(`上传到 ComfyUI 失败：${detail}`);
+    }
+    const subfolder = typeof uploaded.subfolder === "string" ? uploaded.subfolder : "";
+    return {
+      id: randomUUID(),
+      filename: uploaded.name,
+      subfolder,
+      type: "input",
+      url: `/api/comfyui/view?${new URLSearchParams({ filename: uploaded.name, subfolder, type: "input" })}`,
+    };
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw cancellationError();
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+function isComfyInputVideoAttachment(value: unknown) {
+  const attachment = asRecord(value);
+  return typeof attachment?.filename === "string"
+    && typeof attachment.subfolder === "string"
+    && attachment.type === "input"
+    && typeof attachment.url === "string";
+}
+
+function comfyInputVideoPath(value: unknown, stepName: string, required: boolean): string | undefined {
+  if ((value === null || value === "") && !required) return undefined;
+  const attachment = asRecord(value);
+  const filename = attachment?.filename;
+  const subfolder = attachment?.subfolder;
+  if (!isComfyInputVideoAttachment(value) || typeof filename !== "string" || !filename || /[\\/]/.test(filename) || filename === "." || filename === "..") {
+    throw new Error(`${stepName} 的视频输入不是有效的 ComfyUI 上传附件`);
+  }
+  if (typeof subfolder !== "string" || subfolder.startsWith("/") || subfolder.startsWith("\\") || subfolder.split(/[\\/]/).some((part) => part === "." || part === "..")) {
+    throw new Error(`${stepName} 的视频文件目录无效`);
+  }
+  return [subfolder.replace(/[\\/]+$/, "").replace(/[\\/]/g, "/"), filename].filter(Boolean).join("/");
+}
+
+async function uploadComfyVideoSource(value: unknown, baseUrl: string, stepName: string, signal?: AbortSignal) {
+  if (isComfyInputVideoAttachment(value)) return value;
+  const maxBytes = 500_000_000;
+  const candidate = asRecord(value);
+  let filename = "input.mp4";
+  let contentType = "video/mp4";
+  let bytes: Buffer;
+  const candidateType = candidate?.type === "input" || candidate?.type === "output" ? candidate.type : undefined;
+  const source = typeof value === "string" ? value.trim()
+    : typeof candidate?.path === "string" ? candidate.path.trim()
+      : typeof candidate?.url === "string" ? candidate.url.trim() : "";
+
+  if (typeof candidate?.filename === "string" && candidate.filename.trim()) {
+    filename = path.basename(candidate.filename) || filename;
+  } else if (typeof value === "string") {
+    filename = path.basename(value) || filename;
+  } else if (typeof candidate?.url === "string") {
+    filename = path.basename(new URL(candidate.url, "http://localhost").pathname) || filename;
+  }
+
+  if (candidate?.filename && candidateType) {
+    const query = new URLSearchParams({
+      filename: String(candidate.filename),
+      subfolder: typeof candidate.subfolder === "string" ? candidate.subfolder : "",
+      type: candidateType,
+    });
+    const fetched = await fetchMediaResponse(`${baseUrl}/view?${query}`, signal, maxBytes, `${stepName} 的视频超过 500 MB 限制`);
+    bytes = fetched.bytes;
+    contentType = fetched.contentType || mimeTypeForMediaPath(filename, contentType);
+  } else if (/^data:video\//i.test(source)) {
+    const match = /^data:(video\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i.exec(source);
+    if (!match) throw new Error(`${stepName} 的视频 data URL 格式无效`);
+    bytes = Buffer.from(match[2].replace(/\s/g, ""), "base64");
+    contentType = match[1];
+    filename = `input${mediaContentTypeExtension(contentType)}`;
+  } else if (/^https?:\/\//i.test(source)) {
+    const fetched = await fetchMediaResponse(source, signal, maxBytes, `${stepName} 的视频超过 500 MB 限制`);
+    bytes = fetched.bytes;
+    contentType = fetched.contentType || mimeTypeForMediaPath(filename, contentType);
+  } else if (source) {
+    const localPath = path.resolve(source);
+    const info = await stat(localPath).catch(() => undefined);
+    if (!info?.isFile()) throw new Error(`${stepName} 无法读取视频文件：${source}`);
+    if (info.size > maxBytes) throw new Error(`${stepName} 的视频超过 500 MB 限制`);
+    bytes = await readFile(localPath, { signal });
+    filename = path.basename(localPath) || filename;
+    contentType = mimeTypeForMediaPath(filename, contentType);
+  } else {
+    throw new Error(`${stepName} 的视频输入缺少可读取的路径、URL 或 ComfyUI 附件`);
+  }
+
+  const form = new FormData();
+  form.set("image", new Blob([new Uint8Array(bytes)], { type: contentType }), filename);
+  form.set("type", "input");
+  form.set("subfolder", "zane-studio");
+  form.set("overwrite", "false");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  const abortFromParent = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", abortFromParent, { once: true });
+  }
+  try {
+    const response = await fetch(`${baseUrl}/upload/image`, { method: "POST", body: form, signal: controller.signal });
+    const payload = await response.json().catch(() => null) as unknown;
+    const uploaded = asRecord(payload);
+    if (!response.ok || typeof uploaded?.name !== "string") {
+      const detail = typeof uploaded?.error === "string" ? uploaded.error : `ComfyUI 返回 ${response.status}`;
+      throw new Error(`上传视频到 ComfyUI 失败：${detail}`);
+    }
+    const subfolder = typeof uploaded.subfolder === "string" ? uploaded.subfolder : "";
+    return {
+      id: randomUUID(),
+      filename: uploaded.name,
+      subfolder,
+      type: "input",
+      url: `/api/comfyui/view?${new URLSearchParams({ filename: uploaded.name, subfolder, type: "input" })}`,
+    };
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw cancellationError();
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
 function isComfyInputAudioAttachment(value: unknown) {
   const attachment = asRecord(value);
   return typeof attachment?.id === "string"
@@ -1837,7 +1239,7 @@ function isComfyInputAudioAttachment(value: unknown) {
 }
 
 function comfyInputAudioPath(value: unknown, stepName: string, required: boolean): string | undefined {
-  if ((value === null || value === "") && !required) return undefined;
+  if ((value === undefined || value === null || value === "") && !required) return undefined;
   const attachment = asRecord(value);
   const filename = attachment?.filename;
   const subfolder = attachment?.subfolder;
@@ -1873,10 +1275,12 @@ function addComfyImageBatch(graph: Record<string, Record<string, unknown>>, imag
   return combined;
 }
 
-function bindComfyImageList(graph: Record<string, Record<string, unknown>>, nodeInputs: Record<string, unknown>, nodeType: string, property: string, rawSchema: unknown, value: JsonValue | undefined, stepName: string, required: boolean) {
-  const values = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+async function bindComfyImageList(graph: Record<string, Record<string, unknown>>, nodeInputs: Record<string, unknown>, nodeType: string, property: string, rawSchema: unknown, value: JsonValue | undefined, stepName: string, required: boolean, baseUrl: string, signal?: AbortSignal) {
+  const external = externalizeRuntimeValue(value);
+  const values = Array.isArray(external) ? external : external === undefined || external === null ? [] : [external];
   if (!values.length && required) throw new Error(`${stepName} 的图片列表至少需要一张图片`);
-  const imagePaths = values.map((item, index) => comfyInputImagePath(item, stepName, index));
+  const attachments = await Promise.all(values.map((item) => uploadComfyImageSource(item, baseUrl, stepName, signal)));
+  const imagePaths = attachments.map((item, index) => comfyInputImagePath(item, stepName, index));
   const slotNames = comfyAutogrowImageInputNames(rawSchema);
   if (slotNames.length) {
     if (imagePaths.length > slotNames.length) {
@@ -1916,17 +1320,24 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
   const graph = await readWorkflowApiGraph(payload, baseUrl, signal);
   const bindings = step.comfyui?.bindings ?? [];
   const nodeInfoCache = new Map<string, Promise<unknown>>();
-  for (const binding of bindings.filter((item) => item.direction === "input")) {
-    const node = graph[binding.nodeId];
-    const nodeInputs = asRecord(node?.inputs);
-    if (!nodeInputs) throw new Error(`${step.name} 找不到输入绑定 ${binding.nodeId}.${binding.property}`);
-    const value = binding.valueSource === "literal"
-      ? parseWorkflowLiteral(binding.literalValue, binding.type, binding.label ?? binding.key)
-      : resolveWorkflowReference(binding.sourceRef ?? "", inputs, stepValues);
+  const resolvedBindings = bindings.filter((item) => item.direction === "input").map((binding) => {
     const inputKey = binding.valueSource === "literal" ? undefined : /^input\.([a-zA-Z0-9_]+)$/.exec(workflowReferenceRoot(binding.sourceRef ?? ""))?.[1];
     const sourceField = inputKey ? inputFields.find((field) => field.key === inputKey) : undefined;
     const sourceType = binding.valueSource === "literal" ? binding.type : variableTypes.get(workflowReferenceRoot(binding.sourceRef ?? "")) ?? sourceField?.type ?? binding.type;
-    if (sourceType === "image_list") {
+    const rawValue = binding.valueSource === "literal"
+      ? parseWorkflowLiteral(binding.literalValue, binding.type, binding.label ?? binding.key)
+      : resolveWorkflowReference(binding.sourceRef ?? "", inputs, stepValues);
+    const mediaKind = mediaKindFromWorkflowType(sourceType);
+    const normalizedValue = mediaKind && !isRuntimeMediaValue(rawValue) ? createRuntimeMediaValue(mediaKind, rawValue) : rawValue;
+    const value = (binding.selection ? selectRuntimeMedia(normalizedValue, binding.selection) : normalizedValue) as JsonValue | undefined;
+    return { binding, sourceField, value, mediaKind };
+  });
+  for (const group of groupComfyMediaBindings(resolvedBindings)) {
+    const { binding, sourceField, value, mediaKind: sourceMediaKind } = group[0]!;
+    const node = graph[binding.nodeId];
+    const nodeInputs = asRecord(node?.inputs);
+    if (!nodeInputs) throw new Error(`${step.name} 找不到输入绑定 ${binding.nodeId}.${binding.property}`);
+    if (sourceMediaKind === "image") {
       const nodeType = typeof node.class_type === "string" ? node.class_type : "Unknown";
       let infoRequest = nodeInfoCache.get(nodeType);
       if (!infoRequest) {
@@ -1935,22 +1346,68 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
       }
       const objectInfo = await infoRequest;
       const inputSchema = comfyNodeInputSchema(objectInfo, nodeType, binding.property);
-      bindComfyImageList(graph, nodeInputs, nodeType, binding.property, inputSchema, value, step.name, sourceField?.required ?? binding.required ?? false);
+      const imageValues = group.flatMap((item) => {
+        const media = normalizeMediaList(externalizeRuntimeValue(item.value));
+        if (!media.length && (item.sourceField?.required ?? item.binding.required ?? false)) {
+          throw new Error(`${step.name} 的 ${item.binding.label ?? item.binding.key} 至少需要一张图片`);
+        }
+        return media;
+      });
+      await bindComfyImageList(graph, nodeInputs, nodeType, binding.property, inputSchema, imageValues as JsonValue[], step.name, false, baseUrl, signal);
       continue;
     }
-    if (sourceType === "audio") {
-      const nodeType = typeof node.class_type === "string" ? node.class_type : "";
-      if (nodeType !== "LoadAudio" || binding.property !== "audio") {
-        throw new Error(step.name + " 的音频场景输入需要绑定到 LoadAudio.audio");
+    if (sourceMediaKind === "video") {
+      const required = sourceField?.required ?? binding.required ?? false;
+      const videos = normalizeMediaList(externalizeRuntimeValue(value));
+      if (!videos.length) {
+        if (required) throw new Error(`${step.name} 的视频输入不能为空`);
+        continue;
       }
-      if (!(binding.property in nodeInputs)) throw new Error(step.name + " 找不到输入绑定 " + binding.nodeId + "." + binding.property);
-      const audioPath = comfyInputAudioPath(value, step.name, sourceField?.required ?? binding.required ?? false);
-      if (audioPath !== undefined) nodeInputs[binding.property] = audioPath;
+      if (videos.length !== 1) {
+        throw new Error(`${step.name} 的 ${binding.property} 需要一个视频，请在引用中选择单项或启用逐项执行`);
+      }
+      const video = videos[0];
+      // Existing ComfyUI input choices can be passed through directly. New
+      // paths, URLs, data URLs, and previous-step outputs are uploaded so
+      // every downstream video loader receives an input-folder path.
+      if (typeof video === "string" && binding.options?.includes(video)) {
+        nodeInputs[binding.property] = video;
+      } else {
+        const attachment = await uploadComfyVideoSource(video, baseUrl, step.name, signal);
+        const videoPath = comfyInputVideoPath(attachment, step.name, required);
+        if (videoPath !== undefined) nodeInputs[binding.property] = videoPath;
+      }
+      continue;
+    }
+    if (sourceMediaKind === "audio") {
+      const nodeType = typeof node.class_type === "string" ? node.class_type : "Unknown";
+      const audios = group.flatMap((item) => {
+        const media = normalizeMediaList(externalizeRuntimeValue(item.value));
+        if (!media.length && (item.sourceField?.required ?? item.binding.required ?? false)) {
+          throw new Error(`${step.name} 的 ${item.binding.label ?? item.binding.key} 至少需要一个参考音频`);
+        }
+        return media;
+      });
+      let inputSchema: unknown;
+      if (nodeType !== "LoadAudio" || binding.property !== "audio") {
+        let infoRequest = nodeInfoCache.get(nodeType);
+        if (!infoRequest) {
+          infoRequest = fetchComfyUIJson(`${baseUrl}/object_info/${encodeURIComponent(nodeType)}`, 4500, signal);
+          nodeInfoCache.set(nodeType, infoRequest);
+        }
+        inputSchema = comfyNodeInputSchema(await infoRequest, nodeType, binding.property);
+      }
+      const paths = audios.map((audio) => comfyInputAudioPath(audio, step.name, true)!);
+      bindComfyAudioPaths(graph, nodeInputs, nodeType, binding.property, inputSchema, paths, step.name);
       continue;
     }
     if (!(binding.property in nodeInputs)) throw new Error(`${step.name} 找不到输入绑定 ${binding.nodeId}.${binding.property}`);
     const converted = coerceComfyInputValue(value, binding, step.name, sourceField?.required ?? binding.required);
     if (converted !== undefined) nodeInputs[binding.property] = converted;
+  }
+  if (step.comfyui?.adapter === "h3_long_video") {
+    return runH3SceneAdapter(step, graph, payload, inputs, stepValues, baseUrl, timeoutMs, signal,
+      (route, init, requestSignal) => fetchJson(baseUrl + route, init, requestSignal, Math.min(timeoutMs, 120000), timeoutMs / 60 / 1000));
   }
   let promptId: string | undefined;
   let promptSubmitted = false;
@@ -2263,12 +1720,13 @@ async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonVa
   const parts: HermesMessagePart[] = [{ type: "text", text: prompt }];
   const mediaInputs = (step.inputs ?? []).flatMap((input) => {
     const type = input.valueSource === "literal" ? input.literalType ?? "text" : types.get(workflowReferenceRoot(input.sourceRef ?? ""));
-    if (type !== "image" && type !== "image_list" && type !== "video") return [];
-    const value = resolveWorkflowValue(input, inputs, stepValues);
-    return value === undefined || value === null || value === "" ? [] : [{ input, type, value }];
+    const mediaKind = mediaKindFromWorkflowType(type);
+    if (mediaKind !== "image" && mediaKind !== "video") return [];
+    const value = normalizeMediaList(externalizeRuntimeValue(resolveWorkflowValue(input, inputs, stepValues)));
+    return value.length ? [{ input, mediaKind, value }] : [];
   });
   const expectedImageCount = Math.max(1, mediaInputs.reduce((total, media) => total + (
-    media.type === "video" ? hermesVideoFrameCount : Array.isArray(media.value) ? media.value.length : 1
+    media.mediaKind === "video" ? hermesVideoFrameCount * media.value.length : media.value.length
   ), 0));
   const promptBytes = Buffer.byteLength(prompt, "utf8");
   const imageBudgetBytes = Math.min(
@@ -2276,16 +1734,19 @@ async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonVa
     Math.floor(Math.max(0, hermesInlineMediaLimit - promptBytes - 32_000) * 0.7 / expectedImageCount),
   );
   let imageCount = 0;
-  for (const { input, type, value } of mediaInputs) {
+  for (const { input, mediaKind, value } of mediaInputs) {
     const label = input.label?.trim() || input.key;
-    if (type === "video") {
-      const frames = await hermesVideoFrameParts(value, label, settings, signal, imageBudgetBytes);
-      imageCount += frames.filter((part) => part.type === "image_url").length;
-      if (imageCount > hermesImageLimit) throw new Error(`${step.name} 最多支持 ${hermesImageLimit} 张图片或视频帧`);
-      parts.push(...frames);
+    if (mediaKind === "video") {
+      for (let index = 0; index < value.length; index += 1) {
+        const videoLabel = value.length > 1 ? `${label}（第 ${index + 1} 个视频）` : label;
+        const frames = await hermesVideoFrameParts(value[index], videoLabel, settings, signal, imageBudgetBytes);
+        imageCount += frames.filter((part) => part.type === "image_url").length;
+        if (imageCount > hermesImageLimit) throw new Error(`${step.name} 最多支持 ${hermesImageLimit} 张图片或视频帧`);
+        parts.push(...frames);
+      }
       continue;
     }
-    const imageValues = Array.isArray(value) ? value : [value];
+    const imageValues = value;
     for (let index = 0; index < imageValues.length; index += 1) {
       throwIfAborted(signal);
       if (imageCount >= hermesImageLimit) throw new Error(`${step.name} 最多支持 ${hermesImageLimit} 张图片或视频帧`);
@@ -2312,7 +1773,7 @@ async function requestHermesCompletion(profile: string, connection: HermesApiCon
     else signal.addEventListener("abort", abortFromParent, { once: true });
   }
   try {
-    const response = await fetch(hermesApiEndpoint(connection.baseUrl, profile, "chat/completions"), {
+    const response = await fetchHermesWithRetry(hermesApiEndpoint(connection.baseUrl, profile, "chat/completions"), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${connection.apiKey}`,
@@ -2324,7 +1785,7 @@ async function requestHermesCompletion(profile: string, connection: HermesApiCon
         stream: false,
       }),
       signal: controller.signal,
-    });
+    }, { retryHttpStatuses: [] });
     const payload = await response.json().catch(() => null) as unknown;
     const envelope = asRecord(payload);
     if (!response.ok) {
@@ -2362,7 +1823,7 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
   const templatePrompt = resolvePromptTemplate(step.promptTemplate ?? "", inputs, stepValues, types);
   const stepInputLines = (step.inputs ?? []).flatMap((input) => {
     const type = input.valueSource === "literal" ? input.literalType ?? "text" : types.get(workflowReferenceRoot(input.sourceRef ?? ""));
-    if (type === "image" || type === "image_list" || type === "video") return [];
+    if (mediaKindFromWorkflowType(type)) return [];
     const value = input.valueSource === "literal"
       ? parseWorkflowLiteral(input.literalValue, type, input.label ?? input.key)
       : resolveWorkflowValue(input, inputs, stepValues);
@@ -2393,50 +1854,26 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
   }));
 }
 
+app.get("/api/ready", (_request, response) => {
+  const worker = runService.metrics();
+  response.status(worker.ready && worker.accepting ? 200 : 503).json({ status: worker.ready && worker.accepting ? "ready" : "not_ready", worker });
+});
+
 app.get("/api/health", (_request, response) => {
-  response.json({ status: "ok" });
+  response.json({ status: "ok", storage: "sqlite", worker: runService.metrics(), adapters: ["h3_long_video", "commerce_pack", "long_text_video", "video_concat"] });
 });
 
 app.get("/api/workspace", async (_request, response) => {
   response.set("Cache-Control", "no-store");
-  response.json({ workspace: await readWorkspaceFile() ?? null });
+  response.json({ workspace: await workspaceService.get() ?? null });
 });
-
 app.post("/api/workspace/initialize", async (request, response) => {
-  try {
-    const candidate = normalizeWorkspacePayload(request.body);
-    const result = await withWorkspaceLock(async () => {
-      const existing = await readWorkspaceFile();
-      if (existing) return { created: false, workspace: existing };
-      await writeJsonFile(workspaceFile, candidate);
-      return { created: true, workspace: candidate };
-    });
-    response.set("Cache-Control", "no-store");
-    response.json(result);
-  } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : "无法初始化本机工作区" });
-  }
+  response.set("Cache-Control", "no-store");
+  response.json(await workspaceService.initialize(request.body));
 });
-
 app.post("/api/workspace/merge", async (request, response) => {
-  try {
-    const body = asRecord(request.body);
-    const base = normalizeWorkspacePayload(body?.base);
-    const desired = normalizeWorkspacePayload(body?.workspace);
-    const workspace = await withWorkspaceLock(async () => {
-      const saved = await readWorkspaceFile();
-      if (!saved) throw new Error("本机工作区尚未初始化，请先完成初始化");
-      const current = normalizeWorkspacePayload(saved);
-      const merged = mergeWorkspacePayload(base, desired, current);
-      await writeJsonFile(workspaceFile, merged);
-      return merged;
-    });
-    response.set("Cache-Control", "no-store");
-    response.json({ workspace });
-  } catch (error) {
-    response.status(error instanceof Error && error.message.includes("尚未初始化") ? 409 : 400)
-      .json({ error: error instanceof Error ? error.message : "无法保存本机工作区" });
-  }
+  response.set("Cache-Control", "no-store");
+  response.json({ workspace: await workspaceService.merge(request.body?.base, request.body?.workspace) });
 });
 
 app.post("/api/files/pick", async (request, response) => {
@@ -2478,104 +1915,6 @@ app.post("/api/files/pick", async (request, response) => {
 
 app.get("/api/settings", async (_request, response) => {
   response.json(publicSettings(await readSettings()));
-});
-
-app.get("/api/workflows/runs", async (_request, response) => {
-  const settings = await readSettings();
-  if (!settings.projectDirectory) {
-    response.json({ projectDirectory: "", runs: [] });
-    return;
-  }
-  const runsDirectory = path.join(settings.projectDirectory, ".zane", "runs");
-  let entries;
-  try {
-    entries = await readdir(runsDirectory, { withFileTypes: true });
-  } catch {
-    response.json({ projectDirectory: settings.projectDirectory, runs: [] });
-    return;
-  }
-  const runs = (await Promise.all(entries
-    .filter((entry) => entry.isDirectory() && isRunId(entry.name))
-    .map((entry) => readRunRecord(settings.projectDirectory, entry.name))))
-    .filter((run): run is NonNullable<typeof run> => Boolean(run))
-    .map((run) => ({
-      runId: run.runId,
-      sceneId: run.sceneId,
-      workflowName: run.workflowName,
-      ...(run.runTitle ? { runTitle: run.runTitle } : {}),
-      status: run.status,
-      startedAt: run.startedAt,
-      ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
-      ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
-      stepCount: run.steps.length,
-      outputCount: run.outputs.length,
-      ...(run.error ? { error: run.error } : {}),
-      artifacts: run.artifacts,
-    }))
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
-    .slice(0, 200);
-  response.json({ projectDirectory: settings.projectDirectory, runs });
-});
-
-app.get("/api/workflows/runs/:runId", async (request, response) => {
-  const settings = await readSettings();
-  const { runId } = request.params;
-  if (!isRunId(runId)) {
-    response.status(400).json({ error: "运行记录编号无效" });
-    return;
-  }
-  if (!settings.projectDirectory) {
-    response.status(400).json({ error: "请先在集成连接中配置项目目录" });
-    return;
-  }
-  const run = await readRunRecord(settings.projectDirectory, runId);
-  if (!run) {
-    response.status(404).json({ error: "没有找到这条运行记录" });
-    return;
-  }
-  response.json(run);
-});
-
-app.post("/api/workflows/runs/:runId/cancel", (request, response) => {
-  const { runId } = request.params;
-  if (!isRunId(runId)) {
-    response.status(400).json({ error: "运行记录编号无效" });
-    return;
-  }
-  const cancel = activeWorkflowRunCancellations.get(runId);
-  if (!cancel) {
-    response.status(409).json({ error: "这条运行记录已结束，或当前服务无法停止它" });
-    return;
-  }
-  cancel("用户主动点击了取消运行");
-  response.json({ runId, status: "cancelling" });
-});
-
-app.get("/api/workflows/runs/:runId/media/:filename", async (request, response) => {
-  const settings = await readSettings();
-  const { runId, filename } = request.params;
-  if (!isRunId(runId) || !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(filename) || filename.includes("..")) {
-    response.status(400).json({ error: "归档媒体路径无效" });
-    return;
-  }
-  if (!settings.projectDirectory) {
-    response.status(404).json({ error: "项目目录未配置" });
-    return;
-  }
-  const mediaDirectory = path.resolve(runArtifactPaths(settings.projectDirectory, runId).directory, "outputs", "media");
-  const mediaPath = path.resolve(mediaDirectory, filename);
-  if (!mediaPath.startsWith(`${mediaDirectory}${path.sep}`)) {
-    response.status(400).json({ error: "归档媒体路径无效" });
-    return;
-  }
-  try {
-    const bytes = await readFile(mediaPath);
-    const extension = path.extname(filename).toLowerCase();
-    const contentType = ({ ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif", ".mp4": "video/mp4", ".webm": "video/webm" } as Record<string, string>)[extension] ?? "application/octet-stream";
-    response.type(contentType).send(bytes);
-  } catch {
-    response.status(404).json({ error: "没有找到归档媒体文件" });
-  }
 });
 
 app.get("/api/hermes/profiles", async (_request, response) => {
@@ -2768,631 +2107,6 @@ app.post("/api/comfyui/upload-audio", express.raw({ type: "application/octet-str
   }
 });
 
-app.get("/api/comfyui/view", async (request, response) => {
-  const settings = await readSettings();
-  const filename = typeof request.query.filename === "string" ? request.query.filename : "";
-  const subfolder = typeof request.query.subfolder === "string" ? request.query.subfolder : "";
-  const type = typeof request.query.type === "string" ? request.query.type : "output";
-  if (!settings.comfyuiBaseUrl || !filename || filename.includes("..") || subfolder.includes("..")) {
-    response.status(400).json({ error: "ComfyUI 媒体参数无效" });
-    return;
-  }
-  const query = new URLSearchParams({ filename, subfolder, type });
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-    try {
-      const upstream = await fetch(`${settings.comfyuiBaseUrl}/view?${query}`, { signal: controller.signal });
-      if (!upstream.ok) {
-        response.status(upstream.status).json({ error: "无法读取 ComfyUI 输出媒体" });
-        return;
-      }
-      response.type(upstream.headers.get("content-type") ?? "application/octet-stream");
-      response.send(Buffer.from(await upstream.arrayBuffer()));
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch {
-    response.status(502).json({ error: "读取 ComfyUI 输出媒体失败" });
-  }
-});
-
-app.post("/api/workflows/run", async (request, response) => {
-  const body = asRecord(request.body);
-  const workflow = asRecord(body?.workflow) as unknown as RunWorkflowDefinition | undefined;
-  const rawInputs = asRecord(body?.inputValues);
-  if (!workflow || !Array.isArray(workflow.inputs) || !Array.isArray(workflow.steps) || !Array.isArray(workflow.outputs) || !rawInputs) {
-    response.status(400).json({ error: "工作流定义或场景输入格式无效" });
-    return;
-  }
-  if (workflow.steps.length > 100 || workflow.inputs.length > 200) {
-    response.status(400).json({ error: "工作流规模超出限制" });
-    return;
-  }
-  let executionWorkflow = workflow;
-  const requestedRunId = body?.runId;
-  if (requestedRunId !== undefined && (typeof requestedRunId !== "string" || !isRunId(requestedRunId))) {
-    response.status(400).json({ error: "运行记录编号无效" });
-    return;
-  }
-  const requestedResumeFromRunId = body?.resumeFromRunId;
-  if (requestedResumeFromRunId !== undefined && (typeof requestedResumeFromRunId !== "string" || !isRunId(requestedResumeFromRunId))) {
-    response.status(400).json({ error: "断点来源运行记录编号无效" });
-    return;
-  }
-  const requestedRunTitle = body?.runTitle;
-  if (requestedRunTitle !== undefined && (typeof requestedRunTitle !== "string" || requestedRunTitle.length > 120)) {
-    response.status(400).json({ error: "运行标题无效，最多可填写 120 个字符" });
-    return;
-  }
-  let runTitle = typeof requestedRunTitle === "string" ? requestedRunTitle.trim() : "";
-  const runId = typeof requestedRunId === "string" ? requestedRunId : randomUUID();
-  const runController = new AbortController();
-  let cancellationReason: string | undefined;
-  const abortRun = (reason: string) => {
-    if (!response.writableEnded && !runController.signal.aborted) {
-      cancellationReason = reason;
-      runController.abort(reason);
-    }
-  };
-  request.once("aborted", () => abortRun("运行请求连接中断，无法确认具体原因"));
-  response.once("close", () => abortRun("运行响应连接中断，无法确认具体原因"));
-  let inputValues = rawInputs as Record<string, JsonValue>;
-  for (const field of workflow.inputs) {
-    const value = inputValues[field.key];
-    const empty = value === undefined || value === null || value === "" || (field.type === "image_list" && Array.isArray(value) && value.length === 0);
-    if (field.required && empty) {
-      response.status(400).json({ error: `请填写必填字段：${field.key}` });
-      return;
-    }
-    if (empty) continue;
-    const correctType = field.type === "image_list" ? Array.isArray(value) && value.every((item) => {
-      const attachment = asRecord(item);
-      return typeof attachment?.id === "string"
-        && typeof attachment.filename === "string"
-        && typeof attachment.subfolder === "string"
-        && attachment.type === "input"
-        && typeof attachment.url === "string";
-    })
-      : field.type === "audio" ? isComfyInputAudioAttachment(value)
-      : field.type === "number" ? typeof value === "number" && Number.isFinite(value)
-      : field.type === "boolean" ? typeof value === "boolean"
-        : field.type === "json" ? typeof value === "object"
-          : typeof value === "string";
-    if (!correctType) {
-      response.status(400).json({ error: `字段 ${field.key} 的数据类型不匹配` });
-      return;
-    }
-    if (field.type === "select" && Array.isArray(field.options) && !field.options.includes(String(value))) {
-      response.status(400).json({ error: `字段 ${field.key} 的选项无效` });
-      return;
-    }
-  }
-
-  const settings = await readSettings();
-  let resumeSource: Awaited<ReturnType<typeof readRunRecord>> | undefined;
-  if (typeof requestedResumeFromRunId === "string") {
-    if (!settings.projectDirectory) {
-      response.status(400).json({ error: "请先在集成连接中配置项目目录" });
-      return;
-    }
-    if (requestedResumeFromRunId === runId) {
-      response.status(400).json({ error: "断点来源不能是新的运行记录本身" });
-      return;
-    }
-    if (activeWorkflowRunCancellations.has(requestedResumeFromRunId) || activeWorkflowRunResumes.has(requestedResumeFromRunId)) {
-      response.status(409).json({ error: "这条运行记录仍在执行，请先取消或等待它结束" });
-      return;
-    }
-    resumeSource = await readRunRecord(settings.projectDirectory, requestedResumeFromRunId);
-    if (!resumeSource) {
-      response.status(404).json({ error: "没有找到断点来源运行记录" });
-      return;
-    }
-    if (resumeSource.status === "completed") {
-      response.status(409).json({ error: "已完成的运行记录不需要断点续跑" });
-      return;
-    }
-    const sourceWorkflow = resumeSource.workflow as Record<string, unknown> | undefined;
-    if (!sourceWorkflow || !Array.isArray(sourceWorkflow.inputs) || !Array.isArray(sourceWorkflow.steps) || !Array.isArray(sourceWorkflow.outputs) || resumeSource.sceneId !== workflow.sceneId) {
-      response.status(409).json({ error: "断点来源与当前工作流不匹配" });
-      return;
-    }
-    if (activeWorkflowRunCancellations.has(requestedResumeFromRunId) || activeWorkflowRunResumes.has(requestedResumeFromRunId)) {
-      response.status(409).json({ error: "这条运行记录仍在执行，请先取消或等待它结束" });
-      return;
-    }
-    activeWorkflowRunResumes.add(requestedResumeFromRunId);
-    const releaseResume = () => activeWorkflowRunResumes.delete(requestedResumeFromRunId);
-    response.once("finish", releaseResume);
-    response.once("close", releaseResume);
-    executionWorkflow = sourceWorkflow as unknown as RunWorkflowDefinition;
-    inputValues = resumeSource.inputValues;
-    runTitle ||= resumeSource.runTitle ?? "";
-    const sourcePaths = runArtifactPaths(settings.projectDirectory, requestedResumeFromRunId);
-    const sourceInput = await readJsonFile(sourcePaths.inputs);
-    const sourceFiles = Array.isArray(sourceInput?.files) ? sourceInput.files : [];
-    for (const value of sourceFiles) {
-      const file = asRecord(value);
-      if (typeof file?.key !== "string" || typeof file.path !== "string" || !file.path.startsWith("inputs/files/")) continue;
-      const filename = path.resolve(sourcePaths.directory, ...file.path.split(/[\\/]/));
-      const sourceDirectory = path.resolve(sourcePaths.directory);
-      if (!filename.startsWith(`${sourceDirectory}${path.sep}`)) continue;
-      try {
-        if ((await stat(filename)).isFile()) inputValues[file.key] = filename;
-      } catch {
-        // Fall back to the original input value when the archived copy is unavailable.
-      }
-    }
-  }
-  if (settings.projectDirectory && typeof requestedRunId === "string") {
-    try {
-      await stat(runArtifactPaths(settings.projectDirectory, runId).directory);
-      response.status(409).json({ error: "运行记录编号已存在" });
-      return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  const legacyExecution = executionWorkflow.execution;
-  if (legacyExecution) {
-    const { execution: _legacyExecution, ...withoutWorkflowExecution } = executionWorkflow;
-    if (legacyExecution.mode === "for_each" && !executionWorkflow.steps.some((step) => step.execution?.mode === "for_each")) {
-      const targetIndex = executionWorkflow.steps.findIndex((step) => step.kind !== "control");
-      executionWorkflow = targetIndex < 0
-        ? withoutWorkflowExecution
-        : { ...withoutWorkflowExecution, steps: executionWorkflow.steps.map((step, index) => index === targetIndex ? { ...step, execution: legacyExecution } : step) };
-    } else {
-      executionWorkflow = withoutWorkflowExecution;
-    }
-  }
-  const stepIterationConfigs = executionWorkflow.steps.filter((step) => step.execution?.mode === "for_each");
-  if (typeof requestedResumeFromRunId === "string" && stepIterationConfigs.length) {
-    response.status(409).json({ error: "包含逐项执行步骤的流程暂不支持从断点续跑，请重新运行整个流程" });
-    return;
-  }
-  for (const step of stepIterationConfigs) {
-    if (!step.execution?.sourceRef?.trim()) {
-      response.status(400).json({ error: `${step.name} 的逐项执行必须选择列表或数组来源` });
-      return;
-    }
-  }
-  const startedAt = new Date().toISOString();
-  let artifacts: RunArtifactPaths | undefined;
-  try {
-    artifacts = await prepareRunArtifacts(settings, runId, executionWorkflow, inputValues, startedAt, runTitle || undefined);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "无法创建项目运行目录";
-    response.status(400).json({ error: message });
-    return;
-  }
-  const steps: RunStepRecord[] = [];
-  const mediaCache = new Map<string, JsonValue>();
-  const archiveWarnings: string[] = [];
-  let failure = "";
-
-  activeWorkflowRunCancellations.set(runId, (reason) => abortRun(reason));
-  response.once("finish", () => activeWorkflowRunCancellations.delete(runId));
-
-  function syncSteps(activeSteps: RunStepRecord[] = []) {
-    steps.splice(0, steps.length, ...activeSteps);
-  }
-
-  async function persistRuntime(status: "running" | "completed" | "failed" | "cancelled", finishedAt?: string, cancellationReason?: string) {
-    if (!artifacts) return;
-    await writeJsonFile(artifacts.runtime, {
-      format: "zane-studio.runtime/v1",
-      runId,
-      status,
-      startedAt,
-      sceneId: executionWorkflow.sceneId ?? null,
-      workflowName: executionWorkflow.name ?? "未命名工作流",
-      ...(runTitle ? { runTitle } : {}),
-      artifacts: artifactPublicPaths(artifacts),
-      ...(finishedAt ? { finishedAt, durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime() } : {}),
-      ...(typeof requestedResumeFromRunId === "string" ? { resumedFromRunId: requestedResumeFromRunId } : {}),
-      ...(archiveWarnings.length ? { archiveWarnings } : {}),
-      ...(cancellationReason ? { cancellationReason } : {}),
-      steps,
-    });
-  }
-
-  async function archiveStepRecords(records: RunStepRecord[]) {
-    return Promise.all(records.map(async (step) => {
-      const outputs = step.outputs
-        ? Object.fromEntries(await Promise.all(Object.entries(step.outputs).map(async ([key, value]) => [
-          key,
-          await archiveOutputMedia(value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
-        ] as const)))
-        : undefined;
-      const items = step.items
-        ? await Promise.all(step.items.map(async (item) => item.outputs ? {
-          ...item,
-          outputs: Object.fromEntries(await Promise.all(Object.entries(item.outputs).map(async ([key, value]) => [
-            key,
-            await archiveOutputMedia(value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
-          ] as const))),
-        } : item))
-        : undefined;
-      return {
-        ...step,
-        ...(outputs ? { outputs } : {}),
-        ...(items ? { items } : {}),
-      };
-    }));
-  }
-
-  function iterationSourceInfo(sourceRef: string) {
-    const parsed = splitWorkflowReference(sourceRef);
-    if (!parsed) return undefined;
-    const path = parsed.path ? parseWorkflowJsonPath(parsed.path) : [];
-    const inputMatch = /^input\.([a-zA-Z0-9_]+)$/.exec(parsed.root);
-    if (inputMatch) {
-      const field = executionWorkflow.inputs.find((candidate) => candidate.key === inputMatch[1]);
-      return { kind: "input" as const, key: inputMatch[1], type: field?.type, path };
-    }
-    const outputMatch = /^step\.([a-zA-Z0-9_-]+)\.outputs\.([a-zA-Z0-9_]+)$/.exec(parsed.root);
-    if (outputMatch) {
-      const step = executionWorkflow.steps.find((candidate) => candidate.id === outputMatch[1]);
-      const output = step?.outputs?.find((candidate) => candidate.key === outputMatch[2]);
-      return { kind: "step" as const, stepId: outputMatch[1], key: outputMatch[2], type: output?.type, path };
-    }
-    return undefined;
-  }
-
-  function replaceIterationPath(value: JsonValue, segments: Array<string | number>, item: JsonValue): JsonValue {
-    if (!segments.length) return item;
-    const [segment, ...remaining] = segments;
-    if (typeof segment === "number" && Array.isArray(value) && segment < value.length) {
-      const next = [...value];
-      next[segment] = replaceIterationPath(next[segment], remaining, item);
-      return next;
-    }
-    if (typeof segment === "string" && value !== null && typeof value === "object" && !Array.isArray(value)
-      && Object.prototype.hasOwnProperty.call(value, segment)) {
-      return { ...value, [segment]: replaceIterationPath(value[segment], remaining, item) };
-    }
-    throw new Error(`逐项执行来源路径不存在：${segments.join(".")}`);
-  }
-
-  function iterationContext(sourceRef: string, itemValue: JsonValue, baseInputs: Record<string, JsonValue>, baseValues: Map<string, Record<string, JsonValue>>, sourceType?: string) {
-    const info = iterationSourceInfo(sourceRef);
-    if (!info) throw new Error(`逐项执行来源无效：${sourceRef || "（空）"}`);
-    const sourceItem = info.path.length
-      ? itemValue
-      : info.type === "image_list" || sourceType === "image_list" ? [itemValue] as JsonValue : itemValue;
-    if (info.kind === "input") {
-      return {
-        inputs: {
-          ...baseInputs,
-          [info.key]: info.path.length ? replaceIterationPath(baseInputs[info.key], info.path, sourceItem) : sourceItem,
-          "iteration.item": itemValue,
-        },
-        values: baseValues,
-      };
-    }
-    const sourceOutputs = baseValues.get(info.stepId);
-    if (!sourceOutputs || !Object.prototype.hasOwnProperty.call(sourceOutputs, info.key)) {
-      throw new Error(`逐项执行来源 ${sourceRef} 没有可用数组`);
-    }
-    const values = new Map(baseValues);
-    values.set(info.stepId, {
-      ...sourceOutputs,
-      [info.key]: info.path.length ? replaceIterationPath(sourceOutputs[info.key], info.path, sourceItem) : sourceItem,
-    });
-    return { inputs: { ...baseInputs, "iteration.item": itemValue }, values };
-  }
-
-  async function executeStep(step: RunStep, stepInputValues: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>) {
-    if (step.kind === "control") {
-      const control = step.control;
-      if (!control || control.type !== "condition" || !control.rules.length) throw new Error("条件节点至少需要一条规则");
-      const results = control.rules.map((rule) => evaluateCondition(rule, stepInputValues, stepValues, types));
-      return { result: control.match === "all" ? results.every(Boolean) : results.some(Boolean) } as Record<string, JsonValue>;
-    }
-    if (step.kind === "hermes") return runHermesStep(step, stepInputValues, stepValues, types, settings, runController.signal);
-    if (step.kind === "comfyui") {
-      return comfyuiQueue.run(
-        () => runComfyUIStep(step, stepInputValues, stepValues, settings.comfyuiBaseUrl, runController.signal, executionWorkflow.inputs, types, workflowTimeoutMs(settings.workflowTimeoutMinutes)),
-        runController.signal,
-      );
-    }
-    throw new Error(`暂不支持执行方式：${step.kind}`);
-  }
-
-  async function executeWorkflowItem(itemIndex: number, itemInputValues: Record<string, JsonValue>, resumeState?: { steps: RunStepRecord[]; values: Map<string, Record<string, JsonValue>>; types: Map<string, string>; startIndex: number }): Promise<RunItemResult> {
-    const values = resumeState?.values ?? new Map<string, Record<string, JsonValue>>();
-    const types = resumeState?.types ?? new Map<string, string>();
-    if (!resumeState) {
-      for (const field of executionWorkflow.inputs) types.set(`input.${field.key}`, field.type === "textarea" || field.type === "select" ? "text" : field.type);
-    }
-    const itemSteps: RunStepRecord[] = resumeState?.steps ? [...resumeState.steps] : [];
-    let itemFailure = "";
-    let itemCancelled = false;
-    const startIndex = resumeState?.startIndex ?? 0;
-
-    for (let index = startIndex; index < executionWorkflow.steps.length; index += 1) {
-      if (runController.signal.aborted) {
-        itemCancelled = true;
-        break;
-      }
-      const step = executionWorkflow.steps[index];
-      if (!step || typeof step.id !== "string" || typeof step.name !== "string") {
-        itemFailure = `第 ${index + 1} 步配置无效`;
-        break;
-      }
-      const stepInputs = resolveStepInputs(step, itemInputValues, values);
-      const inputLabels = Object.fromEntries((step.inputs ?? []).map((input) => [input.key, input.label ?? input.key]));
-      const outputLabels = Object.fromEntries((step.outputs ?? []).map((output) => [output.key, output.label ?? output.key]));
-      const outputTypes = Object.fromEntries((step.outputs ?? []).map((output) => [output.key, output.type]));
-      if (step.runCondition) {
-        const condition = values.get(step.runCondition.conditionStepId)?.result;
-        if (typeof condition !== "boolean") {
-          itemFailure = `${step.name} 引用的条件节点没有布尔结果`;
-          itemSteps.push({ stepId: step.id, name: step.name, status: "failed", message: itemFailure, inputs: stepInputs, inputLabels, outputLabels, outputTypes });
-          break;
-        }
-        if (condition !== step.runCondition.expectedResult) {
-          itemSteps.push({ stepId: step.id, name: step.name, status: "skipped", message: "执行条件未满足", inputs: stepInputs, inputLabels, outputLabels, outputTypes });
-          syncSteps(itemSteps);
-          await persistRuntime("running");
-          continue;
-        }
-      }
-
-      if (step.execution?.mode === "for_each") {
-        const sourceRef = step.execution.sourceRef?.trim() ?? "";
-        let sourceItems: JsonValue[] = [];
-        let sourceType: string | undefined;
-        const parent: RunStepRecord = { stepId: step.id, name: step.name, status: "running", inputs: stepInputs, inputLabels, outputLabels, outputTypes, items: [] };
-        itemSteps.push(parent);
-        syncSteps(itemSteps);
-        await persistRuntime("running");
-        try {
-          const info = iterationSourceInfo(sourceRef);
-          if (!info) throw new Error(`逐项执行来源无效：${sourceRef || "（空）"}`);
-          sourceType = info.type;
-          const sourceValue = resolveWorkflowReference(sourceRef, itemInputValues, values);
-          if (!Array.isArray(sourceValue)) throw new Error(`逐项执行来源 ${sourceRef} 必须是数组`);
-          sourceItems = sourceValue;
-        } catch (error) {
-          itemFailure = error instanceof Error ? error.message : `${step.name} 的逐项来源无效`;
-          parent.status = "failed";
-          parent.message = itemFailure;
-          syncSteps(itemSteps);
-          await persistRuntime("running");
-          break;
-        }
-
-        const aggregatedOutputs: Record<string, JsonValue> = Object.fromEntries((step.outputs ?? []).map((output) => [output.key, [] as JsonValue[]]));
-        let iterationFailed = false;
-        for (let itemIndex = 0; itemIndex < sourceItems.length; itemIndex += 1) {
-          if (runController.signal.aborted) {
-            itemCancelled = true;
-            break;
-          }
-          const sourceItem = sourceItems[itemIndex];
-          let currentInputs: Record<string, JsonValue>;
-          let currentValues: Map<string, Record<string, JsonValue>>;
-          try {
-            const context = iterationContext(sourceRef, sourceItem, itemInputValues, values, sourceType);
-            currentInputs = context.inputs;
-            currentValues = context.values;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : `${step.name} 的第 ${itemIndex + 1} 项输入无效`;
-            parent.items?.push({ index: itemIndex, value: sourceItem, status: "failed", error: message });
-            for (const output of step.outputs ?? []) (aggregatedOutputs[output.key] as JsonValue[]).push(null);
-            itemFailure = message;
-            iterationFailed = true;
-            if (step.execution.onError === "stop") break;
-            continue;
-          }
-          const currentStepInputs = resolveStepInputs(step, currentInputs, currentValues);
-          const currentTypes = new Map(types);
-          const iterationInfo = iterationSourceInfo(sourceRef);
-          const iterationItemType = iterationInfo?.path.length
-            ? "json"
-            : iterationInfo?.type === "image_list" ? "image" : iterationInfo?.type ?? "json";
-          currentTypes.set("iteration.item", iterationItemType);
-          const itemRecord: RunStepItemRecord = { index: itemIndex, value: sourceItem, status: "running", inputs: currentStepInputs };
-          parent.items?.push(itemRecord);
-          syncSteps(itemSteps);
-          await persistRuntime("running");
-          try {
-            const outputs = await executeStep(step, currentInputs, currentValues, currentTypes);
-            itemRecord.status = "completed";
-            itemRecord.outputs = outputs;
-            for (const output of step.outputs ?? []) {
-              const collected = aggregatedOutputs[output.key];
-              if (Array.isArray(collected)) collected.push(outputs[output.key] ?? null);
-            }
-          } catch (error) {
-            if (runController.signal.aborted) {
-              itemCancelled = true;
-              itemRecord.status = "cancelled";
-              itemRecord.error = cancellationReason ?? "运行已取消";
-              break;
-            }
-            const message = error instanceof Error ? error.message : `${step.name} 的第 ${itemIndex + 1} 项执行失败`;
-            itemRecord.status = "failed";
-            itemRecord.error = message;
-            for (const output of step.outputs ?? []) (aggregatedOutputs[output.key] as JsonValue[]).push(null);
-            itemFailure = message;
-            iterationFailed = true;
-            if (step.execution.onError === "stop") break;
-          }
-          syncSteps(itemSteps);
-          await persistRuntime("running");
-        }
-        if (itemCancelled) {
-          parent.status = "cancelled";
-          parent.message = cancellationReason ?? "运行已取消";
-          syncSteps(itemSteps);
-          await persistRuntime("running");
-          break;
-        }
-        parent.outputs = aggregatedOutputs;
-        values.set(step.id, aggregatedOutputs);
-        for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, output.type === "image" ? "image_list" : output.type);
-        if (iterationFailed) {
-          parent.status = "failed";
-          parent.message = itemFailure || `${step.name} 有逐项执行失败`;
-          syncSteps(itemSteps);
-          await persistRuntime("running");
-          break;
-        }
-        parent.status = "completed";
-        syncSteps(itemSteps);
-        await persistRuntime("running");
-        continue;
-      }
-
-      try {
-        itemSteps.push({ stepId: step.id, name: step.name, status: "running", inputs: stepInputs, inputLabels, outputLabels, outputTypes });
-        syncSteps(itemSteps);
-        await persistRuntime("running");
-        const outputs = await executeStep(step, itemInputValues, values, types);
-        values.set(step.id, outputs);
-        for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, output.type);
-        itemSteps[itemSteps.length - 1] = { stepId: step.id, name: step.name, status: "completed", inputs: stepInputs, inputLabels, outputs, outputLabels, outputTypes };
-        syncSteps(itemSteps);
-        await persistRuntime("running");
-      } catch (error) {
-        if (runController.signal.aborted) {
-          itemCancelled = true;
-          const activeStep = itemSteps[itemSteps.length - 1];
-          if (activeStep?.status === "running") {
-            activeStep.status = "cancelled";
-            activeStep.message = cancellationReason ?? "运行已取消";
-          }
-          syncSteps(itemSteps);
-          await persistRuntime("running");
-          break;
-        }
-        itemFailure = error instanceof Error ? error.message : `${step.name} 执行失败`;
-        itemSteps[itemSteps.length - 1] = { stepId: step.id, name: step.name, status: "failed", message: itemFailure, inputs: stepInputs, inputLabels, outputLabels, outputTypes };
-        syncSteps(itemSteps);
-        await persistRuntime("running");
-        break;
-      }
-    }
-
-    const itemOutputs = executionWorkflow.outputs.map((output) => {
-      try {
-        return { key: output.key, label: output.label ?? output.key, type: output.type, value: resolveWorkflowReference(output.sourceRef, itemInputValues, values) ?? null };
-      } catch {
-        return { key: output.key, label: output.label ?? output.key, type: output.type, value: null };
-      }
-    });
-    const archivedOutputs = await Promise.all(itemOutputs.map(async (output) => ({
-      ...output,
-      value: await archiveOutputMedia(output.value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
-    })));
-    const archivedSteps = await archiveStepRecords(itemSteps);
-    itemSteps.splice(0, itemSteps.length, ...archivedSteps);
-    const status = itemCancelled ? "cancelled" as const : itemFailure ? "failed" as const : "completed" as const;
-    return {
-      index: itemIndex,
-      value: null,
-      status,
-      steps: itemSteps,
-      outputs: archivedOutputs,
-      ...(itemFailure ? { error: itemFailure } : {}),
-    };
-  }
-
-  let resumeState: { steps: RunStepRecord[]; values: Map<string, Record<string, JsonValue>>; types: Map<string, string>; startIndex: number } | undefined;
-  if (resumeSource) {
-    const values = new Map<string, Record<string, JsonValue>>();
-    const types = new Map<string, string>();
-    for (const field of executionWorkflow.inputs) types.set(`input.${field.key}`, field.type === "textarea" || field.type === "select" ? "text" : field.type);
-    const sourceSteps = new Map(resumeSource.steps.flatMap((savedStep) => {
-      const recorded = asRecord(savedStep);
-      return typeof recorded?.stepId === "string" ? [[recorded.stepId, recorded] as const] : [];
-    }));
-    const savedSteps: RunStepRecord[] = [];
-    let startIndex = 0;
-    for (let index = 0; index < executionWorkflow.steps.length; index += 1) {
-      const step = executionWorkflow.steps[index];
-      const recorded = sourceSteps.get(step.id);
-      const status = recorded?.status;
-      if (!recorded || (status !== "completed" && status !== "skipped")) break;
-      savedSteps.push(recorded as unknown as RunStepRecord);
-      const recordedOutputs = asRecord(recorded.outputs) as Record<string, JsonValue> | undefined;
-      if (status === "completed" && recordedOutputs) values.set(step.id, recordedOutputs);
-      for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, output.type);
-      startIndex = index + 1;
-    }
-    resumeState = { steps: savedSteps, values, types, startIndex };
-    syncSteps(savedSteps);
-  }
-
-  await persistRuntime("running");
-  const singleItemResult = await executeWorkflowItem(0, inputValues, resumeState);
-  steps.splice(0, steps.length, ...singleItemResult.steps);
-  if (singleItemResult.status === "failed") failure = singleItemResult.error ?? "流程执行失败";
-
-  if (runController.signal.aborted) {
-    const finishedAt = new Date().toISOString();
-    const reason = cancellationReason ?? "运行已中断，无法确认具体原因";
-    const activeStep = steps[steps.length - 1];
-    if (activeStep?.status === "running") {
-      activeStep.status = "cancelled";
-      activeStep.message = reason;
-    }
-    await persistRuntime("cancelled", finishedAt, reason);
-    if (artifacts) {
-      await writeJsonFile(artifacts.output, {
-        format: "zane-studio.output/v1",
-        runId,
-        status: "cancelled",
-        ...(typeof requestedResumeFromRunId === "string" ? { resumedFromRunId: requestedResumeFromRunId } : {}),
-        startedAt,
-        finishedAt,
-        durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime(),
-        steps,
-        outputs: [],
-        error: reason,
-        cancellationReason: reason,
-      });
-    }
-    if (!response.writableEnded && !response.destroyed) {
-      response.status(499).json({ runId, status: "cancelled", steps, outputs: [], error: reason, cancellationReason: reason, ...(typeof requestedResumeFromRunId === "string" ? { resumedFromRunId: requestedResumeFromRunId } : {}), artifacts: artifactPublicPaths(artifacts) });
-    }
-    activeWorkflowRunCancellations.delete(runId);
-    return;
-  }
-
-  const finalOutputs = singleItemResult.outputs;
-  const archivedOutputs = await Promise.all(finalOutputs.map(async (output) => ({
-    ...output,
-    value: await archiveOutputMedia(output.value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
-  })));
-
-  const finishedAt = new Date().toISOString();
-  const status = failure ? "failed" as const : "completed" as const;
-  const result = {
-    runId,
-    status,
-    steps,
-    outputs: archivedOutputs,
-    startedAt,
-    finishedAt,
-    durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime(),
-    ...(failure ? { error: failure } : {}),
-    ...(typeof requestedResumeFromRunId === "string" ? { resumedFromRunId: requestedResumeFromRunId } : {}),
-    ...(archiveWarnings.length ? { archiveWarnings } : {}),
-    artifacts: artifactPublicPaths(artifacts),
-  };
-  await writeJsonFile(artifacts.output, {
-    format: "zane-studio.output/v1",
-    ...result,
-  });
-  await persistRuntime(status, finishedAt);
-  activeWorkflowRunCancellations.delete(runId);
-  response.json(result);
-});
-
 app.put("/api/settings", async (request, response) => {
   const current = await readSettings();
   const profiles = await listHermesProfiles();
@@ -3415,7 +2129,7 @@ app.put("/api/settings", async (request, response) => {
   try {
     next.projectDirectory = await validateProjectDirectory(next.projectDirectory);
     await mkdir(localDirectory, { recursive: true });
-    await writeFile(settingsFile, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+    await writeJsonFile(settingsFile, next);
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "项目目录不可写" });
     return;
@@ -3452,7 +2166,32 @@ if (isProduction) {
   });
 }
 
-app.listen(port, host, () => {
-  console.log(`${isProduction ? "Production" : "Development"} server listening on http://${host}:${port}`);
+app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+  if (response.headersSent) { _next(error); return; }
+  const status = error instanceof HttpError ? error.status : typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : 500;
+  log(status >= 500 ? "error" : "warn", "http.error", { requestId: response.get("X-Request-ID"), status, error: error instanceof Error ? error.message : String(error) });
+  response.status(status).json({ error: error instanceof Error ? error.message : "服务内部错误", code: error instanceof HttpError ? error.code : "INTERNAL_ERROR" });
+});
+
+const server = app.listen(port, host, () => {
+  void runService.start().catch((error) => { log("error", "worker.start_failed", { error: String(error) }); void shutdown(1); });
+  const address = server.address();
+  const listeningPort = address && typeof address === "object" ? address.port : port;
+  console.log(`${isProduction ? "Production" : "Development"} server listening on http://${host}:${listeningPort}`);
   if (isProduction) console.log(`Serving web assets from ${distDirectory}`);
 });
+
+let shuttingDown = false;
+async function shutdown(exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("info", "server.shutdown_started");
+  server.close();
+  await Promise.all([runService.shutdown(shutdownTimeoutMs), workspaceService.shutdown()]);
+  server.closeAllConnections();
+  metadataStore.close();
+  log("info", "server.shutdown_completed");
+  process.exit(exitCode);
+}
+process.once("SIGINT", () => { void shutdown(); });
+process.once("SIGTERM", () => { void shutdown(); });

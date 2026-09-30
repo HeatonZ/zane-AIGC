@@ -1,0 +1,449 @@
+{
+  "format": "zane-studio-scene",
+  "version": 1,
+  "exportedAt": "2026-09-30T09:47:20.341Z",
+  "scene": {
+    "id": "scene_h3_long_video",
+    "title": "H3 数字人长视频",
+    "shortTitle": "H3 长视频",
+    "summary": "音频分段 → Hermes AIXG 提示词 → H3 顺序生成 → 合成长视频",
+    "description": "上传一段音频和 1 至 6 张有序参考图，H3 自动分析分段，Hermes aixg 根据音频导演简报和图片逐段写提示词，再用指定的 MiniMax H3 工作流按顺序生成并合成带原音频的视频。",
+    "cover": "",
+    "coverPosition": "center",
+    "accent": "coral",
+    "stages": [
+      "上传音频与参考图",
+      "H3 音频分析",
+      "AIXG 分段提示词",
+      "H3 顺序生成",
+      "合成长视频"
+    ]
+  },
+  "workflow": {
+    "sceneId": "scene_h3_long_video",
+    "name": "H3 数字人长视频 · AIXG 全流程",
+    "inputs": [
+      {
+        "key": "audio",
+        "label": "音频（上传一段）",
+        "type": "audio_list",
+        "required": true,
+        "placeholder": "上传完整口播或歌曲音频，WAV / MP3 / OGG"
+      },
+      {
+        "key": "reference_images",
+        "label": "有序参考图（1 至 6 张）",
+        "type": "image_list",
+        "required": true,
+        "placeholder": "第 1 张为人物或人物与场景同图；多图用途在素材说明中指定"
+      },
+      {
+        "key": "aspect_ratio",
+        "label": "输出宽高比",
+        "type": "select",
+        "required": true,
+        "options": [
+          "1:1 (Square)",
+          "2:3 (Portrait Photo)",
+          "3:2 (Photo)",
+          "3:4 (Portrait Standard)",
+          "4:3 (Standard)",
+          "9:16 (Portrait Widescreen)",
+          "16:9 (Widescreen)",
+          "21:9 (Ultrawide)"
+        ],
+        "defaultValue": "16:9 (Widescreen)"
+      },
+      {
+        "key": "megapixels",
+        "label": "输出百万像素（MP）",
+        "type": "number",
+        "required": true,
+        "placeholder": "当前工作流默认 0.7 MP",
+        "defaultValue": 0.7
+      },
+      {
+        "key": "mode",
+        "label": "音频模式",
+        "type": "select",
+        "required": true,
+        "options": [
+          "speaking",
+          "singing"
+        ]
+      },
+      {
+        "key": "material_note",
+        "label": "素材与画面说明",
+        "type": "textarea",
+        "required": false,
+        "placeholder": "例如：图1是人物身份，图2是环境；保持人物衣服原色，全程在图2的场景中自然口播。"
+      },
+      {
+        "key": "creative_guidance",
+        "label": "创作引导（剧本 / 视频脚本要求）",
+        "type": "textarea",
+        "required": false,
+        "placeholder": "可直接粘贴剧本、视频脚本要求，或描述表演情绪、镜头、节奏和风格。可写全片要求，也可用时间点或段落标注，例如：0–10秒平静讲述，10–20秒情绪逐渐增强。留空则按音频分析和素材说明创作。"
+      }
+    ],
+    "steps": [
+      {
+        "id": "analyze_audio",
+        "name": "H3 音频分段分析",
+        "kind": "comfyui",
+        "inputs": [
+          {
+            "key": "audio",
+            "label": "音频",
+            "sourceRef": "input.audio"
+          },
+          {
+            "key": "mode",
+            "label": "音频类型",
+            "sourceRef": "input.mode"
+          },
+          {
+            "key": "max_seconds",
+            "label": "最长片段秒数",
+            "sourceRef": "",
+            "valueSource": "literal",
+            "literalValue": "15",
+            "literalType": "number"
+          },
+          {
+            "key": "target_seconds",
+            "label": "目标片段秒数",
+            "sourceRef": "",
+            "valueSource": "literal",
+            "literalValue": "11",
+            "literalType": "number"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "project_id",
+            "label": "H3 项目 ID",
+            "type": "text"
+          },
+          {
+            "key": "segment_count",
+            "label": "分段数量",
+            "type": "number"
+          },
+          {
+            "key": "segments_json",
+            "label": "分段结构化 JSON",
+            "type": "json",
+            "description": "h3lv.segment-plan/v1；包含音频信息、警告和完整 segments 数组"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "workflowFile": "Zane/h3_audio_analyze.json",
+          "bindings": [
+            {
+              "key": "audio",
+              "label": "音频",
+              "direction": "input",
+              "nodeId": "1",
+              "property": "audio",
+              "type": "audio_list",
+              "sourceRef": "input.audio",
+              "required": true
+            },
+            {
+              "key": "mode",
+              "label": "音频类型",
+              "direction": "input",
+              "nodeId": "2",
+              "property": "mode",
+              "type": "text",
+              "options": [
+                "speaking",
+                "singing"
+              ],
+              "sourceRef": "input.mode",
+              "required": true
+            },
+            {
+              "key": "max_seconds",
+              "label": "最长片段秒数",
+              "direction": "input",
+              "nodeId": "2",
+              "property": "max_seconds",
+              "type": "number",
+              "valueSource": "literal",
+              "literalValue": "15",
+              "literalType": "number",
+              "required": true
+            },
+            {
+              "key": "target_seconds",
+              "label": "目标片段秒数",
+              "direction": "input",
+              "nodeId": "2",
+              "property": "target_seconds",
+              "type": "number",
+              "valueSource": "literal",
+              "literalValue": "11",
+              "literalType": "number",
+              "required": true
+            },
+            {
+              "key": "project_id",
+              "label": "H3 项目 ID",
+              "direction": "output",
+              "nodeId": "2",
+              "property": "project_id",
+              "type": "text"
+            },
+            {
+              "key": "segment_count",
+              "label": "分段数量",
+              "direction": "output",
+              "nodeId": "2",
+              "property": "segment_count",
+              "type": "number"
+            },
+            {
+              "key": "segments_json",
+              "label": "分段结构化 JSON",
+              "direction": "output",
+              "nodeId": "2",
+              "property": "segments_json",
+              "type": "json"
+            }
+          ]
+        }
+      },
+      {
+        "id": "hermes_prompts",
+        "name": "AIXG 逐段写 H3 提示词",
+        "kind": "hermes",
+        "hermesProfile": "aixg",
+        "inputs": [
+          {
+            "key": "segment",
+            "label": "当前音频分段",
+            "sourceRef": "iteration.item"
+          },
+          {
+            "key": "reference_images",
+            "label": "有序参考图",
+            "sourceRef": "input.reference_images"
+          },
+          {
+            "key": "material_note",
+            "label": "素材说明",
+            "sourceRef": "input.material_note"
+          },
+          {
+            "key": "mode",
+            "label": "音频模式",
+            "sourceRef": "input.mode"
+          },
+          {
+            "key": "creative_guidance",
+            "label": "创作引导 / 剧本要求",
+            "sourceRef": "input.creative_guidance"
+          },
+          {
+            "key": "segment_count",
+            "label": "全片分段数量",
+            "sourceRef": "step.analyze_audio.outputs.segment_count"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "task",
+            "label": "当前段 H3 提示词",
+            "type": "json",
+            "description": "仅包含 index（当前段的 0 起始整数段号）和 prompt（结合用户创作引导自由编写的当前段镜头提示词；系统提交 H3 前自动适配格式）"
+          }
+        ],
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "step.analyze_audio.outputs.segments_json.segments",
+          "onError": "stop"
+        },
+        "promptTemplate": "你是 AIXG 创作助手，负责为 MiniMax H3 数字人长视频的当前音频分段写可执行的镜头提示词。本步骤逐段执行，使用 Hermes 的 aixg Profile。\n\n当前段结构化分析：\n{{iteration.item}}\n全片分段数量：{{step.analyze_audio.outputs.segment_count}}\n音频模式：{{input.mode}}\n\n用户创作引导（可含完整剧本、视频脚本要求、情绪、镜头、节奏和风格；留空表示没有额外要求）：\n{{input.creative_guidance}}\n\n素材说明（用户指定每张图用途和场景要求）：\n{{input.material_note}}\n参考图以附件形式按上传顺序提供：{{input.reference_images}}\n\n请根据用户创作引导、当前段内容、素材说明和参考图，自由完成一段有画面感、可执行的创作提示词。你可以自行决定叙述结构、语言（中文、英文或混合）、详略和表达方式，无需组织 H3 固定章节、英文标题或 Shot 标签。\n\n先理解整份剧本与视频要求，再选取适合当前音频段的内容。全片要求跨段保持一致；带时间点或分段标记的要求按当前段的原音频 start、end、index 对应应用。没有时间点时，结合本段转写、情绪和它在全片中的位置提炼本段的表演与镜头，不在每个片段重复整份剧本。用户明确指定的表演、构图、运镜和风格优先于自动分析生成的默认导演建议；未指定的部分再由当前段导演简报补充。素材说明决定参考图的人物、服装、环境和用途。\n\n当前段的 index、音频起止边界、generation_frames、visual_type、audio_role 和 audio_section 是工作流的运行事实，创意围绕当前分段展开。参考图按上传顺序使用，保持已声明人物与环境的连续性。performance 段让人物跟随当前音频自然说话或演唱；atmosphere 段保持闭嘴并按创作方向表演；environment 段呈现指定环境。将当前段落实成一个连续镜头。\n\n系统提交给 H3 前会自动适配六段结构、参考图标记与单镜头协议，工作流合成时恢复原始音频；你只需写当前段的创意内容。\n\n只输出一个 JSON 对象：{\"task\":{\"index\":当前段的 0 起始整数段号,\"prompt\":\"当前段的自由创作提示词\"}}。task 只包含 index 和 prompt，JSON 之外不附加说明。"
+      },
+      {
+        "id": "generate_video",
+        "name": "H3 顺序生成并合成长视频",
+        "kind": "comfyui",
+        "inputs": [
+          {
+            "key": "audio",
+            "label": "完整音频",
+            "sourceRef": "input.audio"
+          },
+          {
+            "key": "mode",
+            "label": "音频模式",
+            "sourceRef": "input.mode"
+          },
+          {
+            "key": "sampler",
+            "label": "SelfLift 必需采样器",
+            "valueSource": "literal",
+            "literalValue": "euler",
+            "literalType": "text"
+          },
+          {
+            "key": "text_encoder",
+            "label": "H3 配套文本编码器",
+            "valueSource": "literal",
+            "literalValue": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+            "literalType": "text"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "video",
+            "label": "完整数字人视频",
+            "type": "video_list"
+          },
+          {
+            "key": "applied_prompts",
+            "label": "实际使用的 H3 提示词",
+            "type": "json"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "workflowFile": "Zane/MiniMaxH3无限时长数字人工作流 By 像素幻想Lab (self lift双采).json",
+          "adapter": "h3_long_video",
+          "h3LongVideo": {
+            "planRef": "step.analyze_audio.outputs.segments_json",
+            "promptRowsRef": "step.hermes_prompts.outputs.task",
+            "referenceImagesRef": "input.reference_images",
+            "materialNoteRef": "input.material_note"
+          },
+          "bindings": [
+            {
+              "key": "audio",
+              "label": "完整音频",
+              "direction": "input",
+              "nodeId": "232",
+              "property": "audio",
+              "type": "audio_list",
+              "required": true,
+              "sourceRef": "input.audio"
+            },
+            {
+              "key": "mode",
+              "label": "音频模式",
+              "direction": "input",
+              "nodeId": "266",
+              "property": "mode",
+              "type": "text",
+              "required": true,
+              "options": [
+                "speaking",
+                "singing"
+              ],
+              "sourceRef": "input.mode"
+            },
+            {
+              "key": "aspect_ratio",
+              "label": "输出宽高比",
+              "direction": "input",
+              "nodeId": "115",
+              "property": "aspect_ratio",
+              "type": "text",
+              "required": true,
+              "options": [
+                "1:1 (Square)",
+                "2:3 (Portrait Photo)",
+                "3:2 (Photo)",
+                "3:4 (Portrait Standard)",
+                "4:3 (Standard)",
+                "9:16 (Portrait Widescreen)",
+                "16:9 (Widescreen)",
+                "21:9 (Ultrawide)"
+              ],
+              "sourceRef": "input.aspect_ratio"
+            },
+            {
+              "key": "megapixels",
+              "label": "输出百万像素（MP）",
+              "direction": "input",
+              "nodeId": "115",
+              "property": "megapixels",
+              "type": "number",
+              "required": true,
+              "sourceRef": "input.megapixels"
+            },
+            {
+              "key": "video",
+              "label": "完整数字人视频",
+              "direction": "output",
+              "nodeId": "278",
+              "property": "Filenames",
+              "type": "video_list"
+            },
+            {
+              "key": "sampler",
+              "label": "SelfLift 必需采样器",
+              "direction": "input",
+              "nodeId": "265",
+              "property": "sampler_name",
+              "type": "text",
+              "required": true,
+              "valueSource": "literal",
+              "literalValue": "euler",
+              "literalType": "text"
+            },
+            {
+              "key": "text_encoder",
+              "label": "H3 配套文本编码器",
+              "direction": "input",
+              "nodeId": "128",
+              "property": "clip_name",
+              "type": "text",
+              "required": true,
+              "valueSource": "literal",
+              "literalValue": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+              "literalType": "text"
+            }
+          ]
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "key": "video",
+        "label": "完整数字人视频",
+        "type": "video_list",
+        "sourceRef": "step.generate_video.outputs.video"
+      },
+      {
+        "key": "project_id",
+        "label": "H3 项目 ID",
+        "type": "text",
+        "sourceRef": "step.analyze_audio.outputs.project_id"
+      },
+      {
+        "key": "segment_count",
+        "label": "分段数量",
+        "type": "number",
+        "sourceRef": "step.analyze_audio.outputs.segment_count"
+      },
+      {
+        "key": "segments_json",
+        "label": "音频分段方案",
+        "type": "json",
+        "sourceRef": "step.analyze_audio.outputs.segments_json"
+      },
+      {
+        "key": "prompt_tasks",
+        "label": "AIXG 分段提示词列表",
+        "type": "json",
+        "sourceRef": "step.generate_video.outputs.applied_prompts"
+      }
+    ]
+  },
+  "optionPresets": []
+}

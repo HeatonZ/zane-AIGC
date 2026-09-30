@@ -1,11 +1,11 @@
-import { Check, ChevronRight, Copy, History as HistoryIcon, RotateCcw, Square } from "lucide-react";
+import { Check, ChevronRight, Copy, Download, History as HistoryIcon, RotateCcw, Square } from "lucide-react";
 import { useState } from "react";
 import type { JsonValue, WorkflowRunOutput, WorkflowRunResult } from "../types";
 
 function mediaItems(value: JsonValue) {
   const items = Array.isArray(value) ? value : [value];
   return items.flatMap((item) => {
-    if (typeof item === "string" && /^(https?:\/\/|\/api\/comfyui\/view)/i.test(item)) return [{ url: item, filename: item }];
+    if (typeof item === "string" && /^(https?:\/\/|\/api\/comfyui\/view|\/api\/(?:workflows|v1)\/runs\/)/i.test(item)) return [{ url: item, filename: item }];
     if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.url !== "string") return [];
     return [{ url: item.url, filename: typeof item.filename === "string" ? item.filename : item.url }];
   });
@@ -23,16 +23,18 @@ function stepMediaItems(value: JsonValue, type?: string) {
   return values.flatMap((item) => {
     if (typeof item === "string") {
       const isVideo = type === "video" || (!type && /\.(mp4|webm|mov|m4v)(?:[?#]|$)/i.test(item));
-      const isImage = type === "image" || (!type && /\.(png|jpe?g|webp|gif|bmp)(?:[?#]|$)/i.test(item));
-      return (isVideo || isImage) && /^(https?:\/\/|\/|data:|blob:)/i.test(item)
-        ? [{ url: item, filename: item, isVideo }]
+      const isAudio = type === "audio" || type === "audio_list" || (!type && /\.(aac|aiff?|flac|m4a|mp3|ogg|opus|wav)(?:[?#]|$)/i.test(item));
+      const isImage = type === "image" || type === "image_list" || (!type && /\.(png|jpe?g|webp|gif|bmp)(?:[?#]|$)/i.test(item));
+      return (isVideo || isAudio || isImage) && /^(https?:\/\/|\/|data:|blob:)/i.test(item)
+        ? [{ url: item, filename: item, isVideo, isAudio }]
         : [];
     }
     if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.url !== "string") return [];
-    if (typeof item.filename !== "string" && typeof item.file !== "string" && item.type !== "input" && item.type !== "output" && type !== "image" && type !== "video") return [];
+    if (typeof item.filename !== "string" && typeof item.file !== "string" && item.type !== "input" && item.type !== "output" && type !== "image" && type !== "image_list" && type !== "video" && type !== "video_list" && type !== "audio" && type !== "audio_list") return [];
     const filename = typeof item.filename === "string" ? item.filename : item.url;
-    const isVideo = type === "video" || /\.(mp4|webm|mov|m4v)(?:[?#]|$)/i.test(filename);
-    return [{ url: item.url, filename, isVideo }];
+    const isVideo = type === "video" || type === "video_list" || /\.(mp4|webm|mov|m4v)(?:[?#]|$)/i.test(filename);
+    const isAudio = type === "audio" || type === "audio_list" || /\.(aac|aiff?|flac|m4a|mp3|ogg|opus|wav)(?:[?#]|$)/i.test(filename);
+    return [{ url: item.url, filename, isVideo, isAudio }];
   });
 }
 
@@ -40,6 +42,8 @@ function StepValue({ value, type }: { value: JsonValue; type?: string }) {
   const media = stepMediaItems(value, type);
   if (media.length) return <div className="workflow-run-step-media">{media.map((item, index) => item.isVideo
     ? <video src={item.url} controls preload="metadata" key={`${item.url}-${index}`} aria-label={item.filename} />
+    : item.isAudio
+      ? <audio src={item.url} controls preload="metadata" key={`${item.url}-${index}`} aria-label={item.filename} />
     : <a href={item.url} target="_blank" rel="noreferrer" key={`${item.url}-${index}`}><img src={item.url} alt={item.filename} loading="lazy" /></a>)}</div>;
   return <pre>{value === null ? "无值" : typeof value === "object" ? JSON.stringify(value, null, 2) : String(value)}</pre>;
 }
@@ -63,11 +67,15 @@ function outputValueLabel(value: JsonValue) {
 }
 
 function RunOutput({ output, className = "workflow-run-output" }: { output: WorkflowRunOutput; className?: string }) {
-  const media = output.type === "image" || output.type === "video" ? mediaItems(output.value) : [];
+  const isVideoOutput = output.type === "video" || output.type === "video_list";
+  const isAudioOutput = output.type === "audio" || output.type === "audio_list";
+  const media = output.type === "image" || output.type === "image_list" || isVideoOutput || isAudioOutput ? mediaItems(output.value) : [];
   return <article className={className}>
     <div className="workflow-run-output-heading"><strong>{output.label}</strong><small>{output.type}</small></div>
-    {media.length ? <div className="workflow-run-media">{media.map((item) => output.type === "video"
+    {media.length ? <div className="workflow-run-media">{media.map((item) => isVideoOutput
       ? <video src={item.url} controls preload="metadata" key={item.url} aria-label={item.filename} />
+      : isAudioOutput
+        ? <audio src={item.url} controls preload="metadata" key={item.url} aria-label={item.filename} />
       : <a href={item.url} target="_blank" rel="noreferrer" key={item.url}><img src={item.url} alt={item.filename} loading="lazy" /></a>)}</div>
       : <pre>{outputText(output)}</pre>}
   </article>;
@@ -104,10 +112,10 @@ export default function WorkflowRunPanel({
   return (
     <section className={`workflow-run-result ${result.status}`} aria-live="polite">
       <div className="workflow-run-heading">
-        <div><h3>{result.status === "completed" ? "运行完成" : cancelled ? "已取消运行" : result.status === "running" ? "正在运行" : "运行失败"}</h3><span>{result.items?.length ? `${result.items.filter((item) => item.status === "completed").length}/${result.items.length} 项完成` : `${result.steps.filter((step) => step.status === "completed").length} 步完成 · ${result.steps.filter((step) => step.status === "skipped").length} 步跳过${iterationCount ? ` · ${iterationSteps.length} 个步骤逐项执行 ${iterationCount} 项` : ""}`}</span></div>
+        <div><h3>{result.status === "completed" ? "运行完成" : cancelled ? "已取消运行" : result.status === "queued" ? "正在排队" : result.status === "running" ? "正在运行" : result.status === "cancelling" ? "正在取消" : result.status === "stale" ? "等待恢复" : "运行失败"}</h3><span>{result.items?.length ? `${result.items.filter((item) => item.status === "completed").length}/${result.items.length} 项完成` : `${result.steps.filter((step) => step.status === "completed").length} 步完成 · ${result.steps.filter((step) => step.status === "skipped").length} 步跳过${iterationCount ? ` · ${iterationSteps.length} 个步骤逐项执行 ${iterationCount} 项` : ""}`}</span></div>
         <small>{result.runId.slice(0, 8)}</small>
       </div>
-      {result.status === "running" && onCancelRun && <button className="text-button workflow-run-cancel" type="button" onClick={onCancelRun}><Square size={13} />取消运行</button>}
+      {["queued", "running", "cancelling"].includes(result.status) && onCancelRun && <button className="text-button workflow-run-cancel" type="button" onClick={onCancelRun} disabled={result.status === "cancelling"}><Square size={13} />{result.status === "cancelling" ? "取消中…" : "取消运行"}</button>}
       {onResumeRun && <button className="text-button workflow-run-resume" type="button" onClick={onResumeRun} disabled={resumePending}><RotateCcw size={13} />{resumePending ? "正在启动续跑" : result.status === "failed" ? "从失败步骤继续" : "从断点继续"}</button>}
       {cancelled && <div className="workflow-run-cancellation-reason" role="status"><strong>取消原因</strong><span>{result.cancellationReason ?? (result.error && result.error !== "运行已取消" ? result.error : "这条历史记录没有保存具体取消原因")}</span></div>}
       {result.error && !cancelled && <div className="workflow-run-error" role="alert">{result.error}</div>}
@@ -171,6 +179,7 @@ export default function WorkflowRunPanel({
       {!!result.outputs.length && <div className="workflow-run-outputs">
         {result.outputs.map((output) => <RunOutput key={output.key} output={output} />)}
       </div>}
+      {!(["queued", "running", "cancelling"] as string[]).includes(result.status) && (result.outputs.some((output) => output.key === "commerce_manifest" && Array.isArray(output.value) && output.value.length > 0) || result.steps.some((step) => step.items?.some((item) => item.status === "completed" && item.outputs?.commerce_manifest))) && <a className="button button-outline" href={`/api/v1/runs/${encodeURIComponent(result.runId)}/commerce-pack.zip`}><Download size={14} />按平台打包下载{result.status !== "completed" ? "（已完成部分）" : ""}</a>}
       {result.artifacts && <div className="workflow-run-artifacts">
         <div><strong>项目归档</strong><code title={result.artifacts.directory}>{result.artifacts.directory}</code></div>
         <div className="workflow-run-artifact-actions">

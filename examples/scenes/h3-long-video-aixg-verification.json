@@ -1,0 +1,87 @@
+{
+  "verifiedAt": "2026-09-30T05:03:27.475Z",
+  "productionOrigin": "http://127.0.0.1:8799",
+  "scene": "H3 数字人长视频",
+  "publishedVersion": "c6692c50",
+  "productionLoaded": true,
+  "browserVideoReadyState": 4,
+  "archiveRangeStatus": 206,
+  "runs": [
+    {
+      "runId": "70f462d5-abee-4040-81bf-70c49cc54bde",
+      "title": "H3 AIXG 完整场景验证 · Euler 与 H3 配套编码器",
+      "status": "completed",
+      "profile": "aixg",
+      "segmentCount": 1,
+      "allStepsCompleted": true,
+      "sourceAudioSeconds": 8.544943310657596,
+      "media": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "width": 1152,
+            "height": 640,
+            "avg_frame_rate": "24/1",
+            "duration": "8.541667",
+            "nb_frames": "205"
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "sample_rate": "22050",
+            "channels": 1,
+            "avg_frame_rate": "0/0",
+            "duration": "8.544943",
+            "nb_frames": "185"
+          }
+        ],
+        "format": {
+          "duration": "8.544943",
+          "size": "1232209"
+        }
+      },
+      "file": "F:\\project\\zane\\.zane\\runs\\70f462d5-abee-4040-81bf-70c49cc54bde\\outputs\\media\\20260930_124238_speaking_e8f1516a-440e86cc.mp4"
+    },
+    {
+      "runId": "b012a39b-8cd8-454d-9639-182b9aaada31",
+      "title": "H3 AIXG 40.44 秒四段验证 · 配套编码器",
+      "status": "completed",
+      "profile": "aixg",
+      "segmentCount": 4,
+      "allStepsCompleted": true,
+      "sourceAudioSeconds": 40.436462585034015,
+      "media": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "width": 1152,
+            "height": 640,
+            "avg_frame_rate": "24/1",
+            "duration": "40.416667",
+            "nb_frames": "970"
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "sample_rate": "22050",
+            "channels": 1,
+            "avg_frame_rate": "0/0",
+            "duration": "40.436463",
+            "nb_frames": "872"
+          }
+        ],
+        "format": {
+          "duration": "40.436463",
+          "size": "6316488"
+        }
+      },
+      "file": "F:\\project\\zane\\.zane\\runs\\b012a39b-8cd8-454d-9639-182b9aaada31\\outputs\\media\\20260930_124315_speaking_9a9f88d3-2d843d0e.mp4"
+    }
+  ]
+}

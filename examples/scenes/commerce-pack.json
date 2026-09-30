@@ -1,0 +1,441 @@
+{
+  "format": "zane-studio-scene",
+  "version": 1,
+  "exportedAt": "2026-09-30T08:30:00.000Z",
+  "scene": {
+    "id": "commerce_pack",
+    "title": "电商套图",
+    "shortTitle": "套图",
+    "summary": "一份商品素材，一键输出多平台套图",
+    "description": "商品资料 → 视觉脚本 → 主体保真/AI场景 → 平台排版 → 打包导出",
+    "cover": "/commerce-pack.svg",
+    "coverPosition": "center",
+    "accent": "coral",
+    "stages": [
+      "商品资料",
+      "套图脚本",
+      "平台排版",
+      "打包导出"
+    ]
+  },
+  "workflow": {
+    "sceneId": "commerce_pack",
+    "name": "电商套图 · 多平台一键生成",
+    "inputs": [
+      {
+        "key": "project_name",
+        "label": "项目名称",
+        "type": "text",
+        "required": true,
+        "placeholder": "例如：保温杯秋季上新"
+      },
+      {
+        "key": "product_name",
+        "label": "商品名称（原样排版）",
+        "type": "text",
+        "required": true,
+        "placeholder": "商品名称与型号，最多120字"
+      },
+      {
+        "key": "reference_images",
+        "label": "商品参考图（建议正面/卖点/细节/场景/参数/包装顺序）",
+        "type": "image_list",
+        "required": true
+      },
+      {
+        "key": "selling_points",
+        "label": "真实卖点（每行一条，原样排版）",
+        "type": "textarea",
+        "required": true,
+        "placeholder": "只填写有依据的真实优势，勿添加未经核实的认证或功效"
+      },
+      {
+        "key": "product_specs",
+        "label": "规格参数（可选，原样排版）",
+        "type": "textarea",
+        "required": false,
+        "placeholder": "例如：容量500mL；尺寸请填写真实数据"
+      },
+      {
+        "key": "package_contents",
+        "label": "包装清单（可选，原样排版）",
+        "type": "textarea",
+        "required": false
+      },
+      {
+        "key": "audience",
+        "label": "目标人群 / 使用场景",
+        "type": "text",
+        "required": false
+      },
+      {
+        "key": "generation_mode",
+        "label": "画面生成方式",
+        "type": "select",
+        "required": true,
+        "options": [
+          "AI场景重绘",
+          "原图保真排版"
+        ],
+        "defaultValue": "AI场景重绘"
+      },
+      {
+        "key": "platform_preset",
+        "label": "目标平台组合",
+        "type": "select",
+        "required": true,
+        "options": [
+          "国内三平台（淘宝/京东/抖音）",
+          "国内五平台（含拼多多/小红书）",
+          "全部六平台（含Amazon）",
+          "淘宝 / 天猫",
+          "京东",
+          "拼多多",
+          "抖音电商",
+          "小红书",
+          "Amazon",
+          "自定义平台"
+        ],
+        "defaultValue": "国内三平台（淘宝/京东/抖音）"
+      },
+      {
+        "key": "platform_profiles",
+        "label": "平台配置覆盖（可选JSON数组；尺寸为设计预设，非审核保证）",
+        "type": "json",
+        "required": false,
+        "placeholder": "例如：[{\"id\":\"taobao\",\"width\":1600,\"height\":1600,\"safeMargin\":80}]；自定义平台需id/name/width/height"
+      },
+      {
+        "key": "shot_types",
+        "label": "套图清单（可删除或只保留一项重生成）",
+        "type": "json",
+        "required": true,
+        "defaultValue": "[\"hero\",\"selling_point\",\"detail\",\"lifestyle\",\"specs\",\"package\"]",
+        "placeholder": "hero主图，selling_point卖点，detail细节，lifestyle场景，specs参数，package包装"
+      },
+      {
+        "key": "visual_style",
+        "label": "视觉风格",
+        "type": "select",
+        "required": true,
+        "options": [
+          "简洁高级",
+          "自然生活",
+          "明快活力",
+          "冷静科技",
+          "暖调家居"
+        ],
+        "defaultValue": "简洁高级"
+      },
+      {
+        "key": "brand_notes",
+        "label": "品牌颜色 / 必须保留的外观事实",
+        "type": "textarea",
+        "required": false,
+        "placeholder": "例如：保持瓶身结构、包装文字和Logo；不要在生成阶段绘制宣传文字。AI模式仅做提示约束，严格保真请选择原图模式。"
+      },
+      {
+        "key": "add_text",
+        "label": "后置叠加准确文案（Amazon主图自动关闭）",
+        "type": "boolean",
+        "required": true,
+        "defaultValue": true
+      }
+    ],
+    "steps": [
+      {
+        "id": "use_ai",
+        "name": "选择AI重绘或原图保真",
+        "kind": "control",
+        "inputs": [],
+        "outputs": [
+          {
+            "key": "result",
+            "label": "使用AI画面",
+            "type": "boolean"
+          }
+        ],
+        "promptTemplate": "",
+        "control": {
+          "type": "condition",
+          "match": "all",
+          "rules": [
+            {
+              "id": "mode",
+              "leftRef": "input.generation_mode",
+              "operator": "equals",
+              "valueSource": "literal",
+              "rightValue": "AI场景重绘",
+              "rightRef": ""
+            }
+          ]
+        }
+      },
+      {
+        "id": "product_brief",
+        "name": "理解商品事实与视觉禁区",
+        "kind": "hermes",
+        "hermesProfile": "writer",
+        "inputs": [
+          {
+            "key": "product_name",
+            "label": "商品名",
+            "sourceRef": "input.product_name"
+          },
+          {
+            "key": "reference_images",
+            "label": "参考图",
+            "sourceRef": "input.reference_images"
+          },
+          {
+            "key": "selling_points",
+            "label": "卖点",
+            "sourceRef": "input.selling_points"
+          },
+          {
+            "key": "product_specs",
+            "label": "真实参数",
+            "sourceRef": "input.product_specs"
+          },
+          {
+            "key": "package_contents",
+            "label": "清单",
+            "sourceRef": "input.package_contents"
+          },
+          {
+            "key": "brand_notes",
+            "label": "外观约束",
+            "sourceRef": "input.brand_notes"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "product_brief",
+            "label": "商品事实与视觉禁区",
+            "type": "json",
+            "description": "包含商品真实外观、不可改动结构、用户提供事实。不得补造参数、认证、功效。"
+          }
+        ],
+        "runCondition": {
+          "conditionStepId": "use_ai",
+          "expectedResult": true
+        },
+        "promptTemplate": "你是商品摄影视觉总监。仅基于参考图片与用户给出的商品事实规划视觉方向。不得虚构规格、认证、功效、包装文字。输出用户事实、外观约束、视觉禁区和建议场景。后续文字由系统精确排版，不在AI画面内生成宣传文案。"
+      },
+      {
+        "id": "shot_plan",
+        "name": "规划所选套图的逐张视觉脚本",
+        "kind": "hermes",
+        "hermesProfile": "writer",
+        "inputs": [
+          {
+            "key": "product_brief",
+            "label": "商品事实",
+            "sourceRef": "step.product_brief.outputs.product_brief"
+          },
+          {
+            "key": "shot_types",
+            "label": "所选卡片",
+            "sourceRef": "input.shot_types"
+          },
+          {
+            "key": "visual_style",
+            "label": "风格",
+            "sourceRef": "input.visual_style"
+          },
+          {
+            "key": "audience",
+            "label": "人群场景",
+            "sourceRef": "input.audience"
+          },
+          {
+            "key": "brand_notes",
+            "label": "外观约束",
+            "sourceRef": "input.brand_notes"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "shot_plan",
+            "label": "逐张脚本",
+            "type": "json",
+            "description": "必须是数组，每个所选id恰好对应一项：{id,prompt}。只允许hero/selling_point/detail/lifestyle/specs/package。prompt为非空自然语言商品图生图指令，不要包含宣传文案；不允许改变商品结构或包装。"
+          }
+        ],
+        "runCondition": {
+          "conditionStepId": "use_ai",
+          "expectedResult": true
+        },
+        "promptTemplate": "为套图清单的每个id输出一条图生图摄影指令。shot_plan必须是数组，严格按shot_types的id顺序且每项id不能重复。每项{id,prompt}。hero=干净商品主视觉；selling_point=功能/优势表达；detail=真实材质细节；lifestyle=使用场景；specs=清晰商品角度；package=实际包装。统一光线/配色/商品外观，不增加未提供的配件，不在画面中生成文字、价格、徽章或水印。"
+      },
+      {
+        "id": "render_pack",
+        "name": "生成画面、平台排版与技术质检",
+        "kind": "comfyui",
+        "inputs": [
+          {
+            "key": "shot_id",
+            "label": "本次卡片",
+            "sourceRef": "iteration.item"
+          },
+          {
+            "key": "shot_plan",
+            "label": "逐张脚本",
+            "sourceRef": "step.shot_plan.outputs.shot_plan"
+          },
+          {
+            "key": "product_name",
+            "label": "product_name",
+            "sourceRef": "input.product_name"
+          },
+          {
+            "key": "reference_images",
+            "label": "reference_images",
+            "sourceRef": "input.reference_images"
+          },
+          {
+            "key": "selling_points",
+            "label": "selling_points",
+            "sourceRef": "input.selling_points"
+          },
+          {
+            "key": "product_specs",
+            "label": "product_specs",
+            "sourceRef": "input.product_specs"
+          },
+          {
+            "key": "package_contents",
+            "label": "package_contents",
+            "sourceRef": "input.package_contents"
+          },
+          {
+            "key": "generation_mode",
+            "label": "generation_mode",
+            "sourceRef": "input.generation_mode"
+          },
+          {
+            "key": "platform_preset",
+            "label": "platform_preset",
+            "sourceRef": "input.platform_preset"
+          },
+          {
+            "key": "platform_profiles",
+            "label": "platform_profiles",
+            "sourceRef": "input.platform_profiles"
+          },
+          {
+            "key": "shot_types",
+            "label": "shot_types",
+            "sourceRef": "input.shot_types"
+          },
+          {
+            "key": "visual_style",
+            "label": "visual_style",
+            "sourceRef": "input.visual_style"
+          },
+          {
+            "key": "brand_notes",
+            "label": "brand_notes",
+            "sourceRef": "input.brand_notes"
+          },
+          {
+            "key": "add_text",
+            "label": "add_text",
+            "sourceRef": "input.add_text"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "images",
+            "label": "平台成图",
+            "type": "image_list"
+          },
+          {
+            "key": "commerce_manifest",
+            "label": "成图清单与人工复核项",
+            "type": "json"
+          }
+        ],
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "input.shot_types",
+          "onError": "continue",
+          "maxConcurrency": 2
+        },
+        "promptTemplate": "",
+        "comfyui": {
+          "adapter": "commerce_pack",
+          "workflowFile": "Zane/i2i_UI.json",
+          "bindings": [
+            {
+              "key": "reference_images",
+              "label": "商品参考图",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "images",
+              "type": "image_list",
+              "sourceRef": "input.reference_images",
+              "required": true,
+              "selection": {
+                "mode": "all"
+              }
+            },
+            {
+              "key": "prompt",
+              "label": "单图摄影指令",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "prompt",
+              "type": "text",
+              "sourceRef": "iteration.item.prompt",
+              "required": true
+            },
+            {
+              "key": "negative_prompt",
+              "label": "禁区约束",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "negative_prompt",
+              "type": "text",
+              "valueSource": "literal",
+              "literalValue": "商品变形，虚构配件，错误结构，错误材质，修改Logo，改写包装文字，宣传文字，乱码，价格，认证徽章，水印，低清晰度"
+            },
+            {
+              "key": "seed",
+              "label": "生成种子",
+              "direction": "input",
+              "nodeId": "476",
+              "property": "seed",
+              "type": "number",
+              "sourceRef": "iteration.item.seed",
+              "required": true
+            },
+            {
+              "key": "images",
+              "label": "底图",
+              "direction": "output",
+              "nodeId": "461",
+              "property": "images",
+              "type": "image_list"
+            }
+          ]
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "key": "images",
+        "label": "多平台电商套图",
+        "type": "image_list",
+        "sourceRef": "step.render_pack.outputs.images"
+      },
+      {
+        "key": "commerce_manifest",
+        "label": "输出清单与技术质检（发布前须人工复核）",
+        "type": "json",
+        "sourceRef": "step.render_pack.outputs.commerce_manifest"
+      }
+    ]
+  },
+  "optionPresets": []
+}

@@ -1,6 +1,8 @@
+import commercePackPackage from "../../examples/scenes/commerce-pack.json";
 import type { SceneId, SceneModule, WorkflowDefinition } from "../types";
 
 export const defaultWorkflows: Record<string, WorkflowDefinition> = {
+  commerce_pack: commercePackPackage.workflow as WorkflowDefinition,
   comic: {
     sceneId: "comic",
     name: "漫剧制作流程",

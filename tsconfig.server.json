@@ -11,5 +11,11 @@
     "rootDir": "server",
     "sourceMap": true
   },
-  "include": ["server/index.ts"]
+  "include": [
+    "server/**/*.ts"
+  ],
+  "exclude": [
+    "server/**/*.test.ts",
+    "server/testing"
+  ]
 }

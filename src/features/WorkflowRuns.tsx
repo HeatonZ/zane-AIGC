@@ -1,12 +1,15 @@
 import { Clock3, FolderOpen, LoaderCircle, RefreshCw, Workflow } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getScene } from "../data/scenes";
-import { loadWorkflowRun, loadWorkflowRuns } from "../lib/api";
+import { loadWorkflowRuns, subscribeWorkflowRun } from "../lib/api";
 import WorkflowRunPanel from "../components/WorkflowRunPanel";
 import type { PageId, SceneModule, WorkflowRunHistoryItem, WorkflowRunRecord } from "../types";
 
 const statusLabels: Record<WorkflowRunHistoryItem["status"], string> = {
+  queued: "排队中",
   running: "运行中",
+  cancelling: "取消中",
+  stale: "待恢复",
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",
@@ -31,14 +34,15 @@ interface WorkflowRunsProps {
   onCancelRun: (runId: string) => void;
   onResumeRun: (run: WorkflowRunRecord) => Promise<void>;
   activeRunId: string | null;
-  canCancelRun: boolean;
   runStartError?: string;
 }
 
-export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSelectRun, onCancelRun, onResumeRun, activeRunId, canCancelRun, runStartError }: WorkflowRunsProps) {
+export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSelectRun, onCancelRun, onResumeRun, activeRunId, runStartError }: WorkflowRunsProps) {
   const [projectDirectory, setProjectDirectory] = useState("");
   const [runs, setRuns] = useState<WorkflowRunHistoryItem[]>([]);
   const [selectedRun, setSelectedRun] = useState<WorkflowRunRecord | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | undefined>();
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailsVersion, setDetailsVersion] = useState(0);
@@ -74,6 +78,7 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
       const response = await loadWorkflowRuns();
       setProjectDirectory(response.projectDirectory);
       setRuns(response.runs);
+      setNextCursor(response.nextCursor);
       if (!selectedRunIdRef.current && response.runs[0]) onSelectRun(response.runs[0].runId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "读取运行记录失败");
@@ -85,45 +90,34 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
   useEffect(() => { void refresh(); }, [refresh]);
 
   useEffect(() => {
-    if (!selectedRunId) {
-      setSelectedRun(null);
-      return;
-    }
-    const runId = selectedRunId;
-    let current = true;
-    let timer: number | undefined;
+    if (!selectedRunId) { setSelectedRun(null); return; }
+    setSelectedRun(null);
     setDetailLoading(true);
+    return subscribeWorkflowRun(selectedRunId, (run) => {
+      setSelectedRun(run);
+      setDetailLoading(false);
+      setError("");
+      const summary: WorkflowRunHistoryItem = { runId: run.runId, sceneId: run.sceneId, workflowName: run.workflowName, runTitle: run.runTitle, status: run.status, startedAt: run.startedAt ?? "", finishedAt: run.finishedAt, durationMs: run.durationMs, stepCount: run.steps.length, outputCount: run.outputs.length, error: run.error, artifacts: run.artifacts! };
+      setRuns((current) => {
+        const updated = current.some((item) => item.runId === run.runId) ? current.map((item) => item.runId === run.runId ? summary : item) : [summary, ...current];
+        return updated;
+      });
+    }, (reason, permanent) => {
+      if (permanent || activeRunId !== selectedRunId) setError(reason.message);
+      if (permanent) setDetailLoading(false);
+    }, { pendingSubmission: activeRunId === selectedRunId });
+  }, [selectedRunId, detailsVersion, activeRunId]);
 
-    async function pollRun() {
-      try {
-        const [run, response] = await Promise.all([loadWorkflowRun(runId), loadWorkflowRuns()]);
-        if (!current) return;
-        setSelectedRun(run);
-        setProjectDirectory(response.projectDirectory);
-        setRuns(response.runs);
-        setError("");
-        setDetailLoading(false);
-        if (run.status === "running") timer = window.setTimeout(() => void pollRun(), 1200);
-      } catch (reason) {
-        if (!current) return;
-        if (activeRunId === runId) {
-          setError("");
-          setDetailLoading(false);
-          timer = window.setTimeout(() => void pollRun(), 500);
-          return;
-        }
-        setSelectedRun(null);
-        setDetailLoading(false);
-        setError(reason instanceof Error ? reason.message : "读取运行详情失败");
-      }
-    }
-
-    void pollRun();
-    return () => {
-      current = false;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [selectedRunId, activeRunId, detailsVersion]);
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const response = await loadWorkflowRuns(nextCursor);
+      setRuns((current) => [...current, ...response.runs.filter((item) => !current.some((existing) => existing.runId === item.runId))]);
+      setNextCursor(response.nextCursor);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "读取更多运行失败"); }
+    finally { setLoadingMore(false); }
+  }
 
   return (
     <div className="workflow-runs-page">
@@ -133,7 +127,7 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
       </div>
 
       {projectDirectory && <div className="runs-project-path"><FolderOpen size={15} /><span><strong>项目目录</strong><code>{projectDirectory}</code></span></div>}
-      {runStartError && !selectedRun && <div className="notice error-notice" role="alert">无法启动运行：{runStartError}</div>}
+      {runStartError && <div className="notice error-notice" role="alert">运行操作失败：{runStartError}</div>}
       {error && !runStartError && <div className="notice error-notice" role="alert">{error}</div>}
 
       {!projectDirectory && !loading ? (
@@ -146,15 +140,18 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
         <div className="runs-layout">
           <section className="runs-list" aria-label="运行记录列表">
             <div className="runs-list-heading"><strong>最近运行</strong><span>{runs.length}</span></div>
-            {!runs.length && <div className="run-detail-empty">{activeRunId ? "正在创建运行记录…" : "暂无运行记录。"}</div>}
-            {runs.map((run) => {
-              const scene = getScene(run.sceneId, scenes);
-              return <button className={`run-history-item ${selectedRunId === run.runId ? "active" : ""}`} key={run.runId} onClick={() => { setError(""); onSelectRun(run.runId); }}>
-                <span className={`run-history-mark ${scene.accent}`}><Workflow size={16} /></span>
-                <span className="run-history-copy"><span className="run-history-title"><strong>{run.runTitle || run.workflowName}</strong><i className={`run-status-dot ${run.status}`} /></span><small>{run.runTitle ? `${run.workflowName} · ` : ""}{scene.shortTitle} · {formatDate(run.startedAt)}</small><small>{run.stepCount} 步 · {run.outputCount} 项输出 · {formatDuration(run.durationMs)}</small></span>
-                <span className={`run-status-label ${run.status}`}>{statusLabels[run.status]}</span>
-              </button>;
-            })}
+            <div className="runs-list-items">
+              {!runs.length && <div className="run-detail-empty">{activeRunId ? "正在创建运行记录…" : "暂无运行记录。"}</div>}
+              {runs.map((run) => {
+                const scene = getScene(run.sceneId, scenes);
+                return <button className={`run-history-item ${selectedRunId === run.runId ? "active" : ""}`} key={run.runId} onClick={() => { setError(""); onSelectRun(run.runId); }}>
+                  <span className={`run-history-mark ${scene.accent}`}><Workflow size={16} /></span>
+                  <span className="run-history-copy"><span className="run-history-title"><strong>{run.runTitle || run.workflowName}</strong><i className={`run-status-dot ${run.status}`} /></span><small>{run.runTitle ? `${run.workflowName} · ` : ""}{scene.shortTitle} · {formatDate(run.startedAt)}</small><small>{run.stepCount} 步 · {run.outputCount} 项输出 · {formatDuration(run.durationMs)}</small></span>
+                  <span className={`run-status-label ${run.status}`}>{statusLabels[run.status]}</span>
+                </button>;
+              })}
+            </div>
+            {nextCursor && <button className="button button-outline runs-load-more" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? "读取中…" : "加载更多运行"}</button>}
           </section>
 
           <section className="run-detail" aria-label="运行详情">
@@ -163,8 +160,8 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
               <WorkflowRunPanel
                 result={selectedRun}
                 inputValues={selectedRun.inputValues}
-                onCancelRun={canCancelRun && selectedRun.status === "running" ? () => onCancelRun(selectedRun.runId) : undefined}
-                onResumeRun={!canCancelRun && selectedRun.workflow && selectedRun.status !== "completed" && !selectedRun.items?.length && !selectedRun.workflow.steps.some((step) => step.execution?.mode === "for_each") ? () => void resumeRun(selectedRun) : undefined}
+                onCancelRun={["queued", "running", "cancelling"].includes(selectedRun.status) ? () => onCancelRun(selectedRun.runId) : undefined}
+                onResumeRun={["failed", "cancelled", "stale"].includes(selectedRun.status) && selectedRun.workflow && !selectedRun.items?.length ? () => void resumeRun(selectedRun) : undefined}
                 resumePending={resumingRunIds.has(selectedRun.runId)}
               />
             </> : runStartError ? <div className="run-detail-empty">运行未能启动。</div> : <div className="run-detail-empty">选择一条记录查看详情。</div>}

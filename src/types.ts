@@ -27,6 +27,7 @@ export interface WorkflowDraft {
 }
 
 export interface WorkspaceSnapshot {
+  revision?: number;
   format: "zane-studio.workspace/v1";
   scenes: SceneModule[];
   workflows: Record<SceneId, WorkflowDefinition>;
@@ -61,6 +62,38 @@ export interface HermesProfile {
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
+/**
+ * Runtime media contract: image and video values are tagged collections whose
+ * `items` array is always flat. The legacy `image`/`video` type names remain
+ * in workflow definitions for compatibility; they describe the item kind,
+ * not a scalar runtime value.
+ */
+export type WorkflowMediaKind = "image" | "video" | "audio";
+export type WorkflowMediaLocator =
+  | { type: "path"; value: string }
+  | { type: "url"; value: string }
+  | { type: "comfy"; filename: string; subfolder: string; location: "input" | "output" };
+
+export interface WorkflowMediaItem {
+  id: string;
+  kind: WorkflowMediaKind;
+  locator: WorkflowMediaLocator;
+  filename?: string;
+  mimeType?: string;
+}
+
+export interface WorkflowMediaValue {
+  kind: "media";
+  __zaneRuntime: "media";
+  mediaKind: WorkflowMediaKind;
+  items: WorkflowMediaItem[];
+}
+
+export type WorkflowMediaSelection =
+  | { mode: "all" }
+  | { mode: "item"; index: number }
+  | { mode: "for_each" };
+
 export interface ComfyImageAttachment {
   id: string;
   filename: string;
@@ -77,9 +110,11 @@ export interface ComfyAudioAttachment {
   url: string;
 }
 
-export type WorkflowFieldType = "text" | "textarea" | "number" | "boolean" | "select" | "image" | "image_list" | "audio" | "video" | "json";
+export type WorkflowMediaListType = "image_list" | "video_list" | "audio_list";
+export type WorkflowLegacyMediaType = "image" | "video" | "audio";
+export type WorkflowFieldType = "text" | "textarea" | "number" | "boolean" | "select" | WorkflowMediaListType | WorkflowLegacyMediaType | "json";
 export type WorkflowStepKind = "hermes" | "comfyui" | "manual" | "control";
-export type WorkflowVariableType = Exclude<WorkflowFieldType, "textarea" | "select" | "audio">;
+export type WorkflowVariableType = Exclude<WorkflowFieldType, "textarea" | "select">;
 export type WorkflowValueSource = "literal" | "reference";
 
 export type WorkflowConditionOperator =
@@ -122,6 +157,7 @@ export interface WorkflowInputField {
   placeholder?: string;
   options?: string[];
   optionPresetId?: string;
+  defaultValue?: string | number | boolean | null;
 }
 
 export interface WorkflowOptionPreset {
@@ -151,6 +187,7 @@ export interface WorkflowStepInput {
   valueSource?: WorkflowValueSource;
   literalValue?: string;
   literalType?: WorkflowVariableType;
+  selection?: WorkflowMediaSelection;
 }
 
 export interface WorkflowStepOutput {
@@ -186,6 +223,7 @@ export interface ComfyUIBinding {
   sourceRef?: string;
   valueSource?: WorkflowValueSource;
   literalValue?: string;
+  selection?: WorkflowMediaSelection;
   sourceInputFormat?: {
     type: WorkflowFieldType;
     required: boolean;
@@ -202,6 +240,13 @@ export interface ComfyUIBinding {
 export interface ComfyUIWorkflowConfig {
   workflowFile: string;
   bindings: ComfyUIBinding[];
+  adapter?: "h3_long_video" | "commerce_pack" | "long_text_video" | "video_concat";
+  h3LongVideo?: {
+    planRef: string;
+    promptRowsRef: string;
+    referenceImagesRef: string;
+    materialNoteRef?: string;
+  };
 }
 
 export interface WorkflowOutputField {
@@ -209,6 +254,7 @@ export interface WorkflowOutputField {
   label: string;
   type: WorkflowVariableType;
   sourceRef: string;
+  selection?: WorkflowMediaSelection;
 }
 
 export type WorkflowExecutionMode = "once" | "for_each";
@@ -218,6 +264,7 @@ export interface WorkflowExecutionConfig {
   mode: WorkflowExecutionMode;
   sourceRef?: string;
   onError?: WorkflowIterationErrorPolicy;
+  maxConcurrency?: number;
 }
 
 export interface WorkflowDefinition {
@@ -269,9 +316,11 @@ export interface WorkflowRunItemResult {
   error?: string;
 }
 
+export type WorkflowRunStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "stale";
+
 export interface WorkflowRunResult {
   runId: string;
-  status: "running" | "completed" | "failed" | "cancelled";
+  status: WorkflowRunStatus;
   steps: WorkflowRunStepResult[];
   outputs: WorkflowRunOutput[];
   items?: WorkflowRunItemResult[];
@@ -294,6 +343,7 @@ export interface WorkflowRunArtifacts {
 }
 
 export interface WorkflowRunHistoryItem {
+  createdAt?: string;
   runId: string;
   sceneId: SceneId;
   workflowName: string;

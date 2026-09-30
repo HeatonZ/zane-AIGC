@@ -1,0 +1,423 @@
+{
+  "format": "zane-studio-scene",
+  "version": 1,
+  "exportedAt": "2026-09-30T09:41:29.500Z",
+  "scene": {
+    "id": "scene_long_text_to_video",
+    "title": "长文出视频",
+    "shortTitle": "长文出视频",
+    "summary": "提供剧情与资产，一键生成原生有声剧情成片",
+    "description": "长文/剧情 + 人物/场景/道具 + 参考音色 → Writer制作分镜 → H3原生有声片段 → 本机顺序合成。无独立配音、无关键帧生成、无质检节点、禁止音乐。",
+    "cover": "/long-text-video.svg",
+    "coverPosition": "center",
+    "accent": "green",
+    "stages": [
+      "剧情与资产",
+      "Writer制作分镜",
+      "H3原生有声片段",
+      "顺序合成成片"
+    ]
+  },
+  "workflow": {
+    "sceneId": "scene_long_text_to_video",
+    "name": "长文出视频 · 原生对白与参考音色",
+    "inputs": [
+      {
+        "key": "content",
+        "label": "长文 / 剧情",
+        "type": "textarea",
+        "required": true,
+        "placeholder": "粘贴完整长文、故事或剧情，Writer直接改编为制作级视频分镜"
+      },
+      {
+        "key": "character_assets",
+        "label": "人物资产（按说明顺序上传；项目总参考图最多12张）",
+        "type": "image_list",
+        "required": true
+      },
+      {
+        "key": "scene_assets",
+        "label": "场景资产（按说明顺序上传）",
+        "type": "image_list",
+        "required": true
+      },
+      {
+        "key": "prop_assets",
+        "label": "道具资产（没有关键道具可不传）",
+        "type": "image_list",
+        "required": false
+      },
+      {
+        "key": "voice_reference_audio",
+        "label": "参考音色（清晰纯人声样本；每片段最多3个）",
+        "type": "audio_list",
+        "required": false
+      },
+      {
+        "key": "asset_notes",
+        "label": "资产与音色对应说明",
+        "type": "textarea",
+        "required": true,
+        "placeholder": "人物第1张=林舟、人物第2张=苏晴；场景第1张=办公室；道具第1张=红色信封；音频第1条=林舟音色、音频第2条=苏晴音色。各类别独立编号，从1开始。请使用已获授权的素材。"
+      },
+      {
+        "key": "production_notes",
+        "label": "画面风格 / 改编要求",
+        "type": "textarea",
+        "required": false,
+        "defaultValue": "保留核心剧情、人物关系和结局；自然中文对白；画面风格跟随参考资产。禁止所有音乐，只保留对白和必要现场声音。",
+        "placeholder": "例如：写实短剧、克制表演、优先保留的情节与对白、是否需要旁白"
+      },
+      {
+        "key": "target_seconds",
+        "label": "目标成片时长（秒）",
+        "type": "number",
+        "required": true,
+        "defaultValue": 60
+      },
+      {
+        "key": "ratio",
+        "label": "画幅",
+        "type": "select",
+        "required": true,
+        "options": [
+          "1:1 (Square)",
+          "2:3 (Portrait Photo)",
+          "3:2 (Photo)",
+          "3:4 (Portrait Standard)",
+          "4:3 (Standard)",
+          "9:16 (Portrait Widescreen)",
+          "16:9 (Widescreen)",
+          "21:9 (Ultrawide)"
+        ],
+        "defaultValue": "9:16 (Portrait Widescreen)"
+      },
+      {
+        "key": "mp",
+        "label": "生成像素（百万像素）",
+        "type": "number",
+        "required": true,
+        "defaultValue": 0.7
+      }
+    ],
+    "steps": [
+      {
+        "id": "writer",
+        "name": "Writer · 制作级分镜与有声提示词",
+        "kind": "hermes",
+        "hermesProfile": "writer",
+        "inputs": [
+          {
+            "key": "content",
+            "label": "长文/剧情",
+            "sourceRef": "input.content",
+            "valueSource": "reference"
+          },
+          {
+            "key": "characters",
+            "label": "人物资产（组内上传顺序从1开始）",
+            "sourceRef": "input.character_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "scenes",
+            "label": "场景资产（组内上传顺序从1开始）",
+            "sourceRef": "input.scene_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "props",
+            "label": "道具资产（组内上传顺序从1开始）",
+            "sourceRef": "input.prop_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "asset_notes",
+            "label": "资产与音色绑定说明",
+            "sourceRef": "input.asset_notes",
+            "valueSource": "reference"
+          },
+          {
+            "key": "production_notes",
+            "label": "制作要求",
+            "sourceRef": "input.production_notes",
+            "valueSource": "reference"
+          },
+          {
+            "key": "target_seconds",
+            "label": "目标时长",
+            "sourceRef": "input.target_seconds",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "storyboard",
+            "label": "制作级分镜脚本",
+            "type": "text",
+            "description": "可读的完整制作分镜，包含资产/音色对应关系和镜头执行内容"
+          },
+          {
+            "key": "shots",
+            "label": "可执行有声分镜",
+            "type": "json",
+            "description": "对象数组，index从1连续递增，每项seconds为5..15数字，包含characters/scenes/props/voices选择数组及六段H3 prompt；直接供生成，不再调用模型改写"
+          }
+        ],
+        "promptTemplate": "你是长文/剧情视频的制作导演、编剧和分镜师。把用户给定的长文/剧情直接改编为可执行、可生成的制作级视频分镜脚本，并同时写出每个片段的 MiniMax H3 原生有声参考生视频提示词。不要输出规划建议、分析过程或待完成事项。\n\n【项目】\n长文/剧情：\n{{input.content}}\n目标成片时长：{{input.target_seconds}} 秒；画幅：{{input.ratio}}；画面风格与改编要求：{{input.production_notes}}\n人物/场景/道具/音色对应说明：\n{{input.asset_notes}}\n参考音频文件信息（仅用于确定数量/对应关系，你不能据此假装听过音频）：{{input.voice_reference_audio}}\n人物、场景、道具图片作为分组附件提供。上传序号分别从1开始，不跨组编号；资产说明优先于你的视觉猜测。\n\n【制作边界】\n1. Writer 一次完成故事改编、镜头拆分、对白、连续性和模型提示词。不需要 AIXG 再次改写或重新拆镜头，不需要生成资产、关键帧、独立配音/TTS，也不设计质量检查节点。\n2. 保留核心剧情、因果、人物关系、关键事件和结局。按目标时长压缩重复表达，不随意增添支线或反转；用可见动作表达心理和信息。开头直接进入正在发生的事件，结尾完成情绪或事件回收。\n3. 每个片段5到15秒，优先6到10秒，一个明确的叙事任务和主要动作，通常一个场景、一个主镜头；复杂动作、场景切换、多人抢话、长对白必须拆分。所有 seconds 之和尽量接近目标时长。H3 将在24fps的17k+5帧网格上对齐，实际成片可有小幅时长偏差。\n4. 每段都写景别、机位/人物相对位置、视线与运动方向、具体动作及起止状态、光线/时间、必要道具持有位置；镜头运动用于叙事，不堆叠推拉摇移/形容词。避免不必要的字幕、水印、画面文字。\n5. 每段提示词须独立可执行，不能只写“保持上一镜头”。同一人物的面容、服装、体型，场景布局/光线，道具颜色/位置/持有状态，须继承前镜的结束状态；在 continuity_in/continuity_out 明确记录。\n6. 对白逐字列出，标明说话人、音色资产、语气、停顿、相对时间范围。按自然中文语速约每秒3到4字预留动作和呼吸时间，不为压时长加速对白，不截断句子。对白在片段结束前完成，预留短收尾。以人物对白和现场动作为主，必要时才有少量旁白。\n7. 视频片段直接生成对白/旁白、对应口型和必要的现场声音。<Voice n> 仅是音色/发声风格参考，不是实际台词或背景音轨，不复制参考音频的文字、内容、时间轴及背景声。按说明把音色固定绑定到人物/旁白，跨镜头不得互换；没有参考的说话人可使用一致的自然音色，但不能虚构音频序号。没有台词的片段不得新增说话声。\n8. 所有片段都禁止音乐：无背景音乐、配乐、旋律、乐器声、歌曲、演唱、哼唱、片头片尾音乐，也不能复用参考样本的音乐。只允许明确写出的正常说话声和必要现场环境声/动作音效；如果原故事涉及音乐，用画面行为或正常对白承载信息，声音不得演奏或演唱。\n\n【资产绑定协议】\n- characters/scenes/props/voices 分别是本镜头使用的各组上传编号数组（1-based），升序且不能重复；未用的类别必须填[]。每镜至少引用一个场景，人物/场景/道具合计最多9张，参考音色最多3个；按剧情选所需素材，不能把整个资产库塞进每个镜头。\n- prompt 使用全局标记 <Character 1>、<Scene 1>、<Prop 1>、<Voice 1>，标记中的序号必须出现在对应选择数组，必须实际存在。程序会按本镜头人物→场景→道具顺序编译为 <Picture n>，音色编译为 <Audio n>。你不要自行输出 Picture/Audio 局部编号，也不要使用 @图1 等其他标签。\n- 参考图控制外观/空间/物体，参考音频只控制对应人物的音色。多角色必须分别定义身份和说话人，避免混脸、换装、串音色。只描写当前镜头真实出场的人物，不把场景图中的路人当新增角色。\n\n【每段H3提示词】\n必须是字符串，按顺序包含以下六个英文标题（不要Markdown代码块）：\nsubject_definitions:\n定义当前出场人物、场景、道具及音色的对应关系，使用上述全局资产标记。\nsummary:\n简述这一镜头发生什么、叙事任务是什么。\nretention_analysis:\n说明各参考资产需要保留的外观、服装、布局和音色特征；不是观众留存分析。\ndetailed_description:\n用相对于片段起点的时间段，依次写画面、动作、机位/景别/运动、表情、说话人和逐字台词；不要越过 seconds；音画互相对应。\noverall_soundscape:\n逐字对白/必要旁白及其说话人、参考音色、自然语速、语气与停顿，必要的现场环境声和动作音效。再次声明音频参考只用于音色，不复用样本内容，禁止任何音乐。无台词则只写必要的现场声。\nnon_diegetic_music:\nN/A\n\n【输出契约】\n只输出一个可直接解析的JSON对象，顶层只有 storyboard 和 shots。不要把JSON或数组转成字符串，不要添加正文、代码围栏或额外顶层字段。\n- storyboard：可读的制作分镜脚本文本，包含改编摘要、人物/场景/道具/音色对应表、总时长、各镜头的叙事任务、景别/动作/对白/连续性；不要另做资产生成、配音、关键帧或质检流程。\n- shots：按成片顺序排列的非空对象数组，index 必须从1连续递增。每项必须包含 index、seconds（数字）、characters、scenes、props、voices（数组）、purpose（镜头任务）、continuity_in、continuity_out、dialogue（说话人/voice编号或null/逐字text/语气delivery/相对时间范围）、prompt（六段完整H3提示词）。\n结构示意（示意中的提示词必须替换为完整内容）：\n{\"storyboard\":\"完整可读的制作分镜脚本\", \"shots\":[{\"index\":1,\"seconds\":8,\"characters\":[1],\"scenes\":[1],\"props\":[],\"voices\":[1],\"purpose\":\"镜头叙事任务\",\"continuity_in\":\"人物/道具/场景起始状态\",\"continuity_out\":\"镜头结束状态\",\"dialogue\":[{\"speaker\":\"人物名\",\"voice\":1,\"text\":\"逐字台词\",\"delivery\":\"自然语速与语气\",\"start\":1,\"end\":5}],\"prompt\":\"subject_definitions:\\n...\\nsummary:\\n...\\nretention_analysis:\\n...\\ndetailed_description:\\n...\\noverall_soundscape:\\n...\\nnon_diegetic_music:\\nN/A\"}]}"
+      },
+      {
+        "id": "generate",
+        "name": "H3 · 参考资产与音色生成有声片段",
+        "kind": "comfyui",
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "step.writer.outputs.shots",
+          "onError": "stop",
+          "maxConcurrency": 1
+        },
+        "inputs": [
+          {
+            "key": "shot",
+            "label": "当前制作分镜",
+            "sourceRef": "iteration.item",
+            "valueSource": "reference"
+          },
+          {
+            "key": "character_assets",
+            "label": "人物资产库",
+            "sourceRef": "input.character_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "scene_assets",
+            "label": "场景资产库",
+            "sourceRef": "input.scene_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "prop_assets",
+            "label": "道具资产库",
+            "sourceRef": "input.prop_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "voice_reference_audio",
+            "label": "参考音色库",
+            "sourceRef": "input.voice_reference_audio",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "result",
+            "label": "有声视频片段",
+            "type": "video_list"
+          },
+          {
+            "key": "applied_shot",
+            "label": "实际执行分镜与引用绑定",
+            "type": "json",
+            "description": "记录最终提示词、24fps帧数、实际时长和每镜头资产/音色绑定，便于单片段重试"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "adapter": "long_text_video",
+          "workflowFile": "Zane/video_json.json",
+          "bindings": [
+            {
+              "key": "shot_json",
+              "label": "当前分镜JSON",
+              "direction": "input",
+              "nodeId": "196",
+              "property": "String",
+              "type": "text",
+              "sourceRef": "iteration.item",
+              "valueSource": "reference",
+              "required": true
+            },
+            {
+              "key": "length",
+              "label": "H3原生24fps帧数",
+              "direction": "input",
+              "nodeId": "192",
+              "property": "length",
+              "type": "number",
+              "sourceRef": "iteration.item.frames",
+              "valueSource": "reference",
+              "required": true
+            },
+            {
+              "key": "fps",
+              "label": "原生音画同步帧率",
+              "direction": "input",
+              "nodeId": "152",
+              "property": "fps",
+              "type": "number",
+              "valueSource": "literal",
+              "literalType": "number",
+              "literalValue": "24",
+              "required": true
+            },
+            {
+              "key": "ratio",
+              "label": "画幅",
+              "direction": "input",
+              "nodeId": "115",
+              "property": "aspect_ratio",
+              "type": "text",
+              "sourceRef": "input.ratio",
+              "valueSource": "reference",
+              "required": true
+            },
+            {
+              "key": "mp",
+              "label": "百万像素",
+              "direction": "input",
+              "nodeId": "115",
+              "property": "megapixels",
+              "type": "number",
+              "sourceRef": "input.mp",
+              "valueSource": "reference",
+              "required": true
+            },
+            {
+              "key": "character_assets",
+              "label": "本镜人物图",
+              "direction": "input",
+              "nodeId": "192",
+              "property": "ref_images",
+              "type": "image_list",
+              "sourceRef": "input.character_assets",
+              "valueSource": "reference",
+              "required": false
+            },
+            {
+              "key": "scene_assets",
+              "label": "本镜场景图",
+              "direction": "input",
+              "nodeId": "192",
+              "property": "ref_images",
+              "type": "image_list",
+              "sourceRef": "input.scene_assets",
+              "valueSource": "reference",
+              "required": false
+            },
+            {
+              "key": "prop_assets",
+              "label": "本镜道具图",
+              "direction": "input",
+              "nodeId": "192",
+              "property": "ref_images",
+              "type": "image_list",
+              "sourceRef": "input.prop_assets",
+              "valueSource": "reference",
+              "required": false
+            },
+            {
+              "key": "voice_reference_audio",
+              "label": "本镜参考音色",
+              "direction": "input",
+              "nodeId": "192",
+              "property": "ref_audios",
+              "type": "audio_list",
+              "sourceRef": "input.voice_reference_audio",
+              "valueSource": "reference",
+              "required": false
+            },
+            {
+              "key": "result",
+              "label": "原生有声片段",
+              "direction": "output",
+              "nodeId": "92",
+              "property": "video",
+              "type": "video_list"
+            }
+          ]
+        }
+      },
+      {
+        "id": "assemble",
+        "name": "FFmpeg · 顺序拼接成片（保留原生声音）",
+        "kind": "comfyui",
+        "inputs": [
+          {
+            "key": "clips",
+            "label": "按生成顺序的视频片段",
+            "sourceRef": "step.generate.outputs.result",
+            "valueSource": "reference"
+          },
+          {
+            "key": "shots",
+            "label": "完整制作分镜清单",
+            "sourceRef": "step.writer.outputs.shots",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "video",
+            "label": "完整成片",
+            "type": "video_list"
+          },
+          {
+            "key": "download",
+            "label": "成片地址",
+            "type": "text"
+          },
+          {
+            "key": "manifest",
+            "label": "成片拼接记录",
+            "type": "json"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "adapter": "video_concat",
+          "workflowFile": "builtin:video_concat",
+          "bindings": []
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "key": "video",
+        "label": "完整成片",
+        "type": "video_list",
+        "sourceRef": "step.assemble.outputs.video"
+      },
+      {
+        "key": "download",
+        "label": "成片地址",
+        "type": "text",
+        "sourceRef": "step.assemble.outputs.download"
+      },
+      {
+        "key": "storyboard",
+        "label": "制作级分镜脚本",
+        "type": "text",
+        "sourceRef": "step.writer.outputs.storyboard"
+      },
+      {
+        "key": "shots",
+        "label": "实际执行分镜与提示词",
+        "type": "json",
+        "sourceRef": "step.generate.outputs.applied_shot"
+      },
+      {
+        "key": "clips",
+        "label": "有声视频片段",
+        "type": "video_list",
+        "sourceRef": "step.generate.outputs.result"
+      },
+      {
+        "key": "manifest",
+        "label": "拼接记录",
+        "type": "json",
+        "sourceRef": "step.assemble.outputs.manifest"
+      }
+    ]
+  },
+  "optionPresets": []
+}

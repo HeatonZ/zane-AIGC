@@ -2,6 +2,7 @@ import { readDrafts, writeDrafts } from "./drafts";
 import { readScenes, writeScenes } from "./sceneStorage";
 import { migrateWorkflowExecution, readOptionPresets, readWorkflows, writeOptionPresets, writeWorkflows } from "./workflowStorage";
 import { initialSceneVersions, sceneVersionHash } from "./sceneVersions";
+import { migrateLegacyComfyInputFormats, normalizeWorkflowMediaTypes } from "./workflowMigration";
 import type { SceneId, SceneVersion, SceneVersionRecord, WorkspaceSnapshot } from "../types";
 
 const workspaceFormat = "zane-studio.workspace/v1" as const;
@@ -73,7 +74,7 @@ function normalizeSceneVersions(
       .filter((version) => validSceneVersion(version, scene.id))
       .map((version): SceneVersion => {
         const normalizedScene = { ...version.scene, id: scene.id };
-        const normalizedWorkflow = migrateWorkflowExecution({ ...version.workflow, sceneId: scene.id });
+        const normalizedWorkflow = migrateWorkflowExecution(normalizeWorkflowMediaTypes(migrateLegacyComfyInputFormats({ ...version.workflow, sceneId: scene.id })));
         return {
           ...version,
           version: sceneVersionHash(normalizedScene, normalizedWorkflow, version.optionPresets),
@@ -102,7 +103,7 @@ export function normalizeWorkspaceSnapshot(value: unknown, fallback: WorkspaceSn
   if (!isRecord(value)) return fallback;
   const scenes = Array.isArray(value.scenes) ? value.scenes as WorkspaceSnapshot["scenes"] : fallback.scenes;
   const workflows = isRecord(value.workflows)
-    ? Object.fromEntries(Object.entries(value.workflows).map(([sceneId, workflow]) => [sceneId, migrateWorkflowExecution(workflow as WorkspaceSnapshot["workflows"][SceneId])])) as Record<SceneId, WorkspaceSnapshot["workflows"][SceneId]>
+    ? Object.fromEntries(Object.entries(value.workflows).map(([sceneId, workflow]) => [sceneId, migrateWorkflowExecution(normalizeWorkflowMediaTypes(migrateLegacyComfyInputFormats(workflow as WorkspaceSnapshot["workflows"][SceneId])))])) as Record<SceneId, WorkspaceSnapshot["workflows"][SceneId]>
     : fallback.workflows;
   const optionPresets = Array.isArray(value.optionPresets)
     ? value.optionPresets as WorkspaceSnapshot["optionPresets"]
@@ -113,6 +114,7 @@ export function normalizeWorkspaceSnapshot(value: unknown, fallback: WorkspaceSn
   const sceneVersions = normalizeSceneVersions(value.sceneVersions, scenes, workflows, optionPresets);
   return {
     format: workspaceFormat,
+    ...(typeof value.revision === "number" ? { revision: value.revision } : {}),
     scenes,
     workflows,
     optionPresets,

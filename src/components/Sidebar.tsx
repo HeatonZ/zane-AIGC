@@ -1,5 +1,6 @@
 import {
   Archive,
+  ArrowDownUp,
   Boxes,
   Cable,
   Clapperboard,
@@ -19,9 +20,10 @@ interface SidebarProps {
   scenes: SceneModule[];
   onNavigate: (page: PageId) => void;
   onOpenScene: (sceneId: SceneId) => void;
+  onSortScenes: () => void;
 }
 
-export default function Sidebar({ page, sceneId, scenes, onNavigate, onOpenScene }: SidebarProps) {
+export default function Sidebar({ page, sceneId, scenes, onNavigate, onOpenScene, onSortScenes }: SidebarProps) {
   return (
     <aside className="sidebar">
       <button className="brand" onClick={() => onNavigate("home")} aria-label="返回工作台">
@@ -57,7 +59,7 @@ export default function Sidebar({ page, sceneId, scenes, onNavigate, onOpenScene
         </button>
 
         <div className="nav-divider" />
-        <div className="nav-section-heading"><span className="nav-section-label">创作场景</span></div>
+        <div className="nav-section-heading"><span className="nav-section-label">创作场景</span><button className="tiny-icon-button" onClick={onSortScenes} disabled={scenes.length < 2} title="场景排序" aria-label="场景排序"><ArrowDownUp size={14} /></button></div>
         {scenes.map((scene, index) => <button className={`nav-item ${page === "studio" && sceneId === scene.id ? "active" : ""}`} key={scene.id} onClick={() => onOpenScene(scene.id)}>
           {scene.id === "text_to_image" ? <Image size={17} /> : scene.id === "comic" ? <Clapperboard size={17} /> : scene.id === "commerce" ? <Package size={17} /> : <Sparkles size={17} />}<span>{scene.title}</span><span className="nav-count">{String(index + 1).padStart(2, "0")}</span>
         </button>)}
