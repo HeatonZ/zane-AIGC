@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import { afterEach, test } from "node:test";
+import { ApiError, loadSceneDraftDiff, loadSceneDraftDiffValue } from "./api";
+const originalFetch = globalThis.fetch;
+afterEach(() => { globalThis.fetch = originalFetch; });
+const value = { present: true, format: "text", text: "😀", totalChars: 2, offset: 1, nextOffset: null, complete: true };
+const data = { sceneId: "demo", revision: "a".repeat(64), draftRevision: "b".repeat(64), contentHash: "deadbeef", baseline: null, comparisonBasis: "publication-ready", preparationWarnings: [], hasChanges: false, summary: { added: 0, removed: 0, changed: 0, reordered: 0 }, total: 0, valueBudgetChars: 65536, changes: [], hasMore: false, nextCursor: null, nextAction: "get_scene" };
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+test("预览客户端只发GET、核对哈希/revision/侧与offset，携带取消信号", async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (url, init) => { requests.push({ url: String(url), init }); return json(String(url).includes("/value?") ? { sceneId: "demo", revision: data.revision, changeId: "c".repeat(24), side: "after", value, nextAction: "get_scene_draft_diff" } : data); }) as typeof fetch;
+  const controller = new AbortController();
+  assert.deepEqual(await loadSceneDraftDiff("demo", { revision: data.revision, contentHash: data.contentHash }, controller.signal), data);
+  assert.equal(requests[0].init?.signal, controller.signal); assert.equal(requests[0].init?.method, undefined); assert.equal(requests[0].init?.body, undefined);
+  assert.match(requests[0].url, /contentHash=deadbeef/);
+  assert.equal((await loadSceneDraftDiffValue("demo", { revision: data.revision, changeId: "c".repeat(24), side: "after", offset: 1 })).value.text, "😀");
+  await assert.rejects(loadSceneDraftDiff("demo", { contentHash: "wrong" }), (error: unknown) => error instanceof ApiError && error.code === "INVALID_SCENE_DIFF_RESPONSE");
+  await assert.rejects(loadSceneDraftDiff("demo", { revision: "old" }), /回执无效/);
+  await assert.rejects(loadSceneDraftDiffValue("demo", { revision: data.revision, changeId: "c".repeat(24), side: "before", offset: 1 }), /回执无效/);
+});
+test("读取失去回执不自动重放；冲突/坏响应/旧后台不以浏览器业务快照回退", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => { calls++; throw new Error("read response lost"); }) as typeof fetch;
+  await assert.rejects(loadSceneDraftDiff("demo"), /read response lost/); assert.equal(calls, 1);
+  globalThis.fetch = (async () => json({ error: "请重读差异", code: "SCENE_DIFF_CHANGED" }, 409)) as typeof fetch;
+  await assert.rejects(loadSceneDraftDiff("demo"), (error: unknown) => error instanceof ApiError && error.status === 409 && error.code === "SCENE_DIFF_CHANGED");
+  globalThis.fetch = (async () => json({ ...data, sceneId: "other" })) as typeof fetch;
+  await assert.rejects(loadSceneDraftDiff("demo"), /回执无效/);
+  globalThis.fetch = (async () => new Response("Cannot GET", { status: 404, headers: { "content-type": "text/html" } })) as typeof fetch;
+  await assert.rejects(loadSceneDraftDiff("demo"), (error: unknown) => error instanceof ApiError && error.code === "SCENE_DIFF_UNAVAILABLE");
+});

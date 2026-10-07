@@ -1,26 +1,15 @@
 import { createHash, randomInt } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { asRecord, resolveStepInputs } from "../domain/workflowValues.js";
 import type { JsonValue } from "../domain/types.js";
 import type { StepExecutionContext } from "../execution/workflowExecutor.js";
 import { throwIfAborted } from "../execution/cancellation.js";
 import { createRuntimeMediaValue, runtimeMediaItems, runtimeMediaItemValue } from "../runtimeValue.js";
-import { readH3ReferenceImage } from "../h3ReferenceImage.js";
-import { isRunId, runArtifactPaths } from "../artifacts/runArtifacts.js";
+import { readWorkflowImage as readImage } from "../services/workflowImageService.js";
 import { composeCommerceImage, type CommerceCopy } from "./compose.js";
 import { commerceShotId, commerceShots, selectCommerceProfiles, validateCommerceShots } from "./profiles.js";
 
-async function readImage(value: unknown, context: StepExecutionContext) {
-  const url = typeof value === "string" ? value : asRecord(value)?.url;
-  const local = typeof url === "string" ? /^\/api\/(?:workflows|v1)\/runs\/([^/]+)\/media\/([A-Za-z0-9_-][A-Za-z0-9._-]*)$/.exec(url) : null;
-  if (local) {
-    if (!isRunId(local[1]) || local[2].includes("..")) throw new Error("商品图归档路径无效");
-    return readFile(path.join(runArtifactPaths(context.settings.projectDirectory, local[1]).directory, "outputs", "media", local[2]), { signal: context.signal });
-  }
-  try { return (await readH3ReferenceImage(value, context.settings.comfyuiBaseUrl, context.signal)).bytes; }
-  catch (error) { throw new Error((error instanceof Error ? error.message : String(error)).replaceAll("H3", "电商套图")); }
-}
 function text(value: unknown, label: string, required = false) {
   if (value === null || value === undefined) { if (required) throw new Error(`${label}不能为空`); return ""; }
   if (typeof value !== "string" || (required && !value.trim()) || value.length > 2000) throw new Error(`${label}需要有效文本（最多2000字）`);

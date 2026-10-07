@@ -2,18 +2,49 @@
 export type CapabilityValue = string | number | boolean | null | CapabilityValue[] | { [key: string]: CapabilityValue };
 export type CapabilityStepKind = "hermes" | "comfyui" | "manual" | "control" | "capability";
 export type CapabilityPortType = "text" | "number" | "boolean" | "json" | "image_list" | "video_list" | "audio_list";
-export interface CapabilityPort { key: string; label: string; type: CapabilityPortType; required?: boolean; description?: string }
+/** Output ports are required by default; required:false is additive/optional for old snapshots. Input ports require explicit required:true. */
+export interface CapabilityPort { key: string; label: string; type: CapabilityPortType; required?: boolean; description?: string; valueSchema?: Record<string, CapabilityValue> }
 export interface CapabilityConfigField {
   key: string; label: string; type: "text" | "textarea" | "number" | "boolean" | "select" | "json" | "reference";
+  /** Exact JSON value schema when the field type alone is insufficient. */
+  valueSchema?: Record<string, CapabilityValue>;
   /** Legacy configuration location. Otherwise stored under capabilityConfig[key]. */
   path?: string; required?: boolean; defaultValue?: CapabilityValue; options?: string[]; placeholder?: string; description?: string;
 }
+export interface CapabilityUsage {
+  /** Basic capabilities are reusable across scenes; specialized adapters are opt-in. */
+  tier: "basic" | "specialized";
+  whenToUse: string;
+  /** How to meet ordinary needs without this specialized adapter; not an automatic migration. */
+  basicAlternative?: string;
+  /** Retained for existing snapshots; new scenes should use the basic composition instead. */
+  compatibilityOnly?: boolean;
+}
+export const CAPABILITY_SELECTION_POLICY = { defaultTier: "basic", specializedOptIn: true, sceneDifferences: "configuration-first" } as const;
 export interface CapabilityDefinition {
   id: string; version: string; label: string; description: string; category: string;
+  /** Optional for legacy packages; undeclared extensions are conservatively opt-in. */
+  usage?: CapabilityUsage;
   legacy: { kind: CapabilityStepKind; adapter?: string };
   inputs: CapabilityPort[]; outputs: CapabilityPort[]; config: CapabilityConfigField[];
-  editor: { inputs: "bindings" | "ports"; outputs: "bindings" | "ports"; editablePorts?: boolean; bindings?: boolean; profile?: boolean; prompt?: boolean; condition?: boolean };
+  editor: { inputs: "bindings" | "ports"; outputs: "bindings" | "ports"; editablePorts?: boolean; editableInputs?: boolean; editableOutputs?: boolean; bindings?: boolean; profile?: boolean; prompt?: boolean; condition?: boolean; bindingTypes?: Array<{ direction: "input" | "output"; nodeType: string; property: string; type: CapabilityPortType }> };
+  /** Undeclared/opaque packages conservatively depend on all prior results and all scene inputs. */
+  dependencyMode?: "declared" | "all-prior";
   result: { renderer: "auto" | "text" | "json" | "media" };
+}
+export function capabilityUsage(definition: CapabilityDefinition): CapabilityUsage {
+  return definition.usage ?? { tier: "specialized", whenToUse: "此扩展尚未声明通用适用范围；仅在确认基础步骤无法满足需求后选用。" };
+}
+export function groupCapabilities(catalog: readonly CapabilityDefinition[]) {
+  return { basic: catalog.filter((item) => capabilityUsage(item).tier === "basic"), specialized: catalog.filter((item) => capabilityUsage(item).tier === "specialized") };
+}
+export interface CapabilityCatalogPage {
+  schemaVersion: 1;
+  revision: string;
+  selectionPolicy: typeof CAPABILITY_SELECTION_POLICY;
+  capabilities: CapabilityDefinition[];
+  hasMore: boolean;
+  nextCursor?: string;
 }
 export interface CapabilityStepIdentity { kind: string; capabilityId?: string; capabilityVersion?: string; comfyui?: { adapter?: string } }
 export function capabilityForStep(step: CapabilityStepIdentity, catalog: readonly CapabilityDefinition[]) {

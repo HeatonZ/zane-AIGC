@@ -14,6 +14,9 @@ export interface RuntimeMediaItem {
   filename?: string;
   mimeType?: string;
   previewUrl?: string;
+  assetId?: string;
+  assetVersion?: number;
+  assetName?: string;
 }
 
 export interface RuntimeMediaValue {
@@ -59,6 +62,8 @@ export function isRuntimeMediaValue(value: unknown): value is RuntimeMediaValue 
 
 function normalizeMediaItem(value: unknown, mediaKind: RuntimeMediaKind, index: number): RuntimeMediaItem | undefined {
   const existing = record(value);
+  const asset = typeof existing?.assetId === "string" && Number.isSafeInteger(existing.assetVersion)
+    ? { assetId: existing.assetId, assetVersion: existing.assetVersion as number, ...(typeof existing.assetName === "string" ? { assetName: existing.assetName } : {}) } : {};
   if (existing && typeof existing.id === "string" && existing.id && existing.kind === mediaKind && record(existing.locator)) {
     const locator = existing.locator as Record<string, unknown>;
     if (locator.type === "path" && typeof locator.value === "string") {
@@ -66,6 +71,7 @@ function normalizeMediaItem(value: unknown, mediaKind: RuntimeMediaKind, index: 
         id: existing.id,
         kind: mediaKind,
         locator: { type: "path", value: locator.value },
+        ...asset,
         ...(typeof existing.filename === "string" ? { filename: existing.filename } : {}),
         ...(typeof existing.mimeType === "string" ? { mimeType: existing.mimeType } : {}),
         ...(typeof existing.previewUrl === "string" ? { previewUrl: existing.previewUrl } : {}),
@@ -145,6 +151,8 @@ function normalizeMediaItem(value: unknown, mediaKind: RuntimeMediaKind, index: 
       id: typeof candidate.id === "string" && candidate.id ? candidate.id : itemId(mediaKind, index, fileNameFromPath(pathValue)),
       kind: mediaKind,
       locator: { type: "path", value: pathValue },
+      ...asset,
+      ...(typeof candidate.previewUrl === "string" ? { previewUrl: candidate.previewUrl } : {}),
       ...(fileNameFromPath(pathValue) ? { filename: fileNameFromPath(pathValue) } : {}),
     };
   }
@@ -170,6 +178,7 @@ export function runtimeMediaItems(value: unknown, mediaKind: RuntimeMediaKind = 
 }
 
 export function runtimeMediaItemValue(item: RuntimeMediaItem): RuntimeJsonValue {
+  if (item.assetId && item.locator.type === "path") return { assetId: item.assetId, assetVersion: item.assetVersion ?? 1, path: item.locator.value, ...(item.assetName ? { assetName: item.assetName } : {}), ...(item.previewUrl ? { previewUrl: item.previewUrl } : {}) };
   if (item.locator.type === "path" || item.locator.type === "url") return item.locator.value;
   const { filename, subfolder, location } = item.locator;
   const url = item.previewUrl ?? `/api/comfyui/view?${new URLSearchParams({ filename, subfolder, type: location }).toString()}`;

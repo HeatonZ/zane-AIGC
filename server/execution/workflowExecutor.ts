@@ -1,3 +1,8 @@
+import { carryValue } from "../domain/iterationCarry.js";
+import { feedbackForStep } from "../domain/stepFeedback.js";
+import type { HermesFeedbackContext, StepFeedbackRecord } from "../domain/feedbackContracts.js";
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { createRuntimeMediaValue, isRuntimeMediaValue, mediaKindFromWorkflowType, selectRuntimeMedia } from "../runtimeValue.js";
 import { asRecord, canonicalWorkflowType, externalizeRuntimeValue, splitWorkflowReference, parseWorkflowJsonPath, resolveWorkflowReference, resolveStepInputs } from "../domain/workflowValues.js";
 import { artifactPublicPaths, archiveOutputMedia } from "../artifacts/runArtifacts.js";
@@ -11,14 +16,23 @@ export interface PreparedRun {
   artifacts: RunArtifactPaths;
   createdAt: string;
   runTitle?: string;
+  feedbackHistory?: StepFeedbackRecord[];
+  feedbackSourceAliases?: Record<string, string>;
   resumedFromRunId?: string;
   resumeSource?: RunRecord;
+  rerunFromRunId?: string;
+  rerun?: import("../services/rerunPlanner.js").PlannedRerun;
 }
 export interface StepExecutionContext {
+  /** Advisory business warning, persisted before external generation; does not change run status. */
+  warn?: (message: string) => Promise<void>;
   /** Original inputs before a for_each source is replaced by the current item. */
   runInputValues: Readonly<Record<string, JsonValue>>;
   /** Immutable complete iteration source, for adapters that must reject invalid plans before generation. */
   iterationItems?: readonly JsonValue[];
+  /** Stable step-level iteration index for local artifacts; absent for a single execution. */
+  itemIndex?: number;
+  feedback?: HermesFeedbackContext;
   runId: string;
   artifacts: RunArtifactPaths;
   step: RunStep;
@@ -29,7 +43,7 @@ export interface StepExecutionContext {
   inputFields: RunInputField[];
   signal: AbortSignal;
 }
-export type ExecutionResult = Pick<RunRecord, "runId" | "status" | "steps" | "outputs" | "startedAt" | "finishedAt" | "durationMs" | "error" | "cancellationReason" | "archiveWarnings" | "resumedFromRunId" | "artifacts">;
+export type ExecutionResult = Pick<RunRecord, "runId" | "status" | "steps" | "outputs" | "startedAt" | "finishedAt" | "durationMs" | "error" | "cancellationReason" | "archiveWarnings" | "pendingReview" | "resumedFromRunId" | "artifacts">;
 export interface ExecutionContext {
   controller: AbortController;
   executeStep(context: StepExecutionContext): Promise<Record<string, JsonValue>>;
@@ -39,19 +53,27 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
   const { runId, executionWorkflow, inputValues, settings, artifacts, resumeSource } = prepared;
   const requestedResumeFromRunId = prepared.resumedFromRunId;
   const runController = context.controller;
-  const startedAt = new Date().toISOString();
+  const startedAt = resumeSource?.runId === runId ? resumeSource.startedAt : new Date().toISOString();
+  let pendingReview: RunRecord["pendingReview"];
+  function reviewStep(step: RunStep, record: RunStepRecord) { if (!step.review?.enabled) return false; pendingReview = { id: randomUUID(), stepId: step.id, name: step.name, createdAt: new Date().toISOString(), ...(step.review.instruction ? { instruction: step.review.instruction } : {}) }; record.review = { status: "pending", id: pendingReview.id }; return true; }
   const steps: RunStepRecord[] = [];
   const resumeSourceSteps = new Map<string, Record<string, unknown>>();
+  for (const record of prepared.rerun?.itemSources ?? []) resumeSourceSteps.set(record.stepId, record as unknown as Record<string, unknown>);
+  const rerunReuse = new Map((prepared.rerun?.reusedSteps ?? []).map((record) => [record.stepId, record]));
   const mediaCache = new Map<string, JsonValue>();
   const archiveWarnings: string[] = [];
   let failure = "";
+  function withCapabilityIdentity(record: RunStepRecord): RunStepRecord {
+    const definition = executionWorkflow.steps.find((step) => step.id === record.stepId);
+    return { ...record, ...(definition?.capabilityId ? { capabilityId: definition.capabilityId, capabilityVersion: definition.capabilityVersion } : {}) };
+  }
   function syncSteps(activeSteps: RunStepRecord[] = []) {
     steps.splice(0, steps.length, ...activeSteps);
   }
 
   let checkpointTail: Promise<void> = Promise.resolve();
   async function persistRuntime(status: "running" | "completed" | "failed" | "cancelled", finishedAt?: string, cancellationReason?: string) {
-    const patch = { status, startedAt, steps: externalizeRuntimeValue(steps) as unknown as RunStepRecord[], ...(finishedAt ? { finishedAt, durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime() } : {}), ...(archiveWarnings.length ? { archiveWarnings: [...archiveWarnings] } : {}), ...(cancellationReason ? { cancellationReason } : {}) };
+    const patch = { status, startedAt, steps: externalizeRuntimeValue(steps.map(withCapabilityIdentity)) as unknown as RunStepRecord[], ...(finishedAt ? { finishedAt, durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime() } : {}), ...(archiveWarnings.length ? { archiveWarnings: [...archiveWarnings] } : {}), ...(cancellationReason ? { cancellationReason } : {}) };
     const current = checkpointTail.then(() => context.checkpoint(patch));
     checkpointTail = current.catch(() => undefined);
     await current;
@@ -62,7 +84,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
       const outputs = step.outputs
         ? Object.fromEntries(await Promise.all(Object.entries(step.outputs).map(async ([key, value]) => [
           key,
-          await archiveOutputMedia(value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
+          await archiveOutputMedia(value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings, runController.signal),
         ] as const)))
         : undefined;
       const items = step.items
@@ -73,13 +95,13 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           ...(item.outputs ? {
             outputs: Object.fromEntries(await Promise.all(Object.entries(item.outputs).map(async ([key, value]) => [
               key,
-              await archiveOutputMedia(value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
+              await archiveOutputMedia(value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings, runController.signal),
             ] as const))),
           } : {}),
         })))
         : undefined;
       return {
-        ...step,
+        ...withCapabilityIdentity(step),
         ...(step.inputs ? { inputs: externalizeRuntimeValue(step.inputs) as Record<string, JsonValue> } : {}),
         ...(outputs ? { outputs } : {}),
         ...(items ? { items } : {}),
@@ -150,8 +172,12 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
     return { inputs: { ...baseInputs, "iteration.item": mediaKind ? sourceItem : itemValue }, values };
   }
 
-  async function executeStep(step: RunStep, stepInputValues: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, iterationItems?: readonly JsonValue[]) {
-    return context.executeStep({ runId, artifacts, runInputValues: inputValues, iterationItems, step, inputValues: stepInputValues, stepValues, types, settings, inputFields: executionWorkflow.inputs, signal: runController.signal });
+  async function executeStep(step: RunStep, stepInputValues: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, iterationItems?: readonly JsonValue[], itemIndex?: number, warningTarget?: Pick<RunStepRecord, "warnings">) {
+    const feedback = feedbackForStep(prepared.feedbackHistory ?? [], step.id, itemIndex, itemIndex === undefined ? undefined : iterationItems?.[itemIndex], prepared.feedbackSourceAliases);
+    return context.executeStep({ warn: warningTarget ? async message => {
+      const warnings = warningTarget.warnings ?? (warningTarget.warnings = []);
+      if (!warnings.includes(message)) { warnings.push(message); await persistRuntime("running"); }
+    } : undefined, runId, artifacts, runInputValues: inputValues, iterationItems, itemIndex, feedback, step, inputValues: stepInputValues, stepValues, types, settings, inputFields: executionWorkflow.inputs, signal: runController.signal });
   }
 
   async function executeWorkflowItem(itemIndex: number, itemInputValues: Record<string, JsonValue>, resumeState?: { steps: RunStepRecord[]; values: Map<string, Record<string, JsonValue>>; types: Map<string, string>; startIndex: number }): Promise<RunItemResult> {
@@ -165,7 +191,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
     let itemCancelled = false;
     const startIndex = resumeState?.startIndex ?? 0;
 
-    for (let index = startIndex; index < executionWorkflow.steps.length; index += 1) {
+    for (let index = pendingReview ? executionWorkflow.steps.length : startIndex; index < executionWorkflow.steps.length; index += 1) {
       if (runController.signal.aborted) {
         itemCancelled = true;
         break;
@@ -174,6 +200,20 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
       if (!step || typeof step.id !== "string" || typeof step.name !== "string") {
         itemFailure = `第 ${index + 1} 步配置无效`;
         break;
+      }
+      const reused = rerunReuse.get(step.id);
+      if (reused) {
+        const record = structuredClone(reused);
+        record.message = record.replaced ? "使用手动替换结果" : "复用未变化的历史结果";
+        itemSteps.push(record);
+        if (record.outputs) values.set(step.id, Object.fromEntries(Object.entries(record.outputs).map(([key, value]) => {
+          const kind = mediaKindFromWorkflowType(step.outputs?.find((output) => output.key === key)?.type);
+          return [key, kind ? createRuntimeMediaValue(kind, value) : value];
+        })));
+        for (const output of step.outputs ?? []) types.set("step." + step.id + ".outputs." + output.key, canonicalWorkflowType(output.type));
+        syncSteps(itemSteps); await persistRuntime("running");
+        if ((record.replaced || record.review?.status === "pending") && reviewStep(step, record)) break;
+        continue;
       }
       const stepInputs = resolveStepInputs(step, itemInputValues, values) as Record<string, JsonValue>;
       const inputLabels = Object.fromEntries((step.inputs ?? []).map((input) => [input.key, input.label ?? input.key])) as Record<string, string>;
@@ -198,6 +238,9 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         const sourceRef = step.execution.sourceRef?.trim() ?? "";
         let sourceItems: JsonValue[] = [];
         let sourceType: string | undefined;
+        const carry = step.execution.carry;
+        const carryType = step.outputs?.find(output => output.key === carry?.outputKey)?.type ?? "json";
+        let initialCarry: JsonValue = null;
         const parent: RunStepRecord = { stepId: step.id, name: step.name, status: "running", inputs: stepInputs, inputLabels, outputLabels, outputTypes, items: [] };
         itemSteps.push(parent);
         syncSteps(itemSteps);
@@ -209,6 +252,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           const externalSourceValue = externalizeRuntimeValue(sourceValue);
           if (!Array.isArray(externalSourceValue)) throw new Error(`逐项执行来源 ${sourceRef} 必须是数组`);
           sourceItems = externalSourceValue as JsonValue[];
+          if (carry?.initialSourceRef) initialCarry = carryValue(resolveWorkflowReference(carry.initialSourceRef, itemInputValues, values), carryType, "初始传递状态");
         } catch (error) {
           itemFailure = error instanceof Error ? error.message : `${step.name} 的逐项来源无效`;
           parent.status = "failed";
@@ -232,6 +276,16 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
               value: sourceItems[saved.index as number]!,
               outputs: savedOutputs as Record<string, JsonValue> | undefined,
             });
+          }
+        }
+        if (carry) {
+          // A chain is reusable only as a matching contiguous prefix. Never jump a gap or a changed item.
+          for (let index = 0; index < sourceItems.length; index += 1) {
+            const saved = resumableItems.get(index);
+            const original = Array.isArray(savedItems) ? asRecord(savedItems.find(item => asRecord(item)?.index === index)) : undefined;
+            let valid = Boolean(saved && isDeepStrictEqual(externalizeRuntimeValue(original?.value), externalizeRuntimeValue(sourceItems[index])));
+            if (valid) try { carryValue(saved!.outputs?.[carry.outputKey], carryType, "历史传递状态"); } catch { valid = false; }
+            if (!valid) { for (const key of resumableItems.keys()) if (key >= index) resumableItems.delete(key); break; }
           }
         }
         parent.items = [...resumableItems.values()].sort((left, right) => left.index - right.index);
@@ -271,7 +325,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         let nextItemIndex = 0;
         let stopScheduling = false;
         const configuredConcurrency = step.execution?.maxConcurrency;
-        const maxConcurrency = typeof configuredConcurrency === "number" && Number.isSafeInteger(configuredConcurrency)
+        const maxConcurrency = carry ? 1 : typeof configuredConcurrency === "number" && Number.isSafeInteger(configuredConcurrency)
           ? Math.min(32, Math.max(1, configuredConcurrency))
           : 1;
 
@@ -285,18 +339,30 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           let currentInputs: Record<string, JsonValue>;
           let currentValues: Map<string, Record<string, JsonValue>>;
           let currentStepInputs: Record<string, JsonValue>;
+          const historicalItems = resumeSourceSteps.get(step.id)?.items;
+          const historicalItem = Array.isArray(historicalItems) ? asRecord(historicalItems.find((item) => asRecord(item)?.index === itemIndex)) : undefined;
+          const override = prepared.rerun?.itemStepOverrides.find((entry) => entry.stepId === step.id && entry.itemIndex === itemIndex);
+          const sameSource = (value: unknown) => value !== undefined && isDeepStrictEqual(externalizeRuntimeValue(value), externalizeRuntimeValue(sourceItem));
+          const itemStep = (override && sameSource(override.sourceValue) ? override.step : undefined)
+            ?? (sameSource(historicalItem?.value) ? asRecord(historicalItem?.stepSnapshot) as unknown as RunStep | undefined : undefined)
+            ?? step;
           try {
             const context = iterationContext(sourceRef, sourceItem, itemInputValues, values, sourceType);
             currentInputs = context.inputs;
             currentValues = context.values;
-            currentStepInputs = resolveStepInputs(step, currentInputs, currentValues) as Record<string, JsonValue>;
+            if (carry) {
+              const previous = itemIndex === 0 ? initialCarry
+                : carryValue(iterationSucceeded[itemIndex - 1] ? iterationOutputs[itemIndex - 1]?.[carry.outputKey] : undefined, carryType, "上一项传递状态");
+              currentInputs = { ...currentInputs, "iteration.previous": previous, "iteration.hasPrevious": previous !== null, "iteration.index": itemIndex };
+            }
+            currentStepInputs = resolveStepInputs(itemStep, currentInputs, currentValues) as Record<string, JsonValue>;
           } catch (error) {
             const message = error instanceof Error ? error.message : `${step.name} 的第 ${itemIndex + 1} 项输入无效`;
             setIterationItem({ index: itemIndex, value: sourceItem, status: "failed", error: message });
             iterationProcessed[itemIndex] = true;
             iterationErrors.set(itemIndex, message);
             iterationFailed = true;
-            if (step.execution?.onError === "stop") stopScheduling = true;
+            if (carry || step.execution?.onError === "stop") stopScheduling = true;
             syncSteps(itemSteps);
             await persistRuntime("running");
             return;
@@ -309,14 +375,20 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
               : mediaKindFromWorkflowType(iterationInfo?.type) === "video" ? "video"
                 : iterationInfo?.type ?? "json";
           currentTypes.set("iteration.item", iterationItemType);
-          const itemRecord: RunStepItemRecord = { index: itemIndex, value: sourceItem, status: "running", inputs: currentStepInputs };
+          if (carry) {
+            currentTypes.set("iteration.previous", canonicalWorkflowType(carryType));
+            currentTypes.set("iteration.hasPrevious", "boolean");
+            currentTypes.set("iteration.index", "number");
+          }
+          const itemRecord: RunStepItemRecord = { index: itemIndex, value: sourceItem, status: "running", inputs: currentStepInputs, ...(itemStep !== step ? { stepSnapshot: structuredClone(itemStep) } : {}) };
           setIterationItem(itemRecord);
           syncSteps(itemSteps);
           await persistRuntime("running");
           try {
-            const outputs = await executeStep(step, currentInputs, currentValues, currentTypes, sourceItems);
-            itemRecord.status = "completed";
+            const outputs = await executeStep(itemStep, currentInputs, currentValues, currentTypes, sourceItems, itemIndex, itemRecord);
             itemRecord.outputs = outputs;
+            if (carry) carryValue(outputs[carry.outputKey], carryType, "本项传递输出");
+            itemRecord.status = "completed";
             iterationProcessed[itemIndex] = true;
             iterationOutputs[itemIndex] = outputs;
             iterationSucceeded[itemIndex] = true;
@@ -334,7 +406,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
               itemRecord.error = message;
               iterationErrors.set(itemIndex, message);
               iterationFailed = true;
-              if (step.execution?.onError === "stop") stopScheduling = true;
+              if (carry || step.execution?.onError === "stop") stopScheduling = true;
             }
           }
           syncSteps(itemSteps);
@@ -383,6 +455,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         parent.status = "completed";
         syncSteps(itemSteps);
         await persistRuntime("running");
+        if (reviewStep(step, parent)) break;
         continue;
       }
 
@@ -390,12 +463,13 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         itemSteps.push({ stepId: step.id, name: step.name, status: "running", inputs: stepInputs, inputLabels, outputLabels, outputTypes });
         syncSteps(itemSteps);
         await persistRuntime("running");
-        const outputs = await executeStep(step, itemInputValues, values, types);
+        const outputs = await executeStep(step, itemInputValues, values, types, undefined, undefined, itemSteps[itemSteps.length - 1]);
         values.set(step.id, outputs);
         for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, output.type);
-        itemSteps[itemSteps.length - 1] = { stepId: step.id, name: step.name, status: "completed", inputs: stepInputs, inputLabels, outputs, outputLabels, outputTypes };
+        itemSteps[itemSteps.length - 1] = { ...itemSteps[itemSteps.length - 1], stepId: step.id, name: step.name, status: "completed", inputs: stepInputs, inputLabels, outputs, outputLabels, outputTypes };
         syncSteps(itemSteps);
         await persistRuntime("running");
+        if (reviewStep(step, itemSteps[itemSteps.length - 1])) break;
       } catch (error) {
         if (runController.signal.aborted) {
           itemCancelled = true;
@@ -409,7 +483,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           break;
         }
         itemFailure = error instanceof Error ? error.message : `${step.name} 执行失败`;
-        itemSteps[itemSteps.length - 1] = { stepId: step.id, name: step.name, status: "failed", message: itemFailure, inputs: stepInputs, inputLabels, outputLabels, outputTypes };
+        itemSteps[itemSteps.length - 1] = { ...itemSteps[itemSteps.length - 1], stepId: step.id, name: step.name, status: "failed", message: itemFailure, inputs: stepInputs, inputLabels, outputLabels, outputTypes };
         syncSteps(itemSteps);
         await persistRuntime("running");
         break;
@@ -429,11 +503,11 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
     });
     const archivedOutputs = await Promise.all(itemOutputs.map(async (output) => ({
       ...output,
-      value: await archiveOutputMedia(output.value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
+      value: await archiveOutputMedia(output.value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings, runController.signal),
     })));
     const archivedSteps = await archiveStepRecords(itemSteps);
     itemSteps.splice(0, itemSteps.length, ...archivedSteps);
-    const status = itemCancelled ? "cancelled" as const : itemFailure ? "failed" as const : "completed" as const;
+    const status = itemCancelled ? "cancelled" as const : itemFailure ? "failed" as const : pendingReview ? "waiting" as const : "completed" as const;
     return {
       index: itemIndex,
       value: null,
@@ -475,6 +549,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
       }
       for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, output.type);
       startIndex = index + 1;
+      if ((recorded as unknown as RunStepRecord).review?.status === "pending" && reviewStep(step, recorded as unknown as RunStepRecord)) break;
     }
     resumeState = { steps: savedSteps, values, types, startIndex };
     syncSteps(savedSteps);
@@ -494,25 +569,24 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
       activeStep.message = reason;
     }
     await persistRuntime("cancelled", finishedAt, reason);
-    return { runId, status: "cancelled" as const, startedAt, finishedAt, durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime(), steps: externalizeRuntimeValue(steps) as unknown as RunStepRecord[], outputs: [], error: reason, cancellationReason: reason, artifacts: artifactPublicPaths(artifacts), ...(requestedResumeFromRunId ? { resumedFromRunId: requestedResumeFromRunId } : {}) };
+    return { runId, status: "cancelled" as const, startedAt, finishedAt, durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime(), steps: externalizeRuntimeValue(steps.map(withCapabilityIdentity)) as unknown as RunStepRecord[], outputs: [], error: reason, cancellationReason: reason, artifacts: artifactPublicPaths(artifacts), ...(requestedResumeFromRunId ? { resumedFromRunId: requestedResumeFromRunId } : {}) };
   }
 
   const finalOutputs = singleItemResult.outputs;
   const archivedOutputs = await Promise.all(finalOutputs.map(async (output) => ({
     ...output,
-    value: await archiveOutputMedia(output.value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings),
+    value: await archiveOutputMedia(output.value, runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings, runController.signal),
   })));
 
   const finishedAt = new Date().toISOString();
-  const status = failure ? "failed" as const : "completed" as const;
+  const status = failure ? "failed" as const : pendingReview ? "waiting" as const : "completed" as const;
   const result = {
     runId,
     status,
-    steps: externalizeRuntimeValue(steps),
+    steps: externalizeRuntimeValue(steps.map(withCapabilityIdentity)),
     outputs: archivedOutputs,
     startedAt,
-    finishedAt,
-    durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime(),
+    ...(pendingReview ? { pendingReview } : { finishedAt, durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime() }),
     ...(failure ? { error: failure } : {}),
     ...(typeof requestedResumeFromRunId === "string" ? { resumedFromRunId: requestedResumeFromRunId } : {}),
     ...(archiveWarnings.length ? { archiveWarnings } : {}),

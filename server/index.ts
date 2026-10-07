@@ -1,15 +1,39 @@
-import { runCommercePackStep } from "./commerce/adapter.js";
+import { TaskConcurrencyService } from "./services/taskConcurrencyService.js";
+import { createTaskConcurrencyRouter } from "./api/taskConcurrencyRoutes.js";
+import { workflowMediaValueKind } from "./domain/workflowValues.js";
+import { createRunMediaExportRouter } from "./api/runMediaExportRoutes.js";
+import { RunMediaExportService } from "./services/runMediaExportService.js";
+import { createWorkbenchUpdateRouter } from "./api/workbenchUpdateRoutes.js";
+import { readHermesImageSource } from "./execution/hermesImageSource.js";
+import { ProductionLifecycle } from "./runtime/productionLifecycle.js";
+import { localBackendUrl, publishMcpGeneration } from "./runtime/mcpReload.js";
+import { AI_CONTRACT_VERSION } from "./ai/operations.js";
+import { AccessService, runSubmitter } from "./services/accessService.js";
+import { UserPortalService } from "./services/userPortalService.js";
+import { createAuthRouter, createAccessRouter } from "./api/accessRoutes.js";
+import { appendHermesFeedback } from "./execution/hermesFeedback.js";
+import type { HermesFeedbackContext } from "./domain/feedbackContracts.js";
+import { createAiRouter } from "./api/aiRoutes.js";
+import { AiSceneService } from "./services/aiSceneService.js";
+import { resolveComfyInputBindingTarget } from "./comfyuiBindingTarget.js";
+import { resolveComfyUIReroutes } from "./comfyuiReroutes.js";
+import { ClipSelectionService } from "./services/clipSelectionService.js";
+import { createClipSelectionRouter } from "./api/clipSelectionRoutes.js";
+import { AssetService } from "./services/assetService.js";
+import { createAssetRouter } from "./api/assetRoutes.js";
 import { createCommercePackRouter } from "./api/commercePackRoutes.js";
 import { createMediaRouter } from "./api/mediaRoutes.js";
-import { runH3SceneAdapter } from "./h3SceneAdapter.js";
 import { SqliteStore } from "./storage/sqliteStore.js";
 import { WorkspaceService } from "./services/workspaceService.js";
 import { RunService } from "./services/runService.js";
-import { ExecutorRegistry } from "./execution/executorRegistry.js";
+import { loadCapabilityPackages } from "./capabilities/loadPackages.js";
+import { createCapabilityRouter } from "./api/capabilityRoutes.js";
+import type { ComfyPromptTransform } from "./capabilities/package.js";
+import type { StepExecutionContext } from "./execution/workflowExecutor.js";
 import { createRunRouter } from "./api/runRoutes.js";
-import { HttpError } from "./errors.js";
-import { fetchHermesWithRetry } from "./hermesTransport.js";
+import { describeHermesError, fetchHermesWithRetry, HermesHttpError, HermesRunEndpointUnavailableError, requestHermesRun } from "./hermesTransport.js";
 import { log } from "./observability/logger.js";
+import { parseHermesJson, parseHermesOutput } from "./execution/hermesOutput.js";
 import { databaseFile, maxActiveRuns, shutdownTimeoutMs } from "./config.js";
 import os from "node:os";
 import { validateProjectDirectory, mediaContentTypeExtension } from "./artifacts/runArtifacts.js";
@@ -18,9 +42,7 @@ import type { SavedSettings, HermesProfile, HermesApiConnection, ComfyUIWorkflow
 import { normalizeMediaList, externalizeRuntimeValue, asRecord, uniqueStrings, workflowReferenceRoot, resolveWorkflowReference, parseWorkflowLiteral, resolveWorkflowValue, resolvePromptTemplate, toJsonValue } from "./domain/workflowValues.js";
 import { cancellationError, throwIfAborted, delayWithAbort } from "./execution/cancellation.js";
 import { ResourceQueues } from "./execution/resourceQueue.js";
-import { runLongTextVideoStep } from "./execution/longTextVideo.js";
-import { runVideoConcatStep } from "./execution/videoConcat.js";
-import { bindComfyAudioPaths, comfyAutogrowInputNames, groupComfyMediaBindings } from "./execution/comfyMediaBindings.js";
+import { bindComfyAudioPaths, comfyAutogrowInputNames, comfyBindingMediaKind, groupComfyMediaBindings } from "./execution/comfyMediaBindings.js";
 import { defaultWorkflowTimeoutMinutes, minimumWorkflowTimeoutMinutes, maximumWorkflowTimeoutMinutes, parseWorkflowTimeoutMinutes, normalizeWorkflowTimeoutMinutes, workflowTimeoutMs, workflowTimeoutLabel, parseEnvFile, nonEmpty, isProduction, port, host, localDirectory, settingsFile, workspaceFile, distDirectory, hermesHome, ffmpegBinary, ffprobeBinary, execFileAsync, defaults } from "./config.js";
 import express from "express";
 import { randomUUID } from "node:crypto";
@@ -33,28 +55,41 @@ import {
   selectRuntimeMedia,
 } from "./runtimeValue.js";
 
+import { createPublicUserApp, publicEntryGuard, validatePublicListener } from "./security/publicEntry.js";
+import { createErrorHandler, redactErrorText } from "./security/errorHandler.js";
+import { LoginLimiter } from "./security/loginLimiter.js";
+import { publicUserPort, publicUserHost, loginLimitOptions } from "./config.js";
+
+validatePublicListener(host, port, publicUserPort);
 const app = express();
+app.disable("x-powered-by");
 const comfyuiQueues = new ResourceQueues();
 const metadataStore = new SqliteStore(databaseFile);
 const workspaceService = new WorkspaceService(metadataStore, workspaceFile);
-const executors = new ExecutorRegistry()
-  .register({ kind: "control", async execute({ step, inputValues, stepValues, types }) {
+const executors = await loadCapabilityPackages({
+  async condition({ step, inputValues, stepValues, types }) {
     const control = step.control;
     if (!control || control.type !== "condition" || !control.rules.length) throw new Error("条件节点至少需要一条规则");
     const results = control.rules.map((rule) => evaluateCondition(rule, inputValues, stepValues, types));
     return { result: control.match === "all" ? results.every(Boolean) : results.some(Boolean) };
-  } })
-  .register({ kind: "hermes", execute: ({ step, inputValues, stepValues, types, settings, signal }) => runHermesStep(step, inputValues, stepValues, types, settings, signal) })
-  .register({ kind: "comfyui", execute: (context) => {
-    const generate = ({ step, inputValues, stepValues, types, settings, inputFields, signal }: typeof context) => comfyuiQueues.run(settings.comfyuiBaseUrl, () => runComfyUIStep(step, inputValues, stepValues, settings.comfyuiBaseUrl, signal, inputFields, types, workflowTimeoutMs(settings.workflowTimeoutMinutes)), signal, step.execution?.mode === "for_each" ? step.execution.maxConcurrency ?? 1 : 1);
-    switch (context.step.comfyui?.adapter) {
-      case "commerce_pack": return runCommercePackStep(context, generate);
-      case "long_text_video": return runLongTextVideoStep(context, generate);
-      case "video_concat": return runVideoConcatStep(context);
-      default: return generate(context);
-    }
-  } });
-const runService = new RunService({ store: metadataStore, executors, loadSettings: readSettings, maxActiveRuns });
+  },
+  hermes: ({ step, inputValues, stepValues, types, settings, signal, feedback }) => runHermesStep(step, inputValues, stepValues, types, settings, signal, feedback),
+  comfyui: (context, transform) => comfyuiQueues.run(context.settings.comfyuiBaseUrl, () => runComfyUIStep(context.step, context.inputValues, context.stepValues, context.settings.comfyuiBaseUrl, context.signal, context.inputFields, context.types, workflowTimeoutMs(context.settings.workflowTimeoutMinutes), context, transform), context.signal, context.step.execution?.mode === "for_each" ? context.step.execution.maxConcurrency ?? 1 : 1),
+});
+const assetService: AssetService = new AssetService(metadataStore, readSettings, (project, id) => runService.getRun(project, id), () => {
+  const address = server.address();
+  return localBackendUrl(host, address && typeof address !== "string" ? address.port : port);
+});
+const taskConcurrency = new TaskConcurrencyService(metadataStore, maxActiveRuns, () => runService.metrics(), () => runService.refreshConcurrency());
+const runService: RunService = new RunService({ store: metadataStore, executors, loadSettings: readSettings, getMaxActiveRuns: () => taskConcurrency.getLimit(), resolveAssets: (project, workflow, values) => assetService.resolveInputs(project, workflow, values) });
+let lifecycle: ProductionLifecycle | undefined;
+const upgradeBootId = process.env.ZANE_UPGRADE_OPERATION_ID;
+if (upgradeBootId && !/^[0-9a-f-]{36}$/i.test(upgradeBootId)) throw new Error("Invalid upgrade operation ID");
+app.use((request, response, next) => {
+  if (lifecycle) { lifecycle.middleware(request, response, next); return; }
+  if (upgradeBootId && !["/api/health", "/api/ready"].includes(request.path)) { response.status(503).json({code:"WORKBENCH_UPGRADING",error:"新工作台正在健康检查，暂不接受业务请求。"}); return; }
+  next();
+});
 app.use((request, response, next) => {
   const requestId = randomUUID();
   const started = performance.now();
@@ -62,8 +97,23 @@ app.use((request, response, next) => {
   response.once("finish", () => log("info", "http.request", { requestId, method: request.method, path: request.path, status: response.statusCode, durationMs: Math.round(performance.now() - started) }));
   next();
 });
+app.use(publicEntryGuard);
 app.use(express.json({ limit: "16mb" }));
-app.use(createRunRouter(runService, readSettings));
+const aiScenes = new AiSceneService(workspaceService, executors, assetService, readSettings);
+const accessService = new AccessService(metadataStore, workspaceService, process.env.ZANE_ADMIN_TOKEN ?? "", new LoginLimiter(loginLimitOptions));
+const portalService = new UserPortalService(accessService, aiScenes, runService);
+app.use((_req, res, next) => { res.locals.httpSecurityPolicy = accessService.securityPolicy(Boolean(res.locals.publicUserOnly)); next(); });
+app.use(createAuthRouter(accessService));
+app.use(accessService.middleware(async () => (await readSettings()).projectDirectory));
+app.use(createTaskConcurrencyRouter(taskConcurrency));
+app.use(createWorkbenchUpdateRouter(localDirectory, process.env.ZANE_RELEASE_ID ?? "unversioned", isProduction));
+app.use(createAccessRouter(accessService, portalService));
+app.use(createAiRouter(aiScenes, runService, readSettings, userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; }));
+app.use(createRunRouter(runService, readSettings, userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; }));
+app.use(createRunMediaExportRouter(new RunMediaExportService(readSettings, (project, id) => runService.getRun(project, id))));
+app.use(createCapabilityRouter(executors));
+app.use(createAssetRouter(assetService));
+app.use(createClipSelectionRouter(new ClipSelectionService(assetService, runService)));
 app.use(createMediaRouter(readSettings));
 app.use(createCommercePackRouter(readSettings, (project, id) => runService.getRun(project, id)));
 
@@ -223,10 +273,13 @@ function hermesApiEndpoint(baseUrl: string, profile: string, resource: string) {
 
 async function probeHermesApiProfile(profile: string, connection: HermesApiConnection) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const timeout = setTimeout(() => controller.abort(), 15_000);
   try {
     const response = await fetchHermesWithRetry(hermesApiEndpoint(connection.baseUrl, profile, "models"), {
-      headers: { Authorization: `Bearer ${connection.apiKey}` },
+      headers: {
+        Authorization: `Bearer ${connection.apiKey}`,
+        "Content-Type": "application/json",
+      },
       signal: controller.signal,
     });
     // Always drain the small /models response. Leaving undici response bodies
@@ -236,7 +289,7 @@ async function probeHermesApiProfile(profile: string, connection: HermesApiConne
     if (response.status === 401 || response.status === 403) throw new Error(`Hermes Profile「${profile}」API 密钥认证失败`);
     if (!response.ok) throw new Error(`Hermes API Server 返回 ${response.status}`);
   } catch (error) {
-    if (error instanceof TypeError) throw new Error(`无法访问 Hermes API Server（${connection.baseUrl}），请确认 Gateway 正在运行且 API Server 已启用`);
+    if (error instanceof TypeError) throw hermesTransportError(profile, connection, "models", error);
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -603,7 +656,7 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal
     if (!node || typeof node.class_type !== "string" || !asRecord(node.inputs)) return [];
     return [[id, structuredClone(node)] as const];
   });
-  if (!Array.isArray(root.nodes)) {
+  if (!Array.isArray(root.nodes) || (!root.nodes.length && apiGraph.length)) {
     return apiGraph.length
       ? { format: "api", converted: false, graph: Object.fromEntries(apiGraph), outputProperties: {} }
       : { format: "unknown", converted: false, graph: {}, outputProperties: {} };
@@ -611,6 +664,9 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal
 
   const expansion = expandComfyUIWorkflow(root.nodes, root.links, comfySubgraphDefinitions(root));
   const uiNodes = expansion.nodes;
+  if (!uiNodes.length && apiGraph.length) {
+    return { format: "api", converted: false, graph: Object.fromEntries(apiGraph), outputProperties: {} };
+  }
   const objectInfoCache = new Map<string, Promise<unknown>>();
   async function loadObjectInfo(nodeType: string) {
     if (!baseUrl) return undefined;
@@ -697,12 +753,13 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal
       ...(title ? { _meta: { title } } : {}),
     };
   }
-  const converted = Object.keys(graph).length > 0;
+  const routedGraph = resolveComfyUIReroutes(graph);
+  const converted = Object.keys(routedGraph).length > 0;
   return {
     format: converted ? "ui" : "unknown",
     converted,
-    graph,
-    outputProperties,
+    graph: routedGraph,
+    outputProperties: Object.fromEntries(Object.entries(outputProperties).filter(([id]) => Object.hasOwn(routedGraph, id))),
   };
 }
 
@@ -740,6 +797,31 @@ async function fetchComfyUIJson(url: string, timeoutMs = 10000, parentSignal?: A
   }
 }
 
+function comfyApiErrorMessage(body: unknown, fallback: string) {
+  const root = asRecord(body);
+  const error = asRecord(root?.error);
+  const parts = [
+    typeof root?.error === "string" ? root.error : undefined,
+    typeof error?.message === "string" ? error.message : undefined,
+    typeof error?.details === "string" ? error.details : undefined,
+    typeof error?.type === "string" ? error.type : undefined,
+  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+  const nodeErrors = asRecord(root?.node_errors);
+  if (nodeErrors && Object.keys(nodeErrors).length) {
+    const detail = Object.entries(nodeErrors).map(([nodeId, value]) => {
+      const node = asRecord(value);
+      const messages = [
+        typeof node?.errors === "string" ? node.errors : undefined,
+        typeof node?.message === "string" ? node.message : undefined,
+        typeof node?.details === "string" ? node.details : undefined,
+      ].filter((item): item is string => Boolean(item));
+      return `${nodeId}: ${messages.join("；") || JSON.stringify(value)}`;
+    }).join("；");
+    if (detail) parts.push(`节点错误：${detail}`);
+  }
+  return parts.length ? parts.join("；") : fallback;
+}
+
 async function fetchJson(url: string, init: RequestInit = {}, parentSignal?: AbortSignal, timeoutMs = workflowTimeoutMs(defaultWorkflowTimeoutMinutes), timeoutLabelMinutes = timeoutMs / 60 / 1000): Promise<unknown> {
   const controller = new AbortController();
   const initSignal = init.signal;
@@ -761,8 +843,7 @@ async function fetchJson(url: string, init: RequestInit = {}, parentSignal?: Abo
     const response = await fetch(url, { ...init, signal: controller.signal });
     const body = await response.json().catch(() => null) as unknown;
     if (!response.ok) {
-      const message = asRecord(body)?.error;
-      throw new Error(typeof message === "string" ? message : `服务返回 ${response.status}`);
+      throw new Error(comfyApiErrorMessage(body, `服务返回 ${response.status}`));
     }
     return body;
   } catch (error) {
@@ -775,12 +856,6 @@ async function fetchJson(url: string, init: RequestInit = {}, parentSignal?: Abo
     parentSignal?.removeEventListener("abort", abortFromParent);
     initSignal?.removeEventListener("abort", abortFromParent);
   }
-}
-
-function parseHermesJson(text: string): unknown {
-  const trimmed = text.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
-  return JSON.parse((fenced?.[1] ?? trimmed).trim()) as unknown;
 }
 
 function coerceHermesOutput(value: unknown, type: string): JsonValue {
@@ -1305,7 +1380,7 @@ async function bindComfyImageList(graph: Record<string, Record<string, unknown>>
   throw new Error(`${stepName} 的 ${nodeType}.${property} 不支持图片列表；请绑定 IMAGE 输入或 ComfyUI 动态图片组`);
 }
 
-async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, baseUrl: string, signal?: AbortSignal, inputFields: RunInputField[] = [], variableTypes: Map<string, string> = new Map(), timeoutMs = workflowTimeoutMs(defaultWorkflowTimeoutMinutes)) {
+async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, baseUrl: string, signal?: AbortSignal, inputFields: RunInputField[] = [], variableTypes: Map<string, string> = new Map(), timeoutMs = workflowTimeoutMs(defaultWorkflowTimeoutMinutes), context?: StepExecutionContext, transform?: ComfyPromptTransform) {
   throwIfAborted(signal);
   const workflowFile = step.comfyui?.workflowFile;
   if (!workflowFile) throw new Error(`${step.name} 尚未选择 ComfyUI 工作流`);
@@ -1317,7 +1392,13 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
     throwIfAborted(signal);
     payload = await fetchJson(`${baseUrl}/userdata/${encodedPath}`, {}, signal, timeoutMs);
   }
-  const graph = await readWorkflowApiGraph(payload, baseUrl, signal);
+  let graph: Record<string, Record<string, unknown>>;
+  try {
+    graph = await readWorkflowApiGraph(payload, baseUrl, signal);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${step.name} 的 ComfyUI 工作流「${workflowFile}」格式无效：${detail}`);
+  }
   const bindings = step.comfyui?.bindings ?? [];
   const nodeInfoCache = new Map<string, Promise<unknown>>();
   const resolvedBindings = bindings.filter((item) => item.direction === "input").map((binding) => {
@@ -1327,16 +1408,38 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
     const rawValue = binding.valueSource === "literal"
       ? parseWorkflowLiteral(binding.literalValue, binding.type, binding.label ?? binding.key)
       : resolveWorkflowReference(binding.sourceRef ?? "", inputs, stepValues);
-    const mediaKind = mediaKindFromWorkflowType(sourceType);
+    const mediaKind = comfyBindingMediaKind(rawValue, sourceType, binding.type);
     const normalizedValue = mediaKind && !isRuntimeMediaValue(rawValue) ? createRuntimeMediaValue(mediaKind, rawValue) : rawValue;
     const value = (binding.selection ? selectRuntimeMedia(normalizedValue, binding.selection) : normalizedValue) as JsonValue | undefined;
     return { binding, sourceField, value, mediaKind };
   });
   for (const group of groupComfyMediaBindings(resolvedBindings)) {
     const { binding, sourceField, value, mediaKind: sourceMediaKind } = group[0]!;
-    const node = graph[binding.nodeId];
-    const nodeInputs = asRecord(node?.inputs);
-    if (!nodeInputs) throw new Error(`${step.name} 找不到输入绑定 ${binding.nodeId}.${binding.property}`);
+    const directNode = graph[binding.nodeId];
+    const directInputs = asRecord(directNode?.inputs);
+    let directPropertyDeclared = false;
+    // UI/API graphs omit unconnected IMAGE/autogrow inputs. Check the real
+    // schema before migrating; earlier bindings may have inserted LoadImage.image.
+    if (directInputs && !Object.prototype.hasOwnProperty.call(directInputs, binding.property) && typeof directNode.class_type === "string") {
+      const directType = directNode.class_type;
+      let request = nodeInfoCache.get(directType);
+      if (!request) {
+        request = fetchComfyUIJson(`${baseUrl}/object_info/${encodeURIComponent(directType)}`, 4500, signal);
+        nodeInfoCache.set(directType, request);
+      }
+      directPropertyDeclared = comfyNodeInputSchema(await request, directType, binding.property) !== undefined;
+    }
+    const resolvedTarget = resolveComfyInputBindingTarget(graph, binding, directPropertyDeclared);
+    const node = resolvedTarget.node;
+    const nodeInputs = resolvedTarget.nodeInputs;
+    if (resolvedTarget.remapped) {
+      log("warn", "comfy.binding_remapped", { step: step.name, workflowFile, bindingKey: binding.key, from: binding.nodeId, to: resolvedTarget.nodeId, property: binding.property });
+    }
+    if (!node) {
+      const availableNodes = Object.entries(graph).map(([id, candidate]) => `${id}${typeof candidate.class_type === "string" ? `（${candidate.class_type}）` : ""}`).join("、");
+      throw new Error(`${step.name} 的 ComfyUI 工作流「${workflowFile}」中不存在节点 ${binding.nodeId}（绑定 ${binding.key}）。可用节点：${availableNodes || "无"}；请重新绑定节点。`);
+    }
+    if (!nodeInputs) throw new Error(`${step.name} 的 ComfyUI 工作流「${workflowFile}」节点 ${binding.nodeId} 没有可执行输入；请重新导出或选择 API/UI 工作流文件。`);
     if (sourceMediaKind === "image") {
       const nodeType = typeof node.class_type === "string" ? node.class_type : "Unknown";
       let infoRequest = nodeInfoCache.get(nodeType);
@@ -1401,13 +1504,19 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
       bindComfyAudioPaths(graph, nodeInputs, nodeType, binding.property, inputSchema, paths, step.name);
       continue;
     }
-    if (!(binding.property in nodeInputs)) throw new Error(`${step.name} 找不到输入绑定 ${binding.nodeId}.${binding.property}`);
+    if (!(binding.property in nodeInputs)) {
+      const nodeType = typeof node.class_type === "string" ? `（${node.class_type}）` : "";
+      const availableProperties = Object.keys(nodeInputs);
+      throw new Error(`${step.name} 的 ComfyUI 工作流「${workflowFile}」节点 ${binding.nodeId}${nodeType} 没有输入属性 ${binding.property}（可用属性：${availableProperties.join("、") || "无"}）。工作流可能已更换，请重新绑定节点和属性。`);
+    }
     const converted = coerceComfyInputValue(value, binding, step.name, sourceField?.required ?? binding.required);
     if (converted !== undefined) nodeInputs[binding.property] = converted;
   }
-  if (step.comfyui?.adapter === "h3_long_video") {
-    return runH3SceneAdapter(step, graph, payload, inputs, stepValues, baseUrl, timeoutMs, signal,
-      (route, init, requestSignal) => fetchJson(baseUrl + route, init, requestSignal, Math.min(timeoutMs, 120000), timeoutMs / 60 / 1000));
+  if (transform) {
+    if (!context) throw new Error("能力包缺少执行上下文");
+    const transformed = await transform({ graph, workflow: payload, context, baseUrl, timeoutMs, request: (route, init, requestSignal) => fetchJson(baseUrl + route, init, requestSignal, Math.min(timeoutMs, 120000), timeoutMs / 60 / 1000) });
+    if (transformed.outputs) return transformed.outputs;
+    if (transformed.graph) graph = transformed.graph;
   }
   let promptId: string | undefined;
   let promptSubmitted = false;
@@ -1429,8 +1538,7 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
     }, signal, timeoutMs));
     promptId = typeof queued?.prompt_id === "string" ? queued.prompt_id : undefined;
     if (!promptId) {
-      const details = Array.isArray(queued?.node_errors) ? JSON.stringify(queued.node_errors) : "ComfyUI 未返回任务 ID";
-      throw new Error(details);
+      throw new Error(comfyApiErrorMessage(queued, "ComfyUI 未返回任务 ID"));
     }
     throwIfAborted(signal);
     const deadline = Date.now() + timeoutMs;
@@ -1601,33 +1709,13 @@ async function readComfyMediaBytes(media: Record<string, unknown>, settings: Sav
 }
 
 async function hermesImageUrl(value: unknown, settings: SavedSettings, signal?: AbortSignal, maxBytes = hermesImageTargetBytes): Promise<string> {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (/^data:image\//i.test(trimmed)) {
-      const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i.exec(trimmed);
-      if (!match) return trimmed;
-      const bytes = Buffer.from(match[2].replace(/\s/g, ""), "base64");
-      if (bytes.length > hermesImageSourceLimit) throw new Error("Hermes 图片原文件超过 100 MB 限制");
-      return hermesImageDataUrl(bytes, `input${mediaContentTypeExtension(match[1])}`, match[1], signal, maxBytes);
-    }
-    if (/^https?:\/\//i.test(trimmed)) return trimmed;
-    if (!trimmed) throw new Error("图片输入为空");
-    const filename = path.resolve(trimmed);
-    const info = await stat(filename).catch(() => undefined);
-    if (!info?.isFile()) throw new Error(`无法读取图片文件：${trimmed}`);
-    if (info.size > hermesImageSourceLimit) throw new Error("Hermes 图片原文件超过 100 MB 限制");
-    const bytes = await readFile(filename, { signal });
-    return hermesImageDataUrl(bytes, filename, mimeTypeForMediaPath(filename, "image/jpeg"), signal, maxBytes);
-  }
-
-  const media = asRecord(value);
-  if (!media) throw new Error("Hermes 图片输入格式无效");
-  if (typeof media.filename === "string") {
-    const { bytes, contentType } = await readComfyMediaBytes(media, settings, signal, hermesImageSourceLimit, "Hermes 图片原文件超过 100 MB 限制");
-    return hermesImageDataUrl(bytes, media.filename, mimeTypeForMediaPath(media.filename, contentType || "image/jpeg"), signal, maxBytes);
-  }
-  if (typeof media.url === "string" && /^https?:\/\//i.test(media.url)) return media.url;
-  throw new Error("Hermes 图片输入缺少可读取的文件或 URL");
+  const source = await readHermesImageSource(value, {
+    sourceLimitBytes: hermesImageSourceLimit,
+    signal,
+    readComfy: media => readComfyMediaBytes(media, settings, signal, hermesImageSourceLimit, "Hermes 图片原文件超过 100 MB 限制"),
+  });
+  if (source.kind === "url") return source.url;
+  return hermesImageDataUrl(source.bytes, source.filename, mimeTypeForMediaPath(source.filename, source.contentType || "image/jpeg"), signal, maxBytes);
 }
 
 async function materializeHermesVideo(value: unknown, settings: SavedSettings, directory: string, signal?: AbortSignal) {
@@ -1720,9 +1808,10 @@ async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonVa
   const parts: HermesMessagePart[] = [{ type: "text", text: prompt }];
   const mediaInputs = (step.inputs ?? []).flatMap((input) => {
     const type = input.valueSource === "literal" ? input.literalType ?? "text" : types.get(workflowReferenceRoot(input.sourceRef ?? ""));
-    const mediaKind = mediaKindFromWorkflowType(type);
+    const rawValue = resolveWorkflowValue(input, inputs, stepValues);
+    const mediaKind = workflowMediaValueKind(rawValue, type);
     if (mediaKind !== "image" && mediaKind !== "video") return [];
-    const value = normalizeMediaList(externalizeRuntimeValue(resolveWorkflowValue(input, inputs, stepValues)));
+    const value = normalizeMediaList(externalizeRuntimeValue(rawValue));
     return value.length ? [{ input, mediaKind, value }] : [];
   });
   const expectedImageCount = Math.max(1, mediaInputs.reduce((total, media) => total + (
@@ -1763,7 +1852,24 @@ async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonVa
   return parts.some((part) => part.type === "image_url") ? parts : prompt;
 }
 
-async function requestHermesCompletion(profile: string, connection: HermesApiConnection, content: string | HermesMessagePart[], timeoutMs = workflowTimeoutMs(defaultWorkflowTimeoutMinutes), signal?: AbortSignal) {
+function hermesTransportError(profile: string, connection: HermesApiConnection, endpoint: string, error: unknown) {
+  const details = describeHermesError(error);
+  log("error", "hermes.request_failed", {
+    profile,
+    baseUrl: connection.baseUrl,
+    endpoint,
+    errorName: details.name,
+    errorMessage: details.message,
+    ...(details.code ? { code: details.code } : {}),
+    ...(details.causeMessage ? { causeMessage: details.causeMessage } : {}),
+  });
+  const detail = [details.code, details.causeMessage, details.message]
+    .filter((item, index, items): item is string => Boolean(item) && items.indexOf(item) === index)
+    .join(" / ");
+  return new Error(`Hermes 网络连接失败（${connection.baseUrl}）：${detail || "未知网络错误"}`);
+}
+
+async function requestHermesChatCompletion(profile: string, connection: HermesApiConnection, content: string | HermesMessagePart[], timeoutMs: number, signal?: AbortSignal) {
   throwIfAborted(signal);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -1802,7 +1908,7 @@ async function requestHermesCompletion(profile: string, connection: HermesApiCon
   } catch (error) {
     if (signal?.aborted) throw cancellationError();
     if (error instanceof Error && error.name === "AbortError") throw new Error(`Hermes API 请求超时（单步上限 ${workflowTimeoutLabel(timeoutMs / 60 / 1000)}）`);
-    if (error instanceof TypeError) throw new Error(`无法连接 Hermes API Server（${connection.baseUrl}），请确认 Gateway 正在运行`);
+    if (error instanceof TypeError) throw hermesTransportError(profile, connection, "chat/completions", error);
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -1810,7 +1916,43 @@ async function requestHermesCompletion(profile: string, connection: HermesApiCon
   }
 }
 
-async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, settings: SavedSettings, signal?: AbortSignal) {
+async function requestHermesCompletion(profile: string, connection: HermesApiConnection, content: string | HermesMessagePart[], timeoutMs = workflowTimeoutMs(defaultWorkflowTimeoutMinutes), signal?: AbortSignal) {
+  throwIfAborted(signal);
+  try {
+    return await requestHermesRun({
+      startUrl: hermesApiEndpoint(connection.baseUrl, profile, "runs"),
+      statusUrl: (runId) => hermesApiEndpoint(connection.baseUrl, profile, `runs/${encodeURIComponent(runId)}`),
+      stopUrl: (runId) => hermesApiEndpoint(connection.baseUrl, profile, `runs/${encodeURIComponent(runId)}/stop`),
+      headers: {
+        Authorization: `Bearer ${connection.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: {
+        model: "hermes-agent",
+        input: [{ role: "user", content }],
+      },
+      idempotencyKey: randomUUID(),
+      timeoutMs,
+      signal,
+    });
+  } catch (error) {
+    // Keep compatibility with older Hermes installations. Current Hermes uses
+    // /v1/runs, but a 404/405 here should not make existing profiles unusable.
+    if (error instanceof HermesRunEndpointUnavailableError) {
+      log("warn", "hermes.runs_endpoint_unavailable", { profile, baseUrl: connection.baseUrl, status: error.status });
+      return requestHermesChatCompletion(profile, connection, content, timeoutMs, signal);
+    }
+    if (error instanceof HermesHttpError && (error.status === 401 || error.status === 403)) {
+      throw new Error(`Hermes Profile「${profile}」API 密钥认证失败`);
+    }
+    if (signal?.aborted) throw cancellationError();
+    if (error instanceof Error && error.name === "AbortError") throw new Error(`Hermes API 请求超时（单步上限 ${workflowTimeoutLabel(timeoutMs / 60 / 1000)}）`);
+    if (error instanceof TypeError) throw hermesTransportError(profile, connection, "runs", error);
+    throw error;
+  }
+}
+
+async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, settings: SavedSettings, signal?: AbortSignal, feedback?: HermesFeedbackContext) {
   throwIfAborted(signal);
   const profile = step.hermesProfile;
   if (!profile || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(profile)) throw new Error(`${step.name} 的 Hermes Profile 无效`);
@@ -1820,14 +1962,16 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
   if (outputKeys.some((key) => !/^[a-zA-Z0-9_]+$/.test(key))) throw new Error(`${step.name} 的输出 key 无效`);
   if (new Set(outputKeys).size !== outputKeys.length) throw new Error(`${step.name} 的输出 key 不能重复`);
   const connection = await readHermesApiConnection(profile);
-  const templatePrompt = resolvePromptTemplate(step.promptTemplate ?? "", inputs, stepValues, types);
+  const promptTypes = new Map(types);
+  for (const input of step.inputs ?? []) if (input.valueSource !== "literal" && input.referenceType && input.sourceRef) promptTypes.set(input.sourceRef, input.referenceType);
+  const templatePrompt = resolvePromptTemplate(step.promptTemplate ?? "", inputs, stepValues, promptTypes);
   const stepInputLines = (step.inputs ?? []).flatMap((input) => {
     const type = input.valueSource === "literal" ? input.literalType ?? "text" : types.get(workflowReferenceRoot(input.sourceRef ?? ""));
     if (mediaKindFromWorkflowType(type)) return [];
     const value = input.valueSource === "literal"
       ? parseWorkflowLiteral(input.literalValue, type, input.label ?? input.key)
       : resolveWorkflowValue(input, inputs, stepValues);
-    if (value === undefined) return [];
+    if (value === undefined || workflowMediaValueKind(value, input.referenceType ?? type)) return [];
     const formatted = typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
     return [`${input.label?.trim() || input.key}: ${formatted}`];
   });
@@ -1839,14 +1983,12 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
     const description = typeof item.description === "string" ? item.description.trim() : "";
     return `${index + 1}. ${item.key}（${item.label ?? item.key}，类型：${item.type}）${description ? `；说明：${description}` : ""}`;
   }).join("\n");
-  const executionPrompt = `${prompt}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
+  const executionPrompt = `${appendHermesFeedback(prompt, feedback)}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n字符串内的换行、回车、制表符、双引号和反斜杠必须按 JSON 语法转义，不能直接写入原始控制字符。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
   const content = await hermesMessageContent(step, inputs, stepValues, types, executionPrompt, settings, signal);
   const output = (await requestHermesCompletion(profile, connection, content, workflowTimeoutMs(settings.workflowTimeoutMinutes), signal)).trim();
-  const result = asRecord(parseHermesJson(output));
-  if (!result) throw new Error("Hermes 输出必须是 JSON 对象");
-  const declaredKeys = new Set(outputKeys);
-  const extraKeys = Object.keys(result).filter((key) => !declaredKeys.has(key));
-  if (extraKeys.length) throw new Error(`Hermes 输出包含未声明字段：${extraKeys.join("、")}`);
+  const parsed = parseHermesOutput(output, outputKeys);
+  if (parsed.repair) log("warn", "hermes.output_json_repaired", { stepId: step.id, profile, ...parsed.repair });
+  const result = parsed.value;
   return Object.fromEntries(outputs.map((item) => {
     const value = result[item.key];
     if (value === undefined) throw new Error(`Hermes 输出缺少字段：${item.key}`);
@@ -1860,7 +2002,7 @@ app.get("/api/ready", (_request, response) => {
 });
 
 app.get("/api/health", (_request, response) => {
-  response.json({ status: "ok", storage: "sqlite", worker: runService.metrics(), adapters: ["h3_long_video", "commerce_pack", "long_text_video", "video_concat"] });
+  response.json({ status: "ok", storage: "sqlite", worker: runService.metrics(), adapters: executors.definitions().flatMap((item) => item.legacy.adapter ? [item.legacy.adapter] : []), capabilities: executors.definitions().map((item) => ({ id: item.id, version: item.version })) });
 });
 
 app.get("/api/workspace", async (_request, response) => {
@@ -2160,26 +2302,39 @@ if (isProduction) {
       next();
       return;
     }
-    response.sendFile(path.join(distDirectory, "index.html"), (error) => {
+    response.sendFile(path.join(distDirectory, "index.html"), { dotfiles: "allow" }, (error) => {
       if (error) next(error);
     });
   });
 }
 
-app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-  if (response.headersSent) { _next(error); return; }
-  const status = error instanceof HttpError ? error.status : typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : 500;
-  log(status >= 500 ? "error" : "warn", "http.error", { requestId: response.get("X-Request-ID"), status, error: error instanceof Error ? error.message : String(error) });
-  response.status(status).json({ error: error instanceof Error ? error.message : "服务内部错误", code: error instanceof HttpError ? error.code : "INTERNAL_ERROR" });
-});
+app.use(createErrorHandler(isProduction, (error, status, requestId) => {
+  log(status >= 500 ? "error" : "warn", "http.error", { requestId, status, error: redactErrorText(error instanceof Error ? error.message : String(error)) });
+}));
 
 const server = app.listen(port, host, () => {
-  void runService.start().catch((error) => { log("error", "worker.start_failed", { error: String(error) }); void shutdown(1); });
+  void (async () => {
+    await runService.start();
+    if (isProduction) {
+      const address = server.address();
+      const listeningPort = address && typeof address === "object" ? address.port : port;
+      lifecycle = new ProductionLifecycle({ dataDirectory: localDirectory, port: listeningPort, store: metadataStore, metrics: () => runService.metrics(), shutdown: () => shutdown(), releaseId: process.env.ZANE_RELEASE_ID, upgradeOperationId: upgradeBootId });
+      await lifecycle.start();
+      await publishMcpGeneration(localBackendUrl(host, listeningPort), AI_CONTRACT_VERSION);
+      log("info", "server.mcp_reload_published", { contractVersion: AI_CONTRACT_VERSION });
+    }
+  })().catch((error) => { log("error", "worker.start_failed", { error: String(error) }); void shutdown(1); });
   const address = server.address();
   const listeningPort = address && typeof address === "object" ? address.port : port;
   console.log(`${isProduction ? "Production" : "Development"} server listening on http://${host}:${listeningPort}`);
   if (isProduction) console.log(`Serving web assets from ${distDirectory}`);
 });
+
+const publicUserServer = publicUserPort === undefined ? undefined : createPublicUserApp(app).listen(publicUserPort, publicUserHost, () => {
+  const address = publicUserServer?.address();
+  log("info", "server.public_user_listening", { host: publicUserHost, port: address && typeof address === "object" ? address.port : publicUserPort, entryMode: "user-only" });
+});
+publicUserServer?.once("error", (error) => { log("error", "server.public_user_failed", { error: redactErrorText(error.message) }); void shutdown(1); });
 
 let shuttingDown = false;
 async function shutdown(exitCode = 0) {
@@ -2187,9 +2342,13 @@ async function shutdown(exitCode = 0) {
   shuttingDown = true;
   log("info", "server.shutdown_started");
   server.close();
+  publicUserServer?.close();
+  await lifecycle?.close();
   await Promise.all([runService.shutdown(shutdownTimeoutMs), workspaceService.shutdown()]);
   server.closeAllConnections();
+  publicUserServer?.closeAllConnections();
   metadataStore.close();
+  await lifecycle?.markClosed();
   log("info", "server.shutdown_completed");
   process.exit(exitCode);
 }

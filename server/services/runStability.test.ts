@@ -1,0 +1,147 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile, writeFile, unlink, stat, readdir } from "node:fs/promises";
+import path from "node:path";
+import http from "node:http";
+import { harness, workflow, submission, until, deferred, id } from "../testing/testSupport.js";
+import { runArtifactPaths } from "../artifacts/runArtifacts.js";
+import { externalizeRuntimeValue } from "../domain/workflowValues.js";
+import type { ExecutionContext, PreparedRun } from "../execution/workflowExecutor.js";
+import { RunService } from "./runService.js";
+import { HttpError } from "../errors.js";
+
+test("取消收尾中的任务不能被迟到的完成结果覆盖", async t => {
+  const gate = deferred<void>(); let entered = false;
+  const h = await harness(t, { async execute(prepared) {
+    entered = true; await gate.promise;
+    return { runId: prepared.runId, status: "completed", startedAt: prepared.createdAt,
+      finishedAt: new Date().toISOString(), steps: [], outputs: [], artifacts: prepared.artifacts };
+  } });
+  await h.service.start(); await h.service.submit(submission(id("cancel-finalization")));
+  await until(() => entered);
+  await h.service.cancel(h.settings.projectDirectory, id("cancel-finalization"));
+  gate.resolve();
+  const result = await h.service.wait(h.settings.projectDirectory, id("cancel-finalization"));
+  assert.equal(result.status, "cancelled");
+  assert.match(result.cancellationReason!, /取消/);
+  assert.equal(h.store.events(h.settings.projectDirectory, result.runId).some(event => event.type === "run.completed"), false);
+  assert.equal(JSON.parse(await readFile(result.artifacts.runtime, "utf8")).status, "cancelled");
+});
+
+test("任务结束后迟到的进度回调不能把状态倒退为 running", async t => {
+  let checkpoint: ExecutionContext["checkpoint"] | undefined;
+  const h = await harness(t, { async execute(prepared, context) {
+    checkpoint = context.checkpoint;
+    return { runId: prepared.runId, status: "completed", startedAt: prepared.createdAt,
+      finishedAt: new Date().toISOString(), steps: [], outputs: [], artifacts: prepared.artifacts };
+  } });
+  await h.service.start(); await h.service.submit(submission(id("late-checkpoint")));
+  const result = await h.service.wait(h.settings.projectDirectory, id("late-checkpoint"));
+  await until(() => h.service.metrics().active === 0);
+  const sequence = h.store.latestSequence(h.settings.projectDirectory, result.runId);
+  await checkpoint!({ steps: [{ stepId: "first", name: "迟到进度", status: "running" }] });
+  assert.equal(h.store.getRun(h.settings.projectDirectory, result.runId)?.status, "completed");
+  assert.equal(h.store.latestSequence(h.settings.projectDirectory, result.runId), sequence);
+});
+
+test("排队任务执行归档输入，不依赖已删除或改写的原素材", async t => {
+  const h = await harness(t, { executor: { kind: "fake", async execute({ inputValues }) {
+    const [filename] = externalizeRuntimeValue(inputValues.picture) as string[];
+    return { value: await readFile(filename, "utf8") };
+  } } });
+  const original = path.join(h.root, "reference.png"); await writeFile(original, "original image");
+  const definition = workflow(); definition.inputs = [{ key: "picture", type: "image_list", required: true }];
+  const queued = await h.service.submit(submission(id("durable-input"), definition, { picture: original }));
+  assert.notEqual((queued.inputValues.picture as string[])[0], original);
+  await unlink(original); await h.service.start();
+  const result = await h.service.wait(h.settings.projectDirectory, queued.runId);
+  assert.equal(result.status, "completed"); assert.equal(result.outputs[0].value, "original image");
+});
+
+test("服务重开后排队任务仍使用已保存的输入素材", async t => {
+  const h = await harness(t, { executor: { kind: "fake", async execute({ inputValues }) {
+    const [filename] = externalizeRuntimeValue(inputValues.picture) as string[];
+    return { value: await readFile(filename, "utf8") };
+  } } });
+  const original = path.join(h.root, "reference.png"); await writeFile(original, "saved image");
+  const definition = workflow(); definition.inputs = [{ key: "picture", type: "image_list", required: true }];
+  const queued = await h.service.submit(submission(id("recovered-input"), definition, { picture: original }));
+  await h.service.shutdown(0); await unlink(original);
+  const recovered = new RunService({ store: h.store, executors: h.executors, loadSettings: async () => h.settings });
+  h.service.shutdown = timeout => recovered.shutdown(timeout); await recovered.start();
+  const result = await recovered.wait(h.settings.projectDirectory, queued.runId);
+  assert.equal(result.status, "completed"); assert.equal(result.outputs[0].value, "saved image");
+});
+
+test("本地输入媒体缺失在排队前拒绝，不遗留伪 queued 目录", async t => {
+  const h = await harness(t); const definition = workflow();
+  definition.inputs = [{ key: "picture", type: "image_list", required: true }];
+  const runId = id("missing-local-input");
+  await assert.rejects(h.service.submit(submission(runId, definition, { picture: path.join(h.root, "missing.png") })),
+    error => error instanceof HttpError && error.status === 400 && error.code === "INPUT_MEDIA_UNAVAILABLE");
+  assert.equal(h.store.getRun(h.settings.projectDirectory, runId), undefined);
+  assert.equal(await stat(runArtifactPaths(h.settings.projectDirectory, runId).directory).catch(() => undefined), undefined);
+});
+
+test("数据库提交失败会撤销本次准备目录，同一运行 ID 可以安全重试", async t => {
+  const h = await harness(t); const runId = id("retry-uncommitted-preparation");
+  const create = h.store.createRun.bind(h.store); let fail = true;
+  h.store.createRun = (...args) => { if (fail) throw new Error("database temporarily unavailable"); return create(...args); };
+  await assert.rejects(h.service.submit(submission(runId)), /database temporarily unavailable/);
+  assert.equal(h.store.getRun(h.settings.projectDirectory, runId), undefined);
+  assert.equal(await stat(runArtifactPaths(h.settings.projectDirectory, runId).directory).catch(() => undefined), undefined);
+  assert.equal((await h.service.listRuns(h.settings.projectDirectory)).runs.length, 0);
+  fail = false; await h.service.start(); await h.service.submit(submission(runId));
+  assert.equal((await h.service.wait(h.settings.projectDirectory, runId)).status, "completed");
+});
+
+test("真实 HTTP 归档流中取消任务会断开上游，不等待下载超时或重复生成", async t => {
+  let reading = false, disconnected = false, generated = 0;
+  const upstream = http.createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "video/mp4" }); response.write("partial video"); reading = true;
+    const interval = setInterval(() => response.write("more video"), 20);
+    response.once("close", () => { disconnected = true; clearInterval(interval); });
+  }).listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => upstream.once("listening", resolve));
+  t.after(() => { upstream.close(); upstream.closeAllConnections(); });
+  const h = await harness(t, { executor: { kind: "fake", async execute() {
+    ++generated; return { value: [{ filename: "slow.mp4", subfolder: "", type: "output", url: "/api/comfyui/view?filename=slow.mp4" }] };
+  } } });
+  h.settings.comfyuiBaseUrl = "http://127.0.0.1:" + (upstream.address() as { port: number }).port;
+  const definition = workflow(); definition.steps[0].outputs![0].type = "video_list"; definition.outputs[0].type = "video_list";
+  await h.service.start(); const run = await h.service.submit(submission(id("http-archive-cancellation"), definition));
+  await until(() => reading); const cancelledAt = Date.now(); await h.service.cancel(h.settings.projectDirectory, run.runId);
+  const result = await h.service.wait(h.settings.projectDirectory, run.runId);
+  assert.equal(result.status, "cancelled"); assert.ok(Date.now() - cancelledAt < 5000);
+  await until(() => disconnected); assert.equal(generated, 1);
+  assert.deepEqual(await readdir(path.join(run.artifacts.directory, "outputs", "media")).catch(() => []), []);
+});
+
+test("旧版排队快照仍引用原文件时，重启优先恢复已归档的本地输入", async t => {
+  const h = await harness(t, { executor: { kind: "fake", async execute({ inputValues }) {
+    const [filename] = externalizeRuntimeValue(inputValues.picture) as string[];
+    return { value: await readFile(filename, "utf8") };
+  } } });
+  const original = path.join(h.root, "legacy.png"); await writeFile(original, "legacy archived image");
+  const definition = workflow(); definition.inputs = [{ key: "picture", type: "image_list", required: true }];
+  const run = await h.service.submit(submission(id("legacy-queued-input"), definition, { picture: original }));
+  const prepared = h.store.getSubmission(h.settings.projectDirectory, run.runId) as PreparedRun;
+  prepared.inputValues.picture = [original];
+  h.store.saveRunSubmission(h.settings.projectDirectory, run, prepared, []);
+  await h.service.shutdown(0); await unlink(original);
+  const recovered = new RunService({ store: h.store, executors: h.executors, loadSettings: async () => h.settings });
+  h.service.shutdown = timeout => recovered.shutdown(timeout); await recovered.start();
+  const result = await recovered.wait(h.settings.projectDirectory, run.runId);
+  assert.equal(result.status, "completed"); assert.equal(result.outputs[0].value, "legacy archived image");
+});
+
+test("单个排队任务的输入归档损坏不阻止服务启动或其他任务恢复", async t => {
+  const h = await harness(t); const broken = await h.service.submit(submission(id("broken-input-snapshot")));
+  const good = await h.service.submit(submission(id("healthy-queued-after-broken")));
+  await writeFile(broken.artifacts.inputs, "{broken JSON"); await h.service.shutdown(0);
+  const recovered = new RunService({ store: h.store, executors: h.executors, loadSettings: async () => h.settings });
+  h.service.shutdown = timeout => recovered.shutdown(timeout); await recovered.start();
+  const damaged = await recovered.getRun(h.settings.projectDirectory, broken.runId);
+  assert.equal(damaged?.status, "stale"); assert.match(damaged?.error ?? "", /输入归档/);
+  assert.equal((await recovered.wait(h.settings.projectDirectory, good.runId)).status, "completed");
+});

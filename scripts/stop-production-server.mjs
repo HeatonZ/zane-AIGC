@@ -1,117 +1,57 @@
-import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
-import net from "node:net";
-import os from "node:os";
+import { randomUUID } from "node:crypto";
+import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { backup, DatabaseSync } from "node:sqlite";
+import { root, productionSettings, portIsOpen, verifyProcess, controlRequest } from "./production-runtime.mjs";
 
-const execFileAsync = promisify(execFile);
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-function parseEnvFile(text) {
-  const values = {};
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (!match) continue;
-    let value = match[2];
-    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
-    values[match[1]] = value;
-  }
-  return values;
-}
-
-function productionPort() {
-  const values = {};
-  for (const filename of [".env", ".env.local", ".env.production", ".env.production.local"]) {
-    try { Object.assign(values, parseEnvFile(requireText(path.join(root, filename)))); } catch { /* optional */ }
-  }
-  const configured = process.env.API_PORT ?? values.API_PORT;
-  const port = Number(configured ?? 8799);
-  return Number.isInteger(port) && port > 0 && port < 65536 ? port : 8799;
-}
-
-function requireText(filename) {
-  return readFileSync(filename, "utf8");
-}
-
-async function windowsPids(port) {
-  const script = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    `$ids = Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object -ExpandProperty OwningProcess -Unique`,
-    "foreach ($id in $ids) {",
-    "  $process = Get-CimInstance Win32_Process -Filter \"ProcessId=$id\"",
-    "  if ($process -and $process.Name -eq 'node.exe' -and $process.CommandLine -match 'dist-server[\\\\/]index\\.js' -and $process.CommandLine -match '(^|\\s)--production(\\s|$)') {",
-    "    Write-Output $id",
-    "  }",
-    "}",
-    "exit 0",
-  ].join("\n");
-  try {
-    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, cwd: root, maxBuffer: 1024 * 1024 });
-    return [...new Set(stdout.split(/\r?\n/).map((value) => Number(value.trim())).filter((value) => Number.isInteger(value) && value > 0))];
-  } catch (error) {
-    if (error?.code === "ENOENT") return [];
-    throw error;
-  }
-}
-
-async function unixPids(port) {
-  try {
-    const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { cwd: root, maxBuffer: 1024 * 1024 });
-    const candidates = [...new Set(stdout.split(/\r?\n/).map((value) => Number(value.trim())).filter((value) => Number.isInteger(value) && value > 0))];
-    const matches = [];
-    for (const pid of candidates) {
-      try {
-        const { stdout: command } = await execFileAsync("ps", ["-p", String(pid), "-o", "args="], { cwd: root });
-        if (/dist-server[\\/]index\.js/.test(command) && /(^|\s)--production(\s|$)/.test(command)) matches.push(pid);
-      } catch { /* process exited between lsof and ps */ }
+try {
+  const settings=await productionSettings();
+  if(!await portIsOpen(settings.port, settings.probeHost)) {
+    console.log(`生产端口 ${settings.port} 当前空闲；没有停止任何进程。`);
+    const database=path.join(settings.dataDirectory,"zane.db");
+    let exists=false;try{exists=(await stat(database)).isFile();}catch(error){if(error.code!=="ENOENT")throw error;}
+    if(exists){
+      // For the one-time manual stop of legacy servers, snapshot the closed
+      // authoritative database before any build/start can migrate it.
+      let staleLease;try{staleLease=JSON.parse(await readFile(settings.leaseFile,"utf8"));}catch{}
+      if(staleLease?.pid){try{process.kill(staleLease.pid,0);throw new Error("原工作台进程尚未退出；没有强制关闭，请等待正常关闭完成。");}catch(error){if(error.code!=="ESRCH")throw error;}}
+      const operationId=randomUUID(),directory=path.join(settings.dataDirectory,"backups","restart-"+operationId);
+      await mkdir(directory,{recursive:true});const source=new DatabaseSync(database,{readOnly:true});
+      try{await backup(source,path.join(directory,"zane.db"));}finally{source.close();}
+      for(const filename of ["connections.json","workspace.json"]){try{await copyFile(path.join(settings.dataDirectory,filename),path.join(directory,filename));}catch(error){if(error.code!=="ENOENT")throw error;}}
+      console.log(`已备份停机后的 SQLite 与配置：${directory}`);
     }
-    return matches;
-  } catch (error) {
-    if (error?.code === "ENOENT" || error?.status === 1) return [];
-    throw error;
   }
-}
-
-async function portIsOpen(port) {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host: "127.0.0.1", port });
-    const finish = (open) => { socket.destroy(); resolve(open); };
-    socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
-    socket.setTimeout(250, () => finish(false));
-  });
-}
-
-async function stopPid(pid) {
-  try {
-    if (os.platform() === "win32") {
-      await execFileAsync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, cwd: root });
-    } else {
-      process.kill(pid, "SIGTERM");
+  else {
+    let lease;
+    try { lease=JSON.parse(await readFile(settings.leaseFile,"utf8")); }
+    catch { throw new Error("现有后台尚无正常切换接口。首次升级请在原工作台终端 Ctrl+C 正常关闭，再运行 npm run start:prod；不使用 taskkill。Hermes/ComfyUI 不用重启。"); }
+    if(lease.schemaVersion!==1 || !Number.isSafeInteger(lease.pid) || lease.pid<=0 || lease.port!==settings.port || path.resolve(lease.root)!==root || path.resolve(lease.entry)!==path.join(root,"dist-server","index.js") || typeof lease.socket!=="string" || typeof lease.instanceId!=="string" || typeof lease.key!=="string") throw new Error("运行租约与本项目不一致；没有停止任何进程。");
+    await verifyProcess(lease);
+    const identity=await controlRequest(lease,"inspect");
+    if(!identity.ok || identity.pid!==lease.pid || identity.instanceId!==lease.instanceId || path.resolve(identity.root)!==root || path.resolve(identity.entry)!==path.join(root,"dist-server","index.js") || identity.port!==settings.port) throw new Error("当前服务实例身份已变化；没有停止任何进程。");
+    await verifyProcess(lease);
+    const operationId=randomUUID();
+    console.log(`正常切换工作台：PID ${lease.pid} / 端口 ${settings.port} / operationId ${operationId}。`);
+    let result;
+    try { result=await controlRequest(lease,"shutdown",operationId); }
+    catch (error) {
+      // Never resubmit a shutdown with a new ID after losing its response.
+      try { result=JSON.parse(await readFile(path.join(settings.dataDirectory,"backups","restart-"+operationId,"receipt.json"),"utf8")); }
+      catch { throw new Error(`${error.message} 原 operationId=${operationId}；备份/关闭尚未确认，本次不继续构建。`); }
     }
-    return true;
-  } catch (error) {
-    if (error?.code === "ESRCH" || error?.code === "ENOENT" || error?.status === 128) return false;
-    throw error;
+    if(!result.ok) throw new Error(`${result.code}: ${JSON.stringify({unfinished:result.unfinished,metrics:result.metrics,activeRequests:result.activeRequests,message:result.message})}。未强制停止；等待任务/审核处理完再升级。`);
+    const expectedBackup=path.join(settings.dataDirectory,"backups","restart-"+operationId);
+    if(result.operationId!==operationId || result.pid!==lease.pid || result.instanceId!==lease.instanceId || path.resolve(result.backupDirectory)!==expectedBackup || !(await stat(path.join(expectedBackup,"zane.db"))).isFile()) throw new Error("备份回执不匹配；本次不继续切换。");
+    console.log(`权威 SQLite 与配置备份：${expectedBackup}`);
+    const deadline=Date.now()+30000;
+    let closed=false;
+    while(Date.now()<deadline){
+      try{const receipt=JSON.parse(await readFile(path.join(expectedBackup,"receipt.json"),"utf8"));closed=Boolean(receipt.closedAt && receipt.instanceId===lease.instanceId && receipt.operationId===operationId);}catch{}
+      if(closed && !await portIsOpen(settings.port, settings.probeHost))break;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    if(!closed || await portIsOpen(settings.port, settings.probeHost)) throw new Error("旧服务未确认完成正常关闭；没有强制结束进程，本次不继续构建。");
+    console.log("旧工作台已正常关闭。新后台就绪后将通知本项目 MCP 自动切换；Hermes Gateway/ComfyUI 保持不动。");
   }
-}
-
-const port = productionPort();
-const pids = os.platform() === "win32" ? await windowsPids(port) : await unixPids(port);
-if (!pids.length) {
-  console.log(`没有发现占用生产端口 ${port} 的旧 Zane 服务。`);
-  process.exit(0);
-}
-for (const pid of pids) {
-  console.log(`正在停止旧的 Zane 生产服务（PID ${pid}，端口 ${port}）…`);
-  await stopPid(pid);
-}
-const deadline = Date.now() + 5000;
-while (Date.now() < deadline && await portIsOpen(port)) await new Promise((resolve) => setTimeout(resolve, 100));
-if (await portIsOpen(port)) {
-  console.error(`旧 Zane 服务未能在 5 秒内释放端口 ${port}。`);
-  process.exit(1);
-}
-console.log(`旧 Zane 服务已停止，端口 ${port} 已释放。`);
+} catch(error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode=1; }

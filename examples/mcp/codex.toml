@@ -1,0 +1,14 @@
+# Merge this table into your Codex configuration; do not replace the whole file.
+# Build first: npm ci && npm run build:server
+# Replace paths and ZANE_BASE_URL if needed. This does not launch the workbench backend.
+[mcp_servers.zane-workbench]
+command = "node"
+args = ["F:/code/zane-drama/dist-server/mcp/index.js"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+[mcp_servers.zane-workbench.env]
+ZANE_BASE_URL = "http://127.0.0.1:8799"
+# Use your own account token. Do not commit actual credentials.
+ZANE_API_TOKEN = "REPLACE_WITH_OWN_API_TOKEN"
+ZANE_MCP_TIMEOUT_MS = "90000"

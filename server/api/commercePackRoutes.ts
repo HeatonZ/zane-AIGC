@@ -36,11 +36,12 @@ export function createCommercePackRouter(loadSettings: () => Promise<SavedSettin
     if (!rows.length) throw new HttpError(404, "这条记录没有电商套图成图");
     if (rows.length > 144) throw new HttpError(400, "成图数量超过限制");
     const sourceRuns = new Set([runId]);
-    let ancestor = run.resumedFromRunId;
+    let ancestor = run.resumedFromRunId ?? run.rerunFromRunId;
     for (let index = 0; ancestor && index < 50; index++) {
       if (!isRunId(ancestor) || sourceRuns.has(ancestor)) break;
       sourceRuns.add(ancestor);
-      ancestor = (await getRun(settings.projectDirectory, ancestor))?.resumedFromRunId;
+      const source = await getRun(settings.projectDirectory, ancestor);
+      ancestor = source?.resumedFromRunId ?? source?.rerunFromRunId;
     }
     const entries: ZipEntry[] = [];
     const names = new Set<string>();

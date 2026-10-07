@@ -1,3 +1,4 @@
+import { isRuntimeMediaValue, mediaKindFromWorkflowType } from "../runtimeValue.js";
 import type { RunComfyBinding } from "../domain/types.js";
 
 type Graph = Record<string, Record<string, unknown>>;
@@ -20,6 +21,14 @@ export function comfyAutogrowInputNames(rawSchema: unknown, mediaKind: "image" |
   if (Array.isArray(template?.names)) return [...new Set(template.names.filter((name): name is string => typeof name === "string" && Boolean(name)))];
   if (typeof template?.prefix !== "string" || !Number.isSafeInteger(template.max) || (template.max as number) < 1 || (template.max as number) > 256) return [];
   return Array.from({ length: template.max as number }, (_, index) => `${template.prefix}${index}`);
+}
+
+/** JSON-path references can contain typed media even when their root is JSON. */
+export function comfyBindingMediaKind(value: unknown, sourceType: string, bindingType: string): ComfyMediaKind | undefined {
+  const sourceKind = isRuntimeMediaValue(value) ? value.mediaKind : mediaKindFromWorkflowType(sourceType);
+  const bindingKind = mediaKindFromWorkflowType(bindingType);
+  if (sourceKind && bindingKind && sourceKind !== bindingKind) throw new Error("ComfyUI媒体来源与目标列表类型不一致");
+  return sourceKind ?? bindingKind;
 }
 
 export interface ResolvedComfyBinding {

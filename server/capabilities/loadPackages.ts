@@ -4,9 +4,9 @@ import path from "node:path";
 import { ExecutorRegistry } from "../execution/executorRegistry.js";
 import type { CapabilityFactory, CapabilityRuntime } from "./package.js";
 /** One package module is the extension unit. Dev loads .ts; the build loads the corresponding .js files. */
-export async function loadCapabilityPackages(runtime: CapabilityRuntime, directory = new URL("./packages/", import.meta.url)) {
+export async function loadCapabilityPackages(runtime: CapabilityRuntime, directory: URL | string = new URL("./packages/", import.meta.url)) {
   const registry = new ExecutorRegistry();
-  const files = (await readdir(directory)).filter((name) => /\.(?:js|ts)$/.test(name) && !/\.(?:test|d)\.ts$/.test(name)).sort();
+  const files = (await readdir(directory)).filter((name) => /\.(?:js|ts)$/.test(name) && !/\.(?:test|d)\.(?:ts|js)$/.test(name)).sort();
   for (const filename of files) {
     const url = directory instanceof URL ? new URL(filename, directory) : pathToFileURL(path.resolve(directory, filename));
     const module = await import(url.href) as { default?: CapabilityFactory };

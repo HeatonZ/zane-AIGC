@@ -1,7 +1,12 @@
+import commerceAiPackage from "../../examples/scenes/commerce-ai.json";
+import basicImageLayoutPackage from "../../examples/scenes/basic-image-layout.json";
 import commercePackPackage from "../../examples/scenes/commerce-pack.json";
 import type { SceneId, SceneModule, WorkflowDefinition } from "../types";
+import imageToImagePackage from "../../examples/scenes/image-to-image-qwen21.json";
 
 export const defaultWorkflows: Record<string, WorkflowDefinition> = {
+  commerce_ai: commerceAiPackage.workflow as WorkflowDefinition,
+  basic_image_layout: basicImageLayoutPackage.workflow as WorkflowDefinition,
   commerce_pack: commercePackPackage.workflow as WorkflowDefinition,
   comic: {
     sceneId: "comic",
@@ -132,71 +137,68 @@ export const defaultWorkflows: Record<string, WorkflowDefinition> = {
     sceneId: "text_to_image",
     name: "基础文生图流程",
     inputs: [
-      { key: "prompt", label: "正向提示词", type: "textarea", required: true, placeholder: "描述主体、环境、风格和画面细节" },
+      { key: "prompt", label: "任务说明 / 正向提示词", type: "textarea", required: false, placeholder: "不上传参考图时填写生图描述；上传参考图时可留空" },
+      { key: "reference_images", label: "参考图片", type: "image_list", required: false, placeholder: "仅用于反推提示词，不传入生图模型；描述可留空" },
       { key: "negative_prompt", label: "反向提示词", type: "textarea", required: false, placeholder: "不希望出现的内容" },
-      { key: "width", label: "宽度", type: "number", required: true, placeholder: "1024" },
-      { key: "height", label: "高度", type: "number", required: true, placeholder: "1024" },
-      { key: "seed", label: "随机种子", type: "number", required: false, placeholder: "留空使用随机种子" },
+      { key: "width", label: "文生图宽度", type: "number", required: true, placeholder: "1024" },
+      { key: "height", label: "文生图高度", type: "number", required: true, placeholder: "1024" },
+      { key: "seed", label: "随机种子", type: "number", required: false, placeholder: "留空使用工作流默认值" },
     ],
     steps: [
       {
-        id: "text_to_image",
-        name: "ComfyUI 文生图",
-        kind: "comfyui",
+        id: "has_reference_images",
+        name: "判断是否有参考图",
+        kind: "control",
         inputs: [],
-        outputs: [{ key: "image", label: "生成图像", type: "image" }],
+        outputs: [{ key: "result", label: "有参考图", type: "boolean" }],
+        promptTemplate: "",
+        control: {
+          type: "condition",
+          match: "all",
+          rules: [{ id: "reference_images_present", leftRef: "input.reference_images", operator: "is_not_empty", valueSource: "literal", rightValue: "", rightRef: "" }],
+        },
+      },
+      {
+        id: "reverse_prompt",
+        name: "参考图提示词反推",
+        kind: "hermes",
+        hermesProfile: "aixg",
+        runCondition: { conditionStepId: "has_reference_images", expectedResult: true },
+        inputs: [{ key: "reference_images", label: "参考图片", sourceRef: "input.reference_images" }],
+        outputs: [{ key: "prompt", label: "反推后的正向提示词", type: "text" }],
+        promptTemplate: "请读取附带的参考图片，反推出一条详细、独立的纯文生图提示词。生成模型不会看到任何参考图片，提示词必须只靠文字完整说明画面。按全景构图→前景/中景/背景→由左到右的顺序描述：主体的准确数量、可辨识外观、大小、位置、朝向和相互关系，以及场景、物品层级、背景、摄影视角、画面裁切、风格、材质、光线和色彩。多张图片时以第一张为主要画面，其他图片只补充同一主体的可见细节，不拼贴互相矛盾的场景。不臆测不可见细节或无法辨认的文字，不新增、删减或美化主体。输出必须是具体画面描述，不写“参考原图”“保持原图”“按图编辑”等依赖图片的指令。仅返回提示词文本，不附加解释，不调用工具，不搜索，不生成或编辑图片。",
+      },
+      {
+        id: "prompt_prepare",
+        name: "整理纯文生图提示词",
+        kind: "hermes",
+        hermesProfile: "aixg",
+        inputs: [
+          { key: "reverse_prompt", label: "参考图反推文本", sourceRef: "step.reverse_prompt.outputs.prompt" },
+          { key: "prompt", label: "任务说明", sourceRef: "input.prompt" },
+        ],
+        outputs: [{ key: "prompt", label: "生图提示词", type: "text" }],
+        promptTemplate: "整理为一条详细、独立的纯文生图正向提示词，生成模型只会收到文字，不会收到参考图片。有反推结果时，以反推文本为基础，保留其中明确的主体数量、空间位置、前后关系、构图、背景、风格和光线，不重新联想扩写；用户有补充要求时只修改其明确要求的内容，补充要求为空时不要增删元素。没有反推结果时根据用户任务编写提示词。最终输出必须是自足的具体画面描述，不包含“第一张参考图”“保持原图”“根据图片编辑”等图生图指令。只整理提示词文本，不调用工具、不搜索、不执行图像生成或编辑。不要附加解释，只返回提示词。\n参考图反推文本：{{step.reverse_prompt.outputs.prompt}}\n用户任务：{{input.prompt}}",
+      },
+      {
+        id: "text_to_image",
+        name: "ComfyUI 纯文生图",
+        kind: "comfyui",
+        inputs: [
+          { key: "prompt", label: "正向提示词", sourceRef: "step.prompt_prepare.outputs.prompt" },
+          { key: "negative_prompt", label: "反向提示词", sourceRef: "input.negative_prompt" },
+          { key: "width", label: "宽度", sourceRef: "input.width" },
+          { key: "height", label: "高度", sourceRef: "input.height" },
+          { key: "seed", label: "随机种子", sourceRef: "input.seed" },
+        ],
+        outputs: [{ key: "image", label: "生成图像", type: "image_list" }],
         promptTemplate: "",
         comfyui: { workflowFile: "", bindings: [] },
       },
     ],
-    outputs: [{ key: "image", label: "生成图像", type: "image", sourceRef: "step.text_to_image.outputs.image" }],
+    outputs: [{ key: "image", label: "生成图像", type: "image_list", sourceRef: "step.text_to_image.outputs.image" }],
   },
-  image_to_image: {
-    sceneId: "image_to_image",
-    name: "基础图生图流程",
-    inputs: [
-      { key: "reference_images", label: "参考图片", type: "image_list", required: true, placeholder: "按使用顺序逐张添加参考图" },
-      { key: "prompt", label: "正向提示词", type: "textarea", required: true, placeholder: "描述希望如何改动参考图片" },
-      { key: "negative_prompt", label: "反向提示词", type: "textarea", required: false, placeholder: "可留空" },
-      { key: "resolution", label: "参考图缩放基准", type: "number", required: false, placeholder: "留空保留第一张图尺寸" },
-      { key: "seed", label: "随机种子", type: "number", required: false, placeholder: "留空使用工作流默认值" },
-      { key: "steps", label: "生成步数", type: "number", required: false, placeholder: "留空使用工作流默认值" },
-      { key: "cfg", label: "CFG", type: "number", required: false, placeholder: "留空使用工作流默认值" },
-    ],
-    steps: [
-      {
-        id: "image_to_image",
-        name: "ComfyUI 图生图",
-        kind: "comfyui",
-        execution: { mode: "for_each", sourceRef: "input.reference_images", onError: "continue" },
-        inputs: [
-          { key: "reference_images", label: "参考图片", sourceRef: "input.reference_images" },
-          { key: "prompt", label: "正向提示词", sourceRef: "input.prompt" },
-          { key: "negative_prompt", label: "反向提示词", sourceRef: "input.negative_prompt" },
-          { key: "resolution", label: "参考图缩放基准", sourceRef: "input.resolution" },
-          { key: "seed", label: "随机种子", sourceRef: "input.seed" },
-          { key: "steps", label: "生成步数", sourceRef: "input.steps" },
-          { key: "cfg", label: "CFG", sourceRef: "input.cfg" },
-        ],
-        outputs: [{ key: "images", label: "生成图像", type: "image" }],
-        promptTemplate: "",
-        comfyui: {
-          workflowFile: "Zane/i2i_UI.json",
-          bindings: [
-            { key: "reference_images", label: "参考图片", direction: "input", nodeId: "471", property: "images", type: "image_list", sourceRef: "input.reference_images", required: true },
-            { key: "prompt", label: "正向提示词", direction: "input", nodeId: "471", property: "prompt", type: "text", sourceRef: "input.prompt", required: true },
-            { key: "negative_prompt", label: "反向提示词", direction: "input", nodeId: "471", property: "negative_prompt", type: "text", sourceRef: "input.negative_prompt", required: false },
-            { key: "resolution", label: "参考图缩放基准", direction: "input", nodeId: "471", property: "resolution", type: "number", sourceRef: "input.resolution", required: false },
-            { key: "seed", label: "随机种子", direction: "input", nodeId: "476", property: "seed", type: "number", sourceRef: "input.seed", required: false },
-            { key: "steps", label: "生成步数", direction: "input", nodeId: "476", property: "steps", type: "number", sourceRef: "input.steps", required: false },
-            { key: "cfg", label: "CFG", direction: "input", nodeId: "476", property: "cfg", type: "number", sourceRef: "input.cfg", required: false },
-            { key: "images", label: "生成图像", direction: "output", nodeId: "461", property: "images", type: "image" },
-          ],
-        },
-      },
-    ],
-    outputs: [{ key: "images", label: "生成图像", type: "image", sourceRef: "step.image_to_image.outputs.images" }],
-  },
+  image_to_image: imageToImagePackage.workflow as WorkflowDefinition,
 };
 
 export function cloneDefaultWorkflows() {

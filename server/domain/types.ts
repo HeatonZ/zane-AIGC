@@ -1,3 +1,4 @@
+import type { WorkflowMediaRole } from "./workflowMediaRoles.js";
 import type { RuntimeMediaValue } from "../runtimeValue.js";
 
 export interface SavedSettings {
@@ -46,6 +47,7 @@ export interface ComfyUINodeInfo {
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue } | RuntimeMediaValue;
 
 export interface RunInputField {
+  mediaRole?: WorkflowMediaRole;
   key: string;
   type: string;
   required?: boolean;
@@ -60,6 +62,7 @@ export interface RunStepOutput {
 }
 
 export interface RunComfyBinding {
+  mediaRole?: WorkflowMediaRole;
   key: string;
   label?: string;
   direction: "input" | "output";
@@ -81,6 +84,7 @@ export interface RunStepInput {
   valueSource?: "literal" | "reference";
   literalValue?: string;
   literalType?: string;
+  referenceType?: "image_list" | "video_list" | "audio_list";
   selection?: { mode: "all" | "item" | "for_each"; index?: number };
 }
 
@@ -88,6 +92,9 @@ export interface RunStep {
   id: string;
   name: string;
   kind: string;
+  capabilityId?: string;
+  capabilityVersion?: string;
+  capabilityConfig?: Record<string, JsonValue>;
   hermesProfile?: string;
   inputs?: RunStepInput[];
   outputs?: RunStepOutput[];
@@ -97,11 +104,12 @@ export interface RunStep {
     sourceRef?: string;
     onError?: "continue" | "stop";
     maxConcurrency?: number;
+    carry?: import("./iterationCarry.js").IterationCarry;
   };
   comfyui?: {
     workflowFile: string;
     bindings?: RunComfyBinding[];
-    adapter?: "h3_long_video" | "commerce_pack" | "long_text_video" | "video_concat";
+    adapter?: string;
     h3LongVideo?: {
       planRef: string;
       promptRowsRef: string;
@@ -121,10 +129,13 @@ export interface RunStep {
       rightRef: string;
     }>;
   };
+  review?: { enabled: boolean; instruction?: string };
   runCondition?: { conditionStepId: string; expectedResult: boolean };
 }
 
 export interface RunWorkflowDefinition {
+  /** Source published snapshot; reruns may edit this workflow after taking the snapshot. */
+  publishedScene?: { versionId: string; version: string; publishedAt: string };
   sceneId?: string;
   name?: string;
   inputs: RunInputField[];
@@ -139,7 +150,13 @@ export interface RunWorkflowDefinition {
 }
 
 export interface RunStepRecord {
+  warnings?: string[];
+  review?: { status: "pending" | "approved"; id: string; decidedAt?: string };
+  reusedFromRunId?: string;
+  replaced?: boolean;
   stepId: string;
+  capabilityId?: string;
+  capabilityVersion?: string;
   name: string;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
   message?: string;
@@ -152,6 +169,10 @@ export interface RunStepRecord {
 }
 
 export interface RunStepItemRecord {
+  warnings?: string[];
+  reusedFromRunId?: string;
+  replaced?: boolean;
+  stepSnapshot?: RunStep;
   index: number;
   value: JsonValue;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
@@ -163,7 +184,7 @@ export interface RunStepItemRecord {
 export interface RunItemResult {
   index: number;
   value: JsonValue;
-  status: "completed" | "failed" | "cancelled";
+  status: "completed" | "failed" | "cancelled" | "waiting";
   steps: RunStepRecord[];
   outputs: Array<{ key: string; label: string; type: string; value: JsonValue }>;
   error?: string;
@@ -177,8 +198,16 @@ export interface RunArtifactPaths {
   output: string;
 }
 
-export type RunStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "stale";
+export type RunStatus = "waiting" | "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "stale";
+export interface RunSubmitter {
+  userId: string;
+  username: string;
+  displayName: string;
+}
 export interface RunRecord {
+  ownerUserId?: string;
+  /** Snapshot of the authenticated account that submitted this run. Legacy runs may omit it. */
+  submitter?: RunSubmitter;
   runId: string;
   sceneId: string;
   workflowName: string;
@@ -193,7 +222,13 @@ export interface RunRecord {
   error?: string;
   cancellationReason?: string;
   archiveWarnings?: string[];
+  pendingReview?: import("./productionContracts.js").PendingReview;
+  reviewHistory?: import("./productionContracts.js").ReviewDecision[];
+  feedbackHistory?: import("./feedbackContracts.js").StepFeedbackRecord[];
   resumedFromRunId?: string;
+  rerunFromRunId?: string;
+  rerunPlan?: import("./rerunContracts.js").RerunPlan;
+  rerunRequest?: import("./rerunContracts.js").RerunRequest;
   artifacts: RunArtifactPaths;
   inputValues: Record<string, JsonValue>;
   workflow: RunWorkflowDefinition;

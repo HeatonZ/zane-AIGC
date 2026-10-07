@@ -1,0 +1,928 @@
+{
+  "format": "zane-studio-scene",
+  "version": 1,
+  "exportedAt": "2026-10-06T00:00:00.000Z",
+  "scene": {
+    "id": "commerce_ai",
+    "title": "电商套图",
+    "shortTitle": "AI套图",
+    "summary": "AI直接生成完整电商套图，先确认样张",
+    "description": "商品参考与需求交给AI，Writer策划整套视觉，AIXG转成完整成图提示词，基础ComfyUI直接生成包含视觉设计与所需文字的图片。不生成无字底图，不通过程序贴文案或排版。",
+    "cover": "/commerce-pack.svg",
+    "coverPosition": "center",
+    "accent": "coral",
+    "stages": [
+      "商品与需求",
+      "套图方案",
+      "样张确认",
+      "AI逐张生成",
+      "成图交付"
+    ]
+  },
+  "optionPresets": [],
+  "workflow": {
+    "sceneId": "commerce_ai",
+    "name": "电商套图 · AI整图生成",
+    "inputs": [
+      {
+        "key": "project_name",
+        "label": "项目名称",
+        "type": "text",
+        "required": true,
+        "placeholder": "例如：保温杯秋季上新"
+      },
+      {
+        "key": "product_images",
+        "label": "商品参考图（正面、角度、细节、包装；作为商品依据）",
+        "type": "image_list",
+        "required": true
+      },
+      {
+        "key": "style_images",
+        "label": "风格参考图（可选；只参考视觉，不作为商品事实）",
+        "type": "image_list",
+        "required": false
+      },
+      {
+        "key": "product_info",
+        "label": "商品真实信息",
+        "type": "textarea",
+        "required": true,
+        "placeholder": "商品名称、真实卖点；按需补充规格、包装清单和必须保留的外观。不要填写未经核实的事实。"
+      },
+      {
+        "key": "request",
+        "label": "想生成什么样的一套图",
+        "type": "textarea",
+        "required": true,
+        "placeholder": "例如：面向户外人群，黑灰与荧光绿视觉，生成有设计感的完整电商套图；图中需要简短中文标题。"
+      },
+      {
+        "key": "image_count",
+        "label": "套图张数（类型由AI设计，卖点图可重复）",
+        "type": "select",
+        "required": true,
+        "options": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "defaultValue": "5"
+      },
+      {
+        "key": "ratio",
+        "label": "生成画幅",
+        "type": "select",
+        "required": true,
+        "options": [
+          "1:1 (Square)",
+          "3:4 (Portrait Standard)",
+          "4:3 (Standard)",
+          "9:16 (Portrait Widescreen)",
+          "16:9 (Widescreen)"
+        ],
+        "defaultValue": "1:1 (Square)"
+      },
+      {
+        "key": "seed",
+        "label": "随机种子",
+        "type": "number",
+        "required": false,
+        "defaultValue": 0
+      },
+      {
+        "key": "mp",
+        "label": "生成像素（MP）",
+        "type": "number",
+        "required": true,
+        "defaultValue": 1
+      }
+    ],
+    "steps": [
+      {
+        "id": "product_brief",
+        "name": "Writer · 商品事实与外观约束",
+        "kind": "hermes",
+        "capabilityId": "core.hermes",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "product_images",
+            "label": "商品参考图片",
+            "sourceRef": "input.product_images"
+          },
+          {
+            "key": "style_images",
+            "label": "风格参考（不作为商品事实）",
+            "sourceRef": "input.style_images"
+          },
+          {
+            "key": "product_info",
+            "label": "商品真实信息",
+            "sourceRef": "input.product_info"
+          },
+          {
+            "key": "request",
+            "label": "生成需求",
+            "sourceRef": "input.request"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "product_brief",
+            "label": "商品事实与视觉禁区",
+            "type": "text",
+            "description": "仅整理用户事实和真实附件中的可见外观；区分未知信息，不能推测未见结构、参数、功效或配件。"
+          }
+        ],
+        "promptTemplate": "你是商品资料分析Writer。只分析真实商品图片与用户资料，不调用工具，不生成图片。区分商品参考与风格参考，只整理已确认事实、可见外观、需保持的商品结构/颜色/Logo/包装文字以及未知信息。禁止把未知材质、尺寸、功效、认证、配件写成事实。资料不足不等于禁止视觉设计：可以设计背景、人物情境、光线、版式、装饰图形、放大细节和文字层级；设计表达不是商品性能证明，不要把人物、场景和图形一律列为禁区。风险与未知信息只用于内部策划，不作为消费者画面文案。只返回JSON对象，product_brief为完整文本。",
+        "hermesProfile": "writer"
+      },
+      {
+        "id": "plan",
+        "name": "Writer · 整套电商视觉设计",
+        "kind": "hermes",
+        "capabilityId": "core.hermes",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "product_images",
+            "label": "商品依据",
+            "sourceRef": "input.product_images"
+          },
+          {
+            "key": "style_images",
+            "label": "风格参考",
+            "sourceRef": "input.style_images"
+          },
+          {
+            "key": "product_brief",
+            "label": "商品事实",
+            "sourceRef": "step.product_brief.outputs.product_brief"
+          },
+          {
+            "key": "request",
+            "label": "用户需求",
+            "sourceRef": "input.request"
+          },
+          {
+            "key": "image_count",
+            "label": "图片数量",
+            "sourceRef": "input.image_count"
+          },
+          {
+            "key": "ratio",
+            "label": "画幅",
+            "sourceRef": "input.ratio"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "visual_direction",
+            "label": "共享视觉规则",
+            "type": "text",
+            "description": "整套最终设计的配色、字体层级、图文关系、设计元素和阅读节奏；不是仅描述摄影光线或背景。"
+          },
+          {
+            "key": "cards",
+            "label": "逐张图片计划",
+            "type": "json",
+            "description": "恰好image_count张完整AI成图设计；每项{id,role,goal,brief}，不输出素材选择、layout/坐标/后置文案字段。brief同时包含画面、版式、所需文字及商品约束。"
+          }
+        ],
+        "promptTemplate": "你是电商视觉设计师，任务是策划一套可由AI直接生成的完整电商设计稿，不是整理商品照片，也不是为后续排版生成底图。结合商品真实信息、图片、目标人群、用户需求和画幅，输出统一视觉方向visual_direction以及恰好image_count项cards。\nvisual_direction必须设计整套配色、文字层级、图文关系、装饰元素、商品呈现和跨图阅读节奏。每项只含id、role、goal、brief：id唯一；role可重复，但每张必须有明确不同的沟通任务和视觉构图，不能用正面商品换背景/换大小凑张数。role从hero/selling_point/detail/lifestyle/specs/package选择，未知规格和配件不能硬编。图1是一张完整主视觉，后续根据真实资料安排情境、可见结构、细节或主题延展；允许有设计理由的人物情境、背景、色块、线条、局部放大与视觉标注，保持商品身份和可见结构，不虚构商品性能。\nbrief是一张完整成图的自然语言设计要求：写明主体构图、背景、图形元素、商品大小位置、视觉焦点、文字层级及需要出现在图中的准确短文案。需要文字时直接在brief中用引号列出，不拆成后置文案字段；用户要求无字时仍设计完整画面。图文在AI生图时一体生成，不要求预留给程序填字，不禁止图中有文字。消费者文案要简短自然，不能把“面向某某人群”“未经验证的性能”等内部策划/风险说明写进成图。不得编造品牌、参数、功效、认证或价格；资料少仍要完成视觉设计，不得退化为五张重复白底图。\n不要求Writer选择或编号素材。基础媒体步骤会把本次输入中的全部商品图和风格图（若有）按组传给每张图；风格图仅作视觉参考。brief如需引用素材使用<Product 1>、<Style 1>等真实分组标签，由基础媒体机制映射，不能生成路径。不要输出layout、宽高、坐标、字体文件或独立文案列表，不为后期排版设计。只返回JSON对象visual_direction和cards，不调用生图工具。",
+        "hermesProfile": "writer"
+      },
+      {
+        "id": "plan_contract",
+        "name": "基础数据 · 校验数量、结构与唯一标识",
+        "kind": "capability",
+        "capabilityId": "data.zip",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "items",
+            "label": "套图计划",
+            "sourceRef": "step.plan.outputs.cards"
+          },
+          {
+            "key": "expected_count",
+            "label": "请求图片数量",
+            "sourceRef": "input.image_count"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "rows",
+            "label": "逐张记录",
+            "type": "json"
+          },
+          {
+            "key": "first",
+            "label": "首张样张任务",
+            "type": "json"
+          },
+          {
+            "key": "rest",
+            "label": "剩余任务",
+            "type": "json"
+          }
+        ],
+        "promptTemplate": "",
+        "capabilityConfig": {
+          "itemKey": "card",
+          "identityField": "id",
+          "itemSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "role",
+              "goal",
+              "brief"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "hero",
+                  "selling_point",
+                  "detail",
+                  "lifestyle",
+                  "specs",
+                  "package"
+                ]
+              },
+              "goal": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "brief": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 6000
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 8
+        }
+      },
+      {
+        "id": "references",
+        "name": "基础媒体 · 按张选择商品与风格参考",
+        "kind": "capability",
+        "capabilityId": "media.select_references",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "selection",
+            "label": "全部商品与风格参考",
+            "sourceRef": "",
+            "valueSource": "literal",
+            "literalType": "json",
+            "literalValue": "{\"product_images\":\"all\",\"style_images\":\"all\"}"
+          },
+          {
+            "key": "product_images",
+            "label": "商品图片库",
+            "sourceRef": "input.product_images"
+          },
+          {
+            "key": "style_images",
+            "label": "风格图片库",
+            "sourceRef": "input.style_images"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "bundle",
+            "label": "本张有序参考媒体包",
+            "type": "json"
+          },
+          {
+            "key": "reference_map",
+            "label": "素材与局部编号",
+            "type": "json"
+          },
+          {
+            "key": "selected",
+            "label": "选中素材",
+            "type": "json"
+          },
+          {
+            "key": "prompt",
+            "label": "映射提示词",
+            "type": "text"
+          }
+        ],
+        "promptTemplate": "",
+        "capabilityConfig": {
+          "groups": [
+            {
+              "key": "product_images",
+              "kind": "image",
+              "tag": "Product"
+            },
+            {
+              "key": "style_images",
+              "kind": "image",
+              "tag": "Style"
+            }
+          ]
+        },
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "step.plan_contract.outputs.rows",
+          "onError": "stop",
+          "maxConcurrency": 2
+        }
+      },
+      {
+        "id": "prompt_jobs",
+        "name": "基础数据 · 方案与素材对齐并确认",
+        "kind": "capability",
+        "capabilityId": "data.zip",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "items",
+            "label": "套图计划",
+            "sourceRef": "step.plan.outputs.cards"
+          },
+          {
+            "key": "expected_count",
+            "label": "请求图片数量",
+            "sourceRef": "input.image_count"
+          },
+          {
+            "key": "references",
+            "label": "逐张媒体包",
+            "sourceRef": "step.references.outputs.bundle"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "rows",
+            "label": "逐张记录",
+            "type": "json"
+          },
+          {
+            "key": "first",
+            "label": "首张样张任务",
+            "type": "json"
+          },
+          {
+            "key": "rest",
+            "label": "剩余任务",
+            "type": "json"
+          }
+        ],
+        "promptTemplate": "",
+        "capabilityConfig": {
+          "itemKey": "card",
+          "identityField": "id",
+          "itemSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "role",
+              "goal",
+              "brief"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "hero",
+                  "selling_point",
+                  "detail",
+                  "lifestyle",
+                  "specs",
+                  "package"
+                ]
+              },
+              "goal": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "brief": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 6000
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "review": {
+          "enabled": true,
+          "instruction": "确认整套视觉和逐张完整设计：每张是否有不同沟通任务与构图，是否是完整电商成图而非商品照片，简短文案是否真实自然。确认后AI直接生成含设计与所需文字的图片，不做程序后置排版。"
+        }
+      },
+      {
+        "id": "prompts",
+        "name": "AIXG · 完整设计转成生图提示词",
+        "kind": "hermes",
+        "capabilityId": "core.hermes",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "reference_images",
+            "label": "本张实际有序图片附件",
+            "sourceRef": "iteration.item.references.images",
+            "referenceType": "image_list"
+          },
+          {
+            "key": "card",
+            "label": "本张设计方案",
+            "sourceRef": "iteration.item.card"
+          },
+          {
+            "key": "reference_map",
+            "label": "素材局部编号",
+            "sourceRef": "iteration.item.references.reference_map"
+          },
+          {
+            "key": "product_brief",
+            "label": "商品事实与禁区",
+            "sourceRef": "step.product_brief.outputs.product_brief"
+          },
+          {
+            "key": "visual_direction",
+            "label": "整套共享视觉规则",
+            "sourceRef": "step.plan.outputs.visual_direction"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "prompt",
+            "label": "本张Qwen Image编辑提示词",
+            "type": "text",
+            "description": "非空中文自然语言图像编辑指令，参考图片按本张实际附件顺序引用<image1>等；不包含路径、URL、生成参数或解释。"
+          }
+        ],
+        "promptTemplate": "你负责把已经确认的电商完整设计转成Qwen图生图自然语言prompt，不调用工具。输入包括整套视觉方向、本张完整设计、商品事实与真实参考图。输出是最终电商设计稿，不是商品摄影底图，也不是等后期填字的留白模板。\n完整保留本张brief的版式、图文关系、字体层级、背景、装饰图形、放大标注、构图节奏与所需短文案；准确短文案用引号原样写入prompt，让图像模型直接生成这些文字与整个画面。不能擅自删去文字、图形或情境，不能把设计简化为“只换背景/保持居中/不要文字”。用户明确要求无字时才无字，但仍完成视觉设计。根据当前真实附件局部顺序把商品与风格引用转换为<image1>、<image2>等，说明哪张提供商品事实、哪张提供视觉参考，不虚构图片编号。\n保持商品身份、颜色及真实可见结构，不添加未经确认的材质性能、尺寸、认证、品牌或配件。背景、人物情境和图形设计不等于虚构性能，不要一律禁止；不要把内部风险说明变成可见文案。prompt必须描述一张完整、可直接交付的电商设计成图，所有视觉与文字都在同一次AI生图中完成，不提程序排版、后置贴字或坐标。只返回JSON对象prompt，值为完整自然语言生图要求。",
+        "hermesProfile": "aixg",
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "step.prompt_jobs.outputs.rows",
+          "onError": "stop",
+          "maxConcurrency": 2
+        }
+      },
+      {
+        "id": "render_jobs",
+        "name": "基础数据 · 对齐计划、素材与提示词",
+        "kind": "capability",
+        "capabilityId": "data.zip",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "items",
+            "label": "套图计划",
+            "sourceRef": "step.plan.outputs.cards"
+          },
+          {
+            "key": "expected_count",
+            "label": "请求图片数量",
+            "sourceRef": "input.image_count"
+          },
+          {
+            "key": "references",
+            "label": "逐张参考",
+            "sourceRef": "step.references.outputs.bundle"
+          },
+          {
+            "key": "prompt",
+            "label": "逐张提示词",
+            "sourceRef": "step.prompts.outputs.prompt"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "rows",
+            "label": "逐张记录",
+            "type": "json"
+          },
+          {
+            "key": "first",
+            "label": "首张样张任务",
+            "type": "json"
+          },
+          {
+            "key": "rest",
+            "label": "剩余任务",
+            "type": "json"
+          }
+        ],
+        "promptTemplate": "",
+        "capabilityConfig": {
+          "itemKey": "card",
+          "identityField": "id",
+          "itemSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "role",
+              "goal",
+              "brief"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "hero",
+                  "selling_point",
+                  "detail",
+                  "lifestyle",
+                  "specs",
+                  "package"
+                ]
+              },
+              "goal": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "brief": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 6000
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 8
+        }
+      },
+      {
+        "id": "sample",
+        "name": "基础ComfyUI · 完整主视觉样张",
+        "kind": "comfyui",
+        "capabilityId": "core.comfyui",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "reference_images",
+            "label": "本张商品与风格参考",
+            "sourceRef": "step.render_jobs.outputs.first.references.images",
+            "referenceType": "image_list"
+          },
+          {
+            "key": "prompt",
+            "label": "本张生成提示词",
+            "sourceRef": "step.render_jobs.outputs.first.prompt"
+          },
+          {
+            "key": "seed",
+            "label": "随机种子",
+            "sourceRef": "input.seed"
+          },
+          {
+            "key": "ratio",
+            "label": "画幅",
+            "sourceRef": "input.ratio"
+          },
+          {
+            "key": "mp",
+            "label": "像素",
+            "sourceRef": "input.mp"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "images",
+            "label": "AI完整成图",
+            "type": "image_list"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "workflowFile": "Zane/i2i_UI.json",
+          "bindings": [
+            {
+              "key": "reference_images",
+              "label": "参考图片",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "images",
+              "type": "image_list",
+              "sourceRef": "step.render_jobs.outputs.first.references.images",
+              "required": true
+            },
+            {
+              "key": "prompt",
+              "label": "正向提示词",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "prompt",
+              "type": "text",
+              "sourceRef": "step.render_jobs.outputs.first.prompt",
+              "required": true
+            },
+            {
+              "key": "seed",
+              "label": "随机种子",
+              "direction": "input",
+              "nodeId": "476",
+              "property": "seed",
+              "type": "number",
+              "sourceRef": "input.seed",
+              "required": false
+            },
+            {
+              "key": "ratio",
+              "label": "画幅",
+              "direction": "input",
+              "nodeId": "481",
+              "property": "aspect_ratio",
+              "type": "text",
+              "sourceRef": "input.ratio",
+              "required": true
+            },
+            {
+              "key": "mp",
+              "label": "像素",
+              "direction": "input",
+              "nodeId": "481",
+              "property": "megapixels",
+              "type": "number",
+              "sourceRef": "input.mp",
+              "required": true
+            },
+            {
+              "key": "configured_canvas",
+              "label": "按画幅与像素建立目标画布（固定）",
+              "direction": "input",
+              "nodeId": "479",
+              "property": "switch",
+              "type": "boolean",
+              "valueSource": "literal",
+              "literalValue": "true",
+              "sourceRef": "",
+              "required": true
+            },
+            {
+              "key": "images",
+              "label": "生成图像",
+              "direction": "output",
+              "nodeId": "461",
+              "property": "images",
+              "type": "image_list"
+            }
+          ]
+        },
+        "review": {
+          "enabled": true,
+          "instruction": "这必须是完整电商设计稿，不是居中商品照片或无字底图。检查视觉设计、图文一体、商品一致性和图中文字；样张不合格先退回，不批量生成剩余图片。"
+        },
+        "capabilityConfig": {
+          "outputMediaCounts": {
+            "images": 1
+          }
+        }
+      },
+      {
+        "id": "remaining",
+        "name": "基础ComfyUI · 逐张生成完整套图",
+        "kind": "comfyui",
+        "capabilityId": "core.comfyui",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "reference_images",
+            "label": "本张商品与风格参考",
+            "sourceRef": "iteration.item.references.images",
+            "referenceType": "image_list"
+          },
+          {
+            "key": "prompt",
+            "label": "本张生成提示词",
+            "sourceRef": "iteration.item.prompt"
+          },
+          {
+            "key": "seed",
+            "label": "随机种子",
+            "sourceRef": "input.seed"
+          },
+          {
+            "key": "ratio",
+            "label": "画幅",
+            "sourceRef": "input.ratio"
+          },
+          {
+            "key": "mp",
+            "label": "像素",
+            "sourceRef": "input.mp"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "images",
+            "label": "AI完整成图",
+            "type": "image_list"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "workflowFile": "Zane/i2i_UI.json",
+          "bindings": [
+            {
+              "key": "reference_images",
+              "label": "参考图片",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "images",
+              "type": "image_list",
+              "sourceRef": "iteration.item.references.images",
+              "required": true
+            },
+            {
+              "key": "prompt",
+              "label": "正向提示词",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "prompt",
+              "type": "text",
+              "sourceRef": "iteration.item.prompt",
+              "required": true
+            },
+            {
+              "key": "seed",
+              "label": "随机种子",
+              "direction": "input",
+              "nodeId": "476",
+              "property": "seed",
+              "type": "number",
+              "sourceRef": "input.seed",
+              "required": false
+            },
+            {
+              "key": "ratio",
+              "label": "画幅",
+              "direction": "input",
+              "nodeId": "481",
+              "property": "aspect_ratio",
+              "type": "text",
+              "sourceRef": "input.ratio",
+              "required": true
+            },
+            {
+              "key": "mp",
+              "label": "像素",
+              "direction": "input",
+              "nodeId": "481",
+              "property": "megapixels",
+              "type": "number",
+              "sourceRef": "input.mp",
+              "required": true
+            },
+            {
+              "key": "configured_canvas",
+              "label": "按画幅与像素建立目标画布（固定）",
+              "direction": "input",
+              "nodeId": "479",
+              "property": "switch",
+              "type": "boolean",
+              "valueSource": "literal",
+              "literalValue": "true",
+              "sourceRef": "",
+              "required": true
+            },
+            {
+              "key": "images",
+              "label": "生成图像",
+              "direction": "output",
+              "nodeId": "461",
+              "property": "images",
+              "type": "image_list"
+            }
+          ]
+        },
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "step.render_jobs.outputs.rest",
+          "onError": "stop",
+          "maxConcurrency": 2
+        },
+        "capabilityConfig": {
+          "outputMediaCounts": {
+            "images": 1
+          }
+        }
+      },
+      {
+        "id": "final",
+        "name": "基础媒体 · 直接交付AI成图",
+        "kind": "capability",
+        "capabilityId": "media.select_references",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "key": "selection",
+            "label": "全部已生成图",
+            "sourceRef": "",
+            "valueSource": "literal",
+            "literalType": "json",
+            "literalValue": "{\"sample_images\":\"all\",\"remaining_images\":\"all\"}"
+          },
+          {
+            "key": "sample_images",
+            "label": "首张样张",
+            "sourceRef": "step.sample.outputs.images"
+          },
+          {
+            "key": "remaining_images",
+            "label": "剩余套图",
+            "sourceRef": "step.remaining.outputs.images"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "images",
+            "label": "整套AI完整成图",
+            "type": "image_list"
+          },
+          {
+            "key": "selected",
+            "label": "选中素材",
+            "type": "json"
+          },
+          {
+            "key": "prompt",
+            "label": "映射提示词",
+            "type": "text"
+          },
+          {
+            "key": "reference_map",
+            "label": "素材局部编号映射",
+            "type": "json"
+          }
+        ],
+        "promptTemplate": "",
+        "capabilityConfig": {
+          "groups": [
+            {
+              "key": "sample_images",
+              "kind": "image"
+            },
+            {
+              "key": "remaining_images",
+              "kind": "image"
+            }
+          ]
+        },
+        "review": {
+          "enabled": true,
+          "instruction": "逐张查看AI原始成图：整体设计是否统一、各张任务和构图是否不同、商品及图中文字是否正确。结果不经过程序贴字、缩放排版或二次合成。单张不满意使用通用逐项重跑。"
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "key": "images",
+        "label": "整套AI成图",
+        "type": "image_list",
+        "sourceRef": "step.final.outputs.images"
+      },
+      {
+        "key": "cards",
+        "label": "已确认套图计划",
+        "type": "json",
+        "sourceRef": "step.plan.outputs.cards"
+      },
+      {
+        "key": "visual_direction",
+        "label": "整套视觉规则",
+        "type": "text",
+        "sourceRef": "step.plan.outputs.visual_direction"
+      }
+    ]
+  }
+}

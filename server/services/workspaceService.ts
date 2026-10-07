@@ -1,3 +1,4 @@
+import { compareDrafts } from "../domain/draftFavorites.js";
 import { readFile } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "../domain/workflowValues.js";
@@ -33,13 +34,14 @@ export function normalizeWorkspacePayload(value: unknown) {
       ids.add(record.id);
     }
   }
+  if (body.drafts.some(value => { const draft = asRecord(value); return draft?.isFavorite !== undefined && typeof draft.isFavorite !== "boolean"; })) throw new HttpError(400, "草稿收藏状态必须是布尔值");
   if (Object.values(workflows).some((value) => !asRecord(value))) throw new HttpError(400, "工作流配置格式无效");
   return {
     format: "zane-studio.workspace/v1",
     scenes: body.scenes,
     workflows,
     optionPresets: body.optionPresets,
-    drafts: body.drafts,
+    drafts: [...body.drafts].sort((left, right) => compareDrafts(asRecord(left) ?? {}, asRecord(right) ?? {})),
     ...(sceneVersions ? { sceneVersions } : {}),
   };
 }
@@ -144,12 +146,14 @@ export function mergeWorkspacePayload(base: ReturnType<typeof normalizeWorkspace
     if (isPresent) workflows[id] = desiredWorkflows[id];
     else delete workflows[id];
   }
-  const drafts = mergeIdentifiedCollection(base.drafts, desired.drafts, current.drafts, "id")
-    .sort((left, right) => {
-      const leftCreatedAt = asRecord(left)?.createdAt;
-      const rightCreatedAt = asRecord(right)?.createdAt;
-      return String(rightCreatedAt ?? "").localeCompare(String(leftCreatedAt ?? ""));
-    });
+  // Older editors do not carry the new metadata when saving content. Omission is not an unfavorite request.
+  const baseDrafts = identifiedRecords(base.drafts, "id");
+  const desiredDrafts = desired.drafts.map(value => {
+    const draft = asRecord(value); const original = draft && asRecord(baseDrafts.get(String(draft.id)));
+    return draft && draft.isFavorite === undefined && original?.isFavorite !== undefined ? { ...draft, isFavorite: original.isFavorite } : value;
+  });
+  const drafts = mergeIdentifiedCollection(base.drafts, desiredDrafts, current.drafts, "id")
+    .sort((left, right) => compareDrafts(asRecord(left) ?? {}, asRecord(right) ?? {}));
   const sceneVersions = mergeRecordByKey(base.sceneVersions ?? {}, desired.sceneVersions ?? {}, current.sceneVersions ?? {});
   return {
     format: "zane-studio.workspace/v1",
@@ -192,6 +196,10 @@ export class WorkspaceService {
       return imported;
     });
   }
+  async status() {
+    const workspace = await this.get();
+    return { authority: "sqlite" as const, initialized: Boolean(workspace), workspaceRevision: typeof workspace?.revision === "number" ? workspace.revision : null, catalogView: "draft" as const, executionView: "published" as const };
+  }
   async initialize(value: unknown) {
     const candidate = normalizeWorkspacePayload(value);
     await this.get();
@@ -216,6 +224,25 @@ export class WorkspaceService {
       });
       await this.export(workspace);
       return workspace;
+    });
+  }
+  /** Scene/preset operations share the same lock and SQLite transaction as UI merges. */
+  async mutateScoped<T>(edit: (current: Record<string, unknown>) => { workspace?: Record<string, unknown>; result: T }, initializeIfMissing = false) {
+    await this.get();
+    return this.lock(async () => {
+      let changed = false;
+      const response = this.store.transaction(() => {
+        const existing = this.store.getWorkspace();
+        if (!existing && !initializeIfMissing) throw new HttpError(409, "工作区尚未初始化", "WORKSPACE_NOT_INITIALIZED");
+        const current: Record<string, unknown> = existing ?? { format: "zane-studio.workspace/v1", scenes: [], workflows: {}, optionPresets: [], drafts: [], sceneVersions: {} };
+        const edited = edit(structuredClone(current));
+        if (!edited.workspace || (existing && isDeepStrictEqual(normalizeWorkspacePayload(edited.workspace), normalizeWorkspacePayload(current)))) return { workspace: current, result: edited.result };
+        const workspace = this.store.saveWorkspace(normalizeWorkspacePayload(edited.workspace));
+        changed = true;
+        return { workspace, result: edited.result };
+      });
+      if (changed) await this.export(response.workspace);
+      return response;
     });
   }
   async shutdown() { this.stopping = true; await this.mutation; }

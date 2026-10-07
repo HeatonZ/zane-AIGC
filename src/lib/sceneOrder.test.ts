@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { moveScene, readScenes, writeScenes } from "./sceneStorage";
+import { moveScene } from "./sceneStorage";
 import type { SceneModule } from "../types";
 
 const scenes: SceneModule[] = ["one", "two", "three", "four"].map((id) => ({
@@ -35,18 +35,9 @@ test("无效场景、越界索引和原位置不触发排序或丢失场景", ()
   assert.equal(moveScene([scenes[0]], "one", 0)[0], scenes[0]);
 });
 
-test("场景排序写入本地副本后重新读取仍保留顺序", (t) => {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const saved = new Map<string, string>([["zane-studio:scenes:image-to-image-v2", "done"]]);
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: { localStorage: { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value); } } },
-  });
-  t.after(() => {
-    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
-    else Reflect.deleteProperty(globalThis, "window");
-  });
+test("场景排序结果用于服务端提交，不读写浏览器场景库", () => {
   const moved = moveScene(scenes, "one", scenes.length - 1);
-  writeScenes(moved);
-  assert.deepEqual(readScenes(), moved);
+  const serverProjection = structuredClone(moved);
+  assert.deepEqual(ids(serverProjection), ["two", "three", "four", "one"]);
+  assert.deepEqual(serverProjection, moved);
 });

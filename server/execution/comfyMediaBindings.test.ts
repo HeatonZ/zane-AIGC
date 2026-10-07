@@ -1,6 +1,7 @@
+import { createRuntimeMediaValue } from "../runtimeValue.js";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { bindComfyAudioPaths, comfyAutogrowInputNames, groupComfyMediaBindings } from "./comfyMediaBindings.js";
+import { bindComfyAudioPaths, comfyAutogrowInputNames, comfyBindingMediaKind, groupComfyMediaBindings } from "./comfyMediaBindings.js";
 import type { RunComfyBinding } from "../domain/types.js";
 
 function autogrow(type: string, prefix: string, max: number) {
@@ -63,4 +64,19 @@ test("rejects excessive voice references and unsupported destination ports", () 
   assert.throws(() => bindComfyAudioPaths(graph, {}, "H3", "ref_audios", autogrow("AUDIO", "ref_audio_", 1), ["a.wav", "b.wav"], "视频生成"), /最多支持 1 个参考音频/);
   assert.throws(() => bindComfyAudioPaths(graph, {}, "H3", "prompt", ["STRING", {}], ["voice.wav"], "视频生成"), /不支持音频/);
   assert.deepEqual(graph, {});
+});
+
+
+test("JSON路径中的合并媒体按真实类型绑定，不把图片/音频/视频当JSON字符串",()=>{
+  for(const kind of ["image","audio","video"] as const) assert.equal(comfyBindingMediaKind(createRuntimeMediaValue(kind,[]),"json",kind+"_list"),kind);
+  assert.throws(()=>comfyBindingMediaKind(createRuntimeMediaValue("audio","voice.wav"),"json","image_list"),/类型不一致/);
+  assert.equal(comfyBindingMediaKind("plain text","text","text"),undefined);
+  assert.equal(comfyBindingMediaKind(["image.png"],"image_list","image_list"),"image");
+});
+
+
+test("审核后JSON媒体数组仍使用显式目标绑定类型，不猜字段名", () => {
+  assert.equal(comfyBindingMediaKind(["image.png"], "json", "image_list"), "image");
+  assert.equal(comfyBindingMediaKind(["voice.wav"], "json", "audio_list"), "audio");
+  assert.equal(comfyBindingMediaKind(["ordinary JSON"], "json", "json"), undefined);
 });

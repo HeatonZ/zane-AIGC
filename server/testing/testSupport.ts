@@ -26,7 +26,7 @@ export async function temporaryDirectory(t: TestContext, cleanup?: () => void | 
   });
   return root;
 }
-export async function harness(t: TestContext, options: { executor?: StepExecutor; maxActiveRuns?: number; execute?(prepared: PreparedRun, context: ExecutionContext): Promise<ExecutionResult> } = {}) {
+export async function harness(t: TestContext, options: { executor?: StepExecutor; maxActiveRuns?: number; getMaxActiveRuns?(): number; execute?(prepared: PreparedRun, context: ExecutionContext): Promise<ExecutionResult> } = {}) {
   let service: RunService | undefined;
   let store: SqliteStore | undefined;
   const root = await temporaryDirectory(t, async () => { await service?.shutdown(100); store?.close(); });
@@ -35,7 +35,7 @@ export async function harness(t: TestContext, options: { executor?: StepExecutor
   const settings: SavedSettings = { projectDirectory, comfyuiBaseUrl: "http://127.0.0.1:1", workflowTimeoutMinutes: 1, enabledHermesProfiles: [] };
   store = new SqliteStore(path.join(root, "metadata.db"));
   const executors = new ExecutorRegistry().register(options.executor ?? { kind: "fake", async execute() { return { value: "ok" }; } });
-  service = new RunService({ store, executors, loadSettings: async () => settings, maxActiveRuns: options.maxActiveRuns ?? 1, execute: options.execute });
+  service = new RunService({ store, executors, loadSettings: async () => settings, maxActiveRuns: options.maxActiveRuns ?? 1, getMaxActiveRuns: options.getMaxActiveRuns, execute: options.execute });
   return { root, settings, store, executors, service };
 }
 export function workflow(steps: RunWorkflowDefinition["steps"] = [{ id: "first", name: "第一步", kind: "fake", inputs: [], outputs: [{ key: "value", type: "text" }] }]): RunWorkflowDefinition {

@@ -1,0 +1,22 @@
+import ModalPortal from "./ModalPortal";
+import { useEffect, useState } from "react";
+import { Save, X } from "lucide-react";
+import type { AssetKind, AssetSource } from "../../server/domain/productionContracts";
+import type { AssetSummary } from "../../server/domain/assetLibraryContracts";
+import { listAssets, saveAsset } from "../lib/api";
+import { useModalFocus } from "../hooks/useModalFocus";
+import AssetMetadataFields, { splitAssetTags, type AssetMetadataForm } from "./AssetMetadataFields";
+export default function SaveAssetButton({ source, kind }: { source: AssetSource; kind: AssetKind }) {
+  const [open, setOpen] = useState(false); const [saved, setSaved] = useState(false);
+  return <><button className="text-button production-save-asset" type="button" onClick={() => setOpen(true)}><Save size={13} />{saved ? "已收藏 / 再保存" : "存入素材库"}</button>{open && <SaveAssetDialog source={source} kind={kind} onClose={() => setOpen(false)} onSaved={() => { setSaved(true); setOpen(false); }} />}</>;
+}
+function SaveAssetDialog({ source, kind, onClose, onSaved }: { source: AssetSource; kind: AssetKind; onClose(): void; onSaved(): void }) {
+  const [form, setForm] = useState<AssetMetadataForm>({ name: "", category: "material", description: "", group: "", tags: "" });
+  const [createId] = useState(() => crypto.randomUUID()); const [existing, setExisting] = useState(""); const [search, setSearch] = useState(""); const [assets, setAssets] = useState<AssetSummary[]>([]); const [cursor, setCursor] = useState<string>(); const [loading, setLoading] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  const modal = useModalFocus(onClose, busy);
+  useEffect(() => { const controller = new AbortController(); setLoading(true); setAssets([]); setExisting(""); setCursor(undefined); const timer = setTimeout(() => { listAssets({ kind, q: search, limit: 24 }, controller.signal).then(result => { setAssets(result.assets); setCursor(result.nextCursor); }).catch(reason => { if (!controller.signal.aborted) setError(reason.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); }, 150); return () => { clearTimeout(timer); controller.abort(); }; }, [kind, search]);
+  const target = assets.find(asset => asset.id === existing);
+  async function more() { setLoading(true); setError(""); try { const page = await listAssets({ kind, q: search, limit: 24, cursor }); setAssets(values => [...values, ...page.assets]); setCursor(page.nextCursor); } catch (reason) { setError((reason as Error).message); } finally { setLoading(false); } }
+  async function save() { setBusy(true); setError(""); try { await saveAsset({ source, ...(target ? { name: target.name, category: target.category, description: target.description, group: target.group, tags: target.tags, assetId: target.id, revision: target.revision } : { ...form, tags: splitAssetTags(form.tags), createId }) }); onSaved(); } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); } }
+  return <ModalPortal><div className="production-modal-backdrop"><section className="production-modal" role="dialog" aria-modal="true" aria-label="保存素材" ref={modal}><div className="production-toolbar"><h2>存入管理员素材库</h2><button className="icon-button" onClick={onClose} disabled={busy} aria-label="关闭保存素材"><X size={18} /></button></div><label className="field-group"><span>查找已有素材（可选）</span><input className="text-input" placeholder="按名称、说明或标签搜索" value={search} disabled={busy} onChange={event => setSearch(event.target.value)} /></label><label className="field-group"><span>保存方式</span><select value={existing} onChange={event => setExisting(event.target.value)} disabled={busy || loading}><option value="">新建素材</option>{assets.map(asset => <option key={asset.id} value={asset.id}>作为“{asset.name}”的新版本（v{asset.currentVersion}）</option>)}</select></label>{cursor && <button className="text-button" disabled={busy || loading} onClick={() => void more()}>加载更多已有素材</button>}{!target && <AssetMetadataFields value={form} kind={kind} disabled={busy} onChange={setForm} />}<p className="studio-field-hint">媒体会复制到独立素材归档，不依赖原运行文件夹，不触发重新生成。响应未确认时请到素材库按原 ID 对账。</p>{error && <div className="workflow-run-error" role="alert">{error}</div>}<button className="button button-primary" disabled={busy || loading || (!target && !form.name.trim())} onClick={() => void save()}>{busy ? "保存中…" : "保存素材"}</button></section></div></ModalPortal>;
+}

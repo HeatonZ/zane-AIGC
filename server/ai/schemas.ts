@@ -1,0 +1,27 @@
+import { assetSourceSchema } from "../domain/assetLibraryContracts.js";
+import { feedbackMessageMaxLength } from "../domain/feedbackContracts.js";
+import * as z from "zod/v4";
+
+export const id = z.string().min(1).max(200);
+export const runId = z.string().regex(/^[a-f0-9-]{36}$/i).describe("客户端事先生成并保存的 UUID；响应丢失时只查询这个 ID，不换 ID 重试提交");
+export const capabilityQuery = z.object({
+  tier: z.enum(["all", "basic", "specialized"]).default("all").describe("优先用 basic 查找可跨场景复用的基础步骤；specialized 仅在明确缺少必要能力时查看；all 保留完整目录兼容旧客户端"),
+  limit: z.int().min(1).max(100).default(50).describe("单页能力数量；默认50，最大100；hasMore时使用同一tier的nextCursor继续读取"),
+  cursor: z.string().min(1).max(2048).optional().describe("上页nextCursor，绑定目录revision和tier；409 CAPABILITY_PAGE_CHANGED时重读第一页，不拼接不同目录快照"),
+}).strict();
+export const values = z.record(z.string(), z.json());
+export const source = assetSourceSchema;
+export const selection = z.object({ mode: z.enum(["all", "item", "for_each"]), index: z.int().nonnegative().optional() }).strict();
+export const stepInput = z.object({ key: id, label: z.string().optional(), sourceRef: z.string().optional(), valueSource: z.enum(["literal", "reference"]).optional(), literalValue: z.string().optional(), literalType: z.string().optional(), referenceType: z.enum(["image_list", "video_list", "audio_list"]).describe("引用JSON字段中的媒体时显式声明列表类型；恢复/审核后同样作为真实附件，非媒体JSON不要声明。省略保留旧行为，不生成媒体").optional(), selection: selection.optional() }).strict();
+export const stepChanges = z.object({ promptTemplate: z.string().optional(), hermesProfile: z.string().optional(), capabilityConfig: values.optional(), inputs: z.array(stepInput).optional(), comfyui: values.optional() }).strict();
+export const feedbackMessage = z.string().trim().min(1).max(feedbackMessageMaxLength);
+export const changes = z.object({
+  feedback: z.array(z.object({ stepId: id, itemIndex: z.int().nonnegative().optional(), message: feedbackMessage }).strict()).optional(),
+  inputOverrides: values.optional(),
+  stepOverrides: z.array(stepChanges.extend({ stepId: id, itemIndex: z.int().nonnegative().optional() })).optional(),
+  outputOverrides: z.array(z.object({ stepId: id, itemIndex: z.int().nonnegative().optional(), outputs: values }).strict()).optional(),
+  rerunSteps: z.array(z.object({ stepId: id, itemIndexes: z.array(z.int().nonnegative()).optional() }).strict()).optional(),
+}).strict();
+export const scenePreparation = z.object({ versionId: id, inputValues: values }).strict();
+export const sceneSubmission = scenePreparation.extend({ runId, runTitle: z.string().max(120).optional() }).strict();
+export const runStatuses = z.enum(["queued", "running", "cancelling", "waiting", "completed", "failed", "cancelled", "stale"]);

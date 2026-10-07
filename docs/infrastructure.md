@@ -65,6 +65,9 @@ queued -> running -> completed / failed / cancelled
 | 详情 | `GET /api/v1/runs/:runId` |
 | 取消 | `POST /api/v1/runs/:runId/cancel` |
 | 续跑 | `POST /api/v1/runs/:runId/resume` |
+| 修订预览 | `POST /api/v1/runs/:runId/rerun/preview` |
+| 创建修订 | `POST /api/v1/runs/:runId/rerun` |
+| 能力目录 | `GET /api/v1/capabilities` |
 | SSE | `GET /api/v1/runs/:runId/events` |
 | 历史事件 | `GET /api/v1/runs/:runId/events/history?after=序号` |
 | 媒体 | `GET /api/v1/runs/:runId/media/:filename` |
@@ -78,6 +81,12 @@ queued -> running -> completed / failed / cancelled
 
 共享工作区按实体进行三方合并：不同实体的编辑保留，同一实体的冲突返回 `409 WORKSPACE_CONFLICT`。浏览器 outbox 的冲突不会被静默覆盖；需要比较修改后解决。outbox 依赖浏览器存储可用，并非完整的离线协同系统。
 
+## 能力包与选择性修订
+
+执行器注册、设计器配置与结果通用展示由能力声明驱动。新增包放在 `server/capabilities/packages/`，无需扩展核心适配器分支；Hermes/ComfyUI 核心连接函数仍由服务组装。
+
+已结束运行支持编辑中间结果、整步/单项重做及新版本对比。修订前纯预览依赖失效范围，未变化的成功结果复用，未知依赖保守重算。源版本不被覆盖；排队修订可跨重启恢复，正在执行的修订遵守同样的中断/续跑语义。原归档媒体仍可能被新版本引用，当前不提供祖先运行自动回收。详见 `docs/capabilities-and-reruns.md`。
+
 ## 配置、发布与备份
 
 新增配置：
@@ -85,9 +94,13 @@ queued -> running -> completed / failed / cancelled
 ```dotenv
 ZANE_MAX_ACTIVE_RUNS=2
 ZANE_SHUTDOWN_TIMEOUT_MS=15000
+HERMES_RETRY_ATTEMPTS=6
+HERMES_RETRY_INITIAL_DELAY_MS=250
+HERMES_RETRY_MAX_DELAY_MS=4000
 ```
 
 `ZANE_MAX_ACTIVE_RUNS` 为整个流程的并发上限（1–32），不是 GPU 并发数。ComfyUI 同地址仍串行。`ZANE_SHUTDOWN_TIMEOUT_MS` 是优雅关闭的等待时间，单位毫秒。
+`HERMES_RETRY_ATTEMPTS` 是首次请求之外的重试次数（0–20）；后两个配置控制 Hermes 网络重试的指数退避等待时间，单位毫秒。默认值分别为 6、250 和 4000。
 
 发布前执行 `npm run check`。停止服务，备份现有数据目录，再更新代码/构建并使用同一个数据目录重新启动。第一次升级前建议额外保留旧 `workspace.json` 与整个项目归档目录，便于回退。
 
@@ -101,10 +114,18 @@ ZANE_SHUTDOWN_TIMEOUT_MS=15000
 
 本轮不是整个路线图的终点。后续仍需独立推进：
 
-1. 统一 AssetStore、内容哈希去重、输出归档下载流式化和资产生命周期。
-2. 工作流编译器：执行前的跨步骤引用/类型检查、依赖计划、确定性快照。
+1. 继续完善素材生命周期（显式引用索引与可验证的回收）及全部输出归档下载的流式化；素材库与内容哈希归档已落地。
+2. 完整工作流编译器：在现有修订依赖计划和运行快照之上，扩展全流程跨步骤引用/类型检查。
 3. 进一步抽离 Hermes/ComfyUI 连接器、模型调用与工作流格式转换。
 4. 实体级工作区存储与更细粒度协同冲突处理、outbox 冲突解决交互。
 5. 在线备份、事件保留/压缩与历史数据维护；在确有多机需求时再加入任务租约。
 
 安全改造不在本轮范围内。
+
+## 创作生产基建
+
+真实素材库、持久化人工确认与固定镜头选版清单已接入，详见 [生产工作台说明](production-workbench.md)。SQLite 元数据已升级至版本 2；素材内容独立归档并按内容哈希去重。媒体自动回收、完整时间线剪辑和全流程预检仍不在本轮范围内。
+
+## 稳定性加固
+
+执行收尾的取消优先、迟到进度隔离、持久化本地输入副本、旧队列恢复及损坏归档隔离、提交响应丢失后的原 ID 查询、SSE 游标重连、输出媒体限并发流式归档已接入。范围、限制和验证方式见 [稳定性加固说明](stability.md)。本轮不新增外部中间件，也不改变 SQLite 数据版本。

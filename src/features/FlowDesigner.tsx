@@ -11,6 +11,7 @@ import {
   FileInput,
   FileOutput,
   History as HistoryIcon,
+  GitCompareArrows,
   ListPlus,
   Plus,
   RefreshCw,
@@ -21,6 +22,7 @@ import {
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
 import { loadComfyUINodeInfo, loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesProfiles } from "../lib/api";
+import { clearConfirmedStaleComfyBindings } from "../lib/comfyBindingValidation";
 import type {
   ComfyUIBinding,
   ComfyUINodeInfo,
@@ -47,9 +49,17 @@ import type {
   WorkflowValueSource,
   WorkflowVariableType,
   WorkflowMediaSelection,
+  WorkflowMediaRole,
 } from "../types";
+import { workflowMediaRoleOptions, workflowMediaRoleLabels, validWorkflowMediaRole } from "../../server/domain/workflowMediaRoles.js";
 import SceneVersionsDialog from "./SceneVersionsDialog";
-import { publishedSceneVersion, sceneDraftMatchesVersion } from "../lib/sceneVersions";
+import SceneDiffDialog from "../components/SceneDiffDialog";
+import StepCapabilityPicker from "../components/StepCapabilityPicker";
+import CapabilityConfigEditor from "../components/CapabilityConfigEditor";
+import { useCapabilities } from "../hooks/useCapabilities";
+import { applyCapabilityToStep, capabilityForStep, capabilityConfigErrors, type CapabilityDefinition } from "../lib/capabilities";
+import { builtinCapabilities } from "../../server/capabilities/definitions.js";
+import { publishedSceneVersion, sceneDraftMatchesVersion, sceneVersionHash } from "../lib/sceneVersions";
 import { canonicalWorkflowMediaType, canonicalWorkflowType } from "../lib/workflowMigration";
 
 interface FlowDesignerProps {
@@ -63,7 +73,8 @@ interface FlowDesignerProps {
   onSortScenes: () => void;
   onChange: (workflow: WorkflowDefinition) => void;
   onOptionPresetsChange: (optionPresets: WorkflowOptionPreset[]) => void;
-  onPublish: () => SceneVersion | undefined;
+  saveStatus?: "saving" | "saved" | "failed";
+  onPublish: () => Promise<SceneVersion | undefined>;
   onApplyVersion: (version: SceneVersion) => void;
   onOpenConnections: () => void;
 }
@@ -151,6 +162,7 @@ const stepKindLabels: Record<WorkflowStepKind, string> = {
   comfyui: "ComfyUI",
   manual: "人工处理",
   control: "控制节点",
+  capability: "能力包",
 };
 
 const MAX_STEP_CONCURRENCY = 32;
@@ -249,7 +261,7 @@ function allReferenceOptions(workflow: WorkflowDefinition): ReferenceOption[] {
 }
 
 function splitReferencePath(value: string) {
-  const match = /^(iteration\.item|input\.[a-zA-Z0-9_]+|step\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_]+)([\s\S]*)$/.exec(value);
+  const match = /^(iteration\.(?:item|previous|hasPrevious|index)|input\.[a-zA-Z0-9_]+|step\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_]+)([\s\S]*)$/.exec(value);
   if (!match) return undefined;
   return {
     root: match[1],
@@ -377,6 +389,16 @@ function iterationItemReferenceOption(workflow: WorkflowDefinition, sourceRef: s
   return { value: "iteration.item", label: "当前遍历项", type, ...(isMediaVariableType(type) ? { isCollection: false } : {}) };
 }
 
+export function carryReferenceOptions(step: WorkflowStepDefinition): ReferenceOption[] {
+  if (step.execution?.mode !== "for_each" || !step.execution.carry) return [];
+  const output = step.outputs.find(port => port.key === step.execution?.carry?.outputKey);
+  return [
+    ...(output ? [{ value: "iteration.previous", label: "上一项输出（首项为初始状态或空）", type: output.type, isArray: isMediaVariableType(output.type) || output.type === "json", isCollection: isMediaVariableType(output.type) }] : []),
+    { value: "iteration.hasPrevious", label: "是否有上一项/初始状态", type: "boolean" },
+    { value: "iteration.index", label: "当前项序号（从0开始）", type: "number" },
+  ];
+}
+
 function ReferenceSelect({ value, options, onChange, onReferenceChange, selection, onSelectionChange, allowJsonPath = false, allowMediaIndex = false }: {
   value: string;
   options: ReferenceOption[];
@@ -501,6 +523,13 @@ function literalValueError(type: WorkflowVariableType, value: string) {
   return "";
 }
 
+function MediaRoleSelect({ type, value, onChange, label }: { type: string; value?: WorkflowMediaRole; onChange: (role: WorkflowMediaRole | undefined) => void; label: string }) {
+  const options = workflowMediaRoleOptions(type);
+  if (!options.length) return null;
+  const genericLabel = canonicalWorkflowMediaType(type) === "image_list" ? "参考图片" : canonicalWorkflowMediaType(type) === "audio_list" ? "参考声音" : "参考视频";
+  return <div className="select-wrap media-role-select"><select value={value ?? "reference"} onChange={event => onChange(event.target.value === "reference" ? undefined : event.target.value as WorkflowMediaRole)} aria-label={label} title="素材用途与媒体类型分开配置；参考音色不是驱动音轨">{options.map(role => <option value={role} key={role}>{role === "reference" ? genericLabel : workflowMediaRoleLabels[role]}</option>)}</select><ChevronDown size={13} /></div>;
+}
+
 function defaultHermesOutputs(): WorkflowStepOutput[] {
   return [{ key: "result", label: "结构化结果", type: "json" }];
 }
@@ -540,20 +569,20 @@ function comfyBindings(step: WorkflowStepDefinition): ComfyUIBinding[] {
     ? configured ?? []
     : inferredComfyBindings(step);
 }
-
-function stepWithComfyBindings(step: WorkflowStepDefinition, bindings: ComfyUIBinding[]): WorkflowStepDefinition {
+function stepWithComfyBindings(step: WorkflowStepDefinition, bindings: ComfyUIBinding[], catalog: readonly CapabilityDefinition[] = builtinCapabilities): WorkflowStepDefinition {
   const boundOutputs = bindings.filter((binding) => binding.direction === "output").map((binding) => ({
     key: binding.key,
     label: binding.label,
     type: bindingOutputType(binding.type),
   }));
-  const adapterKeys = step.comfyui?.adapter === "h3_long_video" ? ["applied_prompts"] : step.comfyui?.adapter === "commerce_pack" ? ["commerce_manifest"] : step.comfyui?.adapter === "long_text_video" ? ["applied_shot"] : step.comfyui?.adapter === "video_concat" ? step.outputs.map((output) => output.key) : [];
+  const capability = capabilityForStep(step, catalog);
+  const adapterKeys = capability?.editor.outputs === "ports" ? step.outputs.map((output) => output.key) : capability?.outputs.map((output) => output.key) ?? [];
   const adapterOutputs = step.outputs.filter((output) => adapterKeys.includes(output.key) && !boundOutputs.some((binding) => binding.key === output.key));
   return {
     ...step,
     comfyui: { ...step.comfyui, workflowFile: step.comfyui?.workflowFile ?? "", bindings },
     // Adapter contracts are separate from the underlying model-node bindings.
-    inputs: ["commerce_pack", "long_text_video", "video_concat"].includes(step.comfyui?.adapter ?? "") ? step.inputs : bindings.filter((binding) => binding.direction === "input").map((binding) => ({
+    inputs: capability?.editor.inputs === "ports" ? step.inputs : bindings.filter((binding) => binding.direction === "input").map((binding) => ({
       key: binding.key,
       label: binding.label,
       sourceRef: binding.sourceRef ?? "",
@@ -622,7 +651,7 @@ function syncComfySourceFormat(
   return { workflow: updatedWorkflow, binding: { ...next, sourceInputFormat: undefined, sourceOutputFormat } };
 }
 
-export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionPresets, versionRecord, onSceneChange, onSortScenes, onChange, onOptionPresetsChange, onPublish, onApplyVersion, onOpenConnections }: FlowDesignerProps) {
+export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, scene, workflow, optionPresets, versionRecord, onSceneChange, onSortScenes, onChange, onOptionPresetsChange, onPublish, onApplyVersion, onOpenConnections }: FlowDesignerProps) {
   const [selection, setSelection] = useState<Selection>({ kind: "inputs" });
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
   const [enabledProfiles, setEnabledProfiles] = useState<string[]>([]);
@@ -637,10 +666,14 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
   const [comfyNodeInfos, setComfyNodeInfos] = useState<Record<string, ComfyUINodeInfo>>({});
   const [comfyNodeLoadingTypes, setComfyNodeLoadingTypes] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
+  const { capabilities, error: capabilityError } = useCapabilities();
   const [showVersions, setShowVersions] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [referenceToInsert, setReferenceToInsert] = useState("");
   const [referencePathToInsert, setReferencePathToInsert] = useState("");
+  const workflowRef = useRef(workflow);
+  workflowRef.current = workflow;
 
   useEffect(() => {
     Promise.all([loadHermesProfiles(), loadConnectionSettings()])
@@ -665,6 +698,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
   }, [sceneId]);
 
   const selectedStep = selection.kind === "step" ? workflow.steps.find((step) => step.id === selection.stepId) : undefined;
+  const selectedCapability = selectedStep ? capabilityForStep(selectedStep, capabilities) : undefined;
   const selectedStepIndex = selectedStep ? workflow.steps.findIndex((step) => step.id === selectedStep.id) : -1;
   const selectedComfyBindings = selectedStep?.kind === "comfyui" ? comfyBindings(selectedStep) : [];
   const sourceOptions = useMemo(() => allReferenceOptions(workflow), [workflow]);
@@ -679,10 +713,10 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
     ? iterationItemReferenceOption(workflow, selectedStep.execution.sourceRef ?? "", priorReferenceOptions)
     : undefined;
   const selectedStepReferenceOptions = selectedIterationItemOption
-    ? [...priorReferenceOptions, selectedIterationItemOption]
+    ? [...priorReferenceOptions, selectedIterationItemOption, ...carryReferenceOptions(selectedStep!)]
     : priorReferenceOptions;
   const selectedStepPromptOptions = selectedIterationItemOption
-    ? [...promptSourceOptions, selectedIterationItemOption]
+    ? [...promptSourceOptions, selectedIterationItemOption, ...carryReferenceOptions(selectedStep!)]
     : promptSourceOptions;
   const promptReferenceType = referenceOption(referenceToInsert, selectedStepPromptOptions)?.type;
   const promptReferencePath = referenceWithJsonPath(referenceToInsert, referencePathToInsert);
@@ -698,7 +732,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
   }, [selectedStep?.id]);
 
   useEffect(() => {
-    if (!selectedStep || selectedStep.kind !== "comfyui" || !selectedStep.comfyui?.workflowFile || selectedStep.comfyui.adapter === "video_concat") {
+    if (!selectedStep || selectedStep.kind !== "comfyui" || !selectedStep.comfyui?.workflowFile || !selectedCapability?.editor.bindings) {
       setComfyNodes([]);
       setComfyFormat(null);
       setComfyConverted(false);
@@ -712,11 +746,59 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
     setComfyFormat(null);
     setComfyConverted(false);
     loadComfyUIWorkflow(selectedStep.comfyui.workflowFile)
-      .then((detail) => { if (active) { setComfyNodes(detail.nodes); setComfyFormat(detail.format); setComfyConverted(Boolean(detail.converted)); } })
+      .then(async (detail) => {
+        if (!active) return;
+        setComfyNodes(detail.nodes);
+        setComfyFormat(detail.format);
+        setComfyConverted(Boolean(detail.converted));
+        const initialWorkflow = workflowRef.current;
+        const initialStep = initialWorkflow.steps.find((step) => step.id === selectedStep.id);
+        if (!initialStep || initialStep.kind !== "comfyui" || initialStep.comfyui?.workflowFile !== selectedStep.comfyui?.workflowFile) return;
+
+        const initialBindings = comfyBindings(initialStep);
+        const nodeInfos: Record<string, ComfyUINodeInfo> = { ...comfyNodeInfos };
+        const nodeTypesToInspect = new Set<string>();
+        for (const binding of initialBindings) {
+          const nodeId = binding.nodeId.trim();
+          const property = binding.property.trim();
+          if (!nodeId || !property) continue;
+          const node = detail.nodes.find((candidate) => candidate.id === nodeId);
+          if (!node || nodeInfos[node.type]) continue;
+          const summaryProperties = binding.direction === "input" ? node.inputProperties : node.outputProperties;
+          if (binding.direction === "input" && !summaryProperties.includes(property)) nodeTypesToInspect.add(node.type);
+        }
+        const schemaReadFailures: string[] = [];
+        await Promise.all([...nodeTypesToInspect].map(async (nodeType) => {
+          try {
+            const info = await loadComfyUINodeInfo(nodeType);
+            nodeInfos[nodeType] = info;
+            setComfyNodeInfos((current) => ({ ...current, [nodeType]: info }));
+          } catch {
+            // An unavailable schema is inconclusive; keep the user's binding.
+            schemaReadFailures.push(nodeType);
+          }
+        }));
+        if (!active) return;
+
+        const currentWorkflow = workflowRef.current;
+        const currentStep = currentWorkflow.steps.find((step) => step.id === selectedStep.id);
+        if (!currentStep || currentStep.kind !== "comfyui" || currentStep.comfyui?.workflowFile !== selectedStep.comfyui?.workflowFile) return;
+        const bindings = comfyBindings(currentStep);
+        const nextBindings = clearConfirmedStaleComfyBindings(bindings, detail.nodes, nodeInfos, detail.format);
+        if (nextBindings !== bindings) {
+          onChange({
+            ...currentWorkflow,
+            steps: currentWorkflow.steps.map((step) => step.id === currentStep.id ? stepWithComfyBindings(step, nextBindings, capabilities) : step),
+          });
+          setComfyNodeError("已根据 ComfyUI 节点类型定义确认并清空失效绑定，请重新选择节点和属性。");
+        } else if (schemaReadFailures.length) {
+          setComfyNodeError("无法读取部分 ComfyUI 节点定义，现有绑定已保留，未自动清空。");
+        }
+      })
       .catch((error: unknown) => { if (active) setComfyError(error instanceof Error ? error.message : "无法读取工作流节点"); })
       .finally(() => { if (active) setComfyLoading(false); });
     return () => { active = false; };
-  }, [selectedStep?.id, selectedStep?.kind, selectedStep?.comfyui?.workflowFile, selectedStep?.comfyui?.adapter]);
+  }, [selectedStep?.id, selectedStep?.kind, selectedStep?.comfyui?.workflowFile, selectedStep?.comfyui?.adapter, selectedCapability?.editor.bindings]);
 
   function update(next: WorkflowDefinition) {
     onChange(next);
@@ -791,7 +873,11 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
   function updateInputField(index: number, changes: Partial<WorkflowInputField>) {
     update({
       ...workflow,
-      inputs: workflow.inputs.map((field, fieldIndex) => fieldIndex === index ? { ...field, ...changes } : field),
+      inputs: workflow.inputs.map((field, fieldIndex) => {
+        if (fieldIndex !== index) return field;
+        const next = { ...field, ...changes };
+        return validWorkflowMediaRole(next.mediaRole, next.type) ? next : { ...next, mediaRole: undefined };
+      }),
     });
   }
 
@@ -825,14 +911,18 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
   function updateComfyBindings(stepId: string, bindings: ComfyUIBinding[]) {
     update({
       ...workflow,
-      steps: workflow.steps.map((step) => step.id === stepId ? stepWithComfyBindings(step, bindings) : step),
+      steps: workflow.steps.map((step) => step.id === stepId ? stepWithComfyBindings(step, bindings, capabilities) : step),
     });
   }
 
   function updateComfyBinding(stepId: string, index: number, changes: Partial<ComfyUIBinding>) {
     if (!selectedStep) return;
     const bindings = comfyBindings(selectedStep);
-    updateComfyBindings(stepId, bindings.map((binding, itemIndex) => itemIndex === index ? { ...binding, ...changes } : binding));
+    updateComfyBindings(stepId, bindings.map((binding, itemIndex) => {
+      if (itemIndex !== index) return binding;
+      const next = { ...binding, ...changes };
+      return validWorkflowMediaRole(next.mediaRole, next.type, next.direction) ? next : { ...next, mediaRole: undefined };
+    }));
   }
 
   function updateComfyBindingNode(index: number, nodeId: string) {
@@ -855,7 +945,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
     const nextBindings = bindings.map((item, itemIndex) => itemIndex === index ? updated : item);
     update({
       ...nextWorkflow,
-      steps: nextWorkflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings) : step),
+      steps: nextWorkflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings, capabilities) : step),
     });
   }
 
@@ -867,7 +957,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
     const nextBindings = bindings.filter((_, itemIndex) => itemIndex !== index);
     update({
       ...workflow,
-      steps: workflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings) : step),
+      steps: workflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings, capabilities) : step),
     });
   }
 
@@ -885,11 +975,13 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
     const binding = bindings[index];
     if (!binding) return;
     const propertyInfo = propertyInfoForBinding(binding);
-    const result = syncComfySourceFormat(workflow, binding, { ...binding, valueSource: "reference", sourceRef, literalValue: undefined, selection }, propertyInfo);
+    const sourceField = workflow.inputs.find(field => sourceRef === `input.${field.key}`);
+    const mediaRole = sourceField?.mediaRole ?? binding.mediaRole;
+    const result = syncComfySourceFormat(workflow, binding, { ...binding, valueSource: "reference", sourceRef, literalValue: undefined, selection, ...(validWorkflowMediaRole(mediaRole, binding.type) ? { mediaRole } : { mediaRole: undefined }) }, propertyInfo);
     const nextBindings = bindings.map((item, itemIndex) => itemIndex === index ? result.binding : item);
     update({
       ...result.workflow,
-      steps: result.workflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings) : step),
+      steps: result.workflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings, capabilities) : step),
     });
   }
 
@@ -902,14 +994,12 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
     const nodeInfo = node ? comfyNodeInfos[node.type] : undefined;
     const properties = binding.direction === "input" ? nodeInfo?.inputs : nodeInfo?.outputs;
     const propertyInfo = properties?.find((property) => property.name === propertyName);
-    const isH3VideoOutput = binding.direction === "output"
-      && selectedStep.comfyui?.adapter === "h3_long_video"
-      && node?.type === "VHS_VideoCombine"
-      && propertyName === "Filenames";
+    const bindingType = selectedCapability?.editor.bindingTypes?.find((rule) => rule.direction === binding.direction && rule.nodeType === node?.type && rule.property === propertyName)?.type;
     const isLoadAudioSelector = binding.direction === "input" && node?.type === "LoadAudio" && propertyName === "audio";
     let updated: ComfyUIBinding = propertyInfo
-      ? { ...binding, property: propertyName, type: isH3VideoOutput ? "video_list" : propertyInfo.type, options: isLoadAudioSelector ? undefined : propertyInfo.options, required: propertyInfo.required }
+      ? { ...binding, property: propertyName, type: bindingType ?? propertyInfo.type, options: isLoadAudioSelector ? undefined : propertyInfo.options, required: propertyInfo.required }
       : { ...binding, property: propertyName, options: undefined, required: undefined };
+    if (!validWorkflowMediaRole(updated.mediaRole, updated.type, updated.direction)) updated = { ...updated, mediaRole: undefined };
     let nextWorkflow = workflow;
     if (binding.direction === "input") {
       const result = syncComfySourceFormat(workflow, binding, updated, propertyInfo);
@@ -919,7 +1009,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
     const nextBindings = bindings.map((item, itemIndex) => itemIndex === index ? updated : item);
     update({
       ...nextWorkflow,
-      steps: nextWorkflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings) : step),
+      steps: nextWorkflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, nextBindings, capabilities) : step),
     });
   }
 
@@ -935,10 +1025,38 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
   }
 
   function changeComfyWorkflow(stepId: string, workflowFile: string) {
-    updateStep(stepId, (step) => ({
-      ...step,
-      comfyui: { ...step.comfyui, workflowFile, bindings: comfyBindings(step) },
-    }));
+    const currentStep = workflow.steps.find((step) => step.id === stepId);
+    if (!currentStep || currentStep.kind !== "comfyui") return;
+    if (currentStep.comfyui?.workflowFile === workflowFile) return;
+
+    // Node ids and widget names are local to a workflow. Keeping the old
+    // bindings after a workflow switch makes a perfectly valid workflow fail
+    // at runtime with errors such as "196.String not found". Preserve the
+    // variable contracts/source references so the user only has to remap the
+    // ComfyUI node and property for the new workflow.
+    let nextWorkflow = workflow;
+    const nextBindings = comfyBindings(currentStep).map((binding) => {
+      if (binding.direction === "input" && binding.sourceOutputFormat) {
+        nextWorkflow = restoreComfySourceOutput(nextWorkflow, binding.sourceRef ?? "", binding.sourceOutputFormat);
+      }
+      return {
+        ...binding,
+        nodeId: "",
+        property: "",
+        options: undefined,
+        required: undefined,
+        sourceInputFormat: undefined,
+        sourceOutputFormat: undefined,
+      };
+    });
+    update({
+      ...nextWorkflow,
+      steps: nextWorkflow.steps.map((step) => step.id !== stepId ? step : stepWithComfyBindings({
+        ...step,
+        comfyui: { ...step.comfyui, workflowFile, bindings: nextBindings },
+      }, nextBindings, capabilities)),
+    });
+    setComfyNodeError("已切换工作流，旧节点绑定已清空，请重新选择节点和属性。");
   }
 
   async function loadComfyNodeProperties(nodeId: string) {
@@ -971,29 +1089,17 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
     }
   }
 
-  function changeStepKind(stepId: string, kind: WorkflowStepKind) {
+  function changeStepCapability(stepId: string, capabilityId: string) {
+    const definition = capabilities.find((item) => item.id === capabilityId);
+    if (!definition) return;
     updateStep(stepId, (step) => {
-      if (kind === "control") {
-        return {
-          ...step,
-          kind,
-          inputs: [],
-          outputs: [{ key: "result", label: "判断结果", type: "boolean" }],
-          promptTemplate: "",
-          control: step.control ?? defaultControlConfig(),
-          comfyui: undefined,
-          hermesProfile: undefined,
-        };
+      const next = applyCapabilityToStep(step, definition);
+      if (definition.editor.condition) next.control = step.control ?? defaultControlConfig();
+      if (definition.editor.profile) {
+        next.hermesProfile = step.hermesProfile ?? enabledProfiles[0] ?? profiles[0]?.id ?? "";
+        if (step.kind === "control" || !next.outputs.length) next.outputs = defaultHermesOutputs();
       }
-      const { control: _control, ...withoutControl } = step;
-      const leavingControl = step.kind === "control";
-      return {
-        ...withoutControl,
-        kind,
-        outputs: kind === "hermes" && (leavingControl || !step.outputs.length) ? defaultHermesOutputs() : leavingControl ? [] : step.outputs,
-        ...(kind === "comfyui" ? { comfyui: step.comfyui ?? { workflowFile: "", bindings: [] }, hermesProfile: undefined } : {}),
-        ...(kind === "hermes" ? { hermesProfile: step.hermesProfile ?? enabledProfiles[0] ?? profiles[0]?.id ?? "" } : {}),
-      };
+      return next;
     });
   }
 
@@ -1029,7 +1135,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
       const iterationOption = step.execution?.mode === "for_each"
         ? iterationItemReferenceOption(workflow, step.execution.sourceRef ?? "", priorOptions)
         : undefined;
-      const stepOptions = iterationOption ? [...priorOptions, iterationOption] : priorOptions;
+      const stepOptions = iterationOption ? [...priorOptions, iterationOption, ...carryReferenceOptions(step)] : priorOptions;
       const prior = new Set(stepOptions.map((option) => option.value));
       if (step.execution?.mode === "for_each") {
         const source = referenceOption(step.execution.sourceRef ?? "", priorOptions);
@@ -1038,6 +1144,12 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
         else {
           const error = referencePathError(step.execution.sourceRef ?? "", priorOptions, true);
           if (error) messages.push(`${step.name} 的遍历来源 ${error}`);
+        }
+        const carry = step.execution.carry;
+        if (carry) {
+          if (!step.outputs.some(output => output.key === carry.outputKey)) messages.push(`${step.name} 的状态传递需要选择已声明输出`);
+          if ((step.execution.maxConcurrency ?? 1) !== 1 || (step.execution.onError ?? "stop") !== "stop") messages.push(`${step.name} 的状态传递必须串行且失败停止`);
+          if (carry.initialSourceRef && referencePathError(carry.initialSourceRef, priorOptions, true, true)) messages.push(`${step.name} 的初始状态来源无效`);
         }
         const maxConcurrency = step.execution.maxConcurrency;
         if (maxConcurrency !== undefined && (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > MAX_STEP_CONCURRENCY)) {
@@ -1090,7 +1202,10 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
           });
         }
       }
-      if (step.kind === "comfyui") {
+      const capability = capabilityForStep(step, capabilities);
+      if (!capability) messages.push(step.name + " 的能力包未安装");
+      else messages.push(...capabilityConfigErrors(step, capability).map((error) => step.name + "：" + error));
+      if (capability?.editor.bindings) {
         const bindings = comfyBindings(step);
         if (!step.comfyui?.workflowFile) messages.push(`${step.name} 还没有选择 ComfyUI 工作流`);
         if (bindings.some((binding) => !binding.key.trim() || !binding.nodeId.trim() || !binding.property.trim())) {
@@ -1123,10 +1238,11 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
   const validation = validationMessages();
   const currentPublishedVersion = publishedSceneVersion(versionRecord);
   const hasUnpublishedChanges = !sceneDraftMatchesVersion(scene, workflow, optionPresets, currentPublishedVersion);
-  const canPublish = validation.length === 0 && hasUnpublishedChanges;
+  const canPublish = validation.length === 0 && hasUnpublishedChanges && saveStatus === "saved";
 
-  function publish() {
-    const version = onPublish();
+  async function publish() {
+    let version: SceneVersion | undefined;
+    try { version = await onPublish(); } catch (error) { setNotice(error instanceof Error ? error.message : "发布尚未确认"); return; }
     if (version) {
       setNotice(`已发布 v${version.version}`);
       window.setTimeout(() => setNotice(""), 1800);
@@ -1143,7 +1259,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
       : { ...binding, valueSource, sourceRef: "", literalValue: undefined, selection: undefined, sourceInputFormat: undefined, sourceOutputFormat: undefined };
     update({
       ...workflow,
-      steps: workflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, bindings.map((item, itemIndex) => itemIndex === index ? nextBinding : item)) : step),
+      steps: workflow.steps.map((step) => step.id === selectedStep.id ? stepWithComfyBindings(step, bindings.map((item, itemIndex) => itemIndex === index ? nextBinding : item), capabilities) : step),
     });
   }
 
@@ -1153,12 +1269,13 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
         <div>
           <div className="eyebrow"><span className="eyebrow-line" />WORKFLOW DESIGN</div>
           <h1>流程配置</h1>
-          <p className="page-subtitle">按顺序配置输入、处理步骤与最终输出。</p>
+          <p className="page-subtitle">当前为草稿配置，与 MCP get_scene_draft 一致；显式发布后才用于创作。</p>
         </div>
         <div className="designer-release-actions">
           <span className={`designer-release-state ${currentPublishedVersion ? hasUnpublishedChanges ? "staged" : "published" : "unpublished"}`}>
             {notice || (currentPublishedVersion ? hasUnpublishedChanges ? `暂存修改 · 当前发布 v${currentPublishedVersion.version}` : `当前发布 v${currentPublishedVersion.version}` : "尚未发布")}
           </span>
+          <button type="button" className="button button-outline designer-diff-button" onClick={() => setShowDiff(true)} title="对比草稿与当前发布快照，不会发布或生成"><GitCompareArrows size={14} />差异预览</button>
           <button className="button button-outline designer-versions-button" onClick={() => setShowVersions(true)}><HistoryIcon size={14} />版本管理</button>
           <button className="button button-dark designer-publish-button" onClick={publish} disabled={!canPublish} title={validation[0] ?? undefined}>
             {currentPublishedVersion && !hasUnpublishedChanges ? <Check size={14} /> : <Rocket size={14} />}
@@ -1193,7 +1310,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
           <div className="designer-index-divider" />
           <div className="designer-step-index-list">
             {workflow.steps.map((step, index) => <button className={`designer-index-item designer-step-index ${selection.kind === "step" && selection.stepId === step.id ? "active" : ""}`} key={step.id} onClick={() => setSelection({ kind: "step", stepId: step.id })}>
-              <span className="designer-step-number">{String(index + 1).padStart(2, "0")}</span><span className="designer-index-copy"><strong>{step.name || "未命名步骤"}</strong><small>{stepKindLabels[step.kind]}</small></span><ArrowRight size={13} className="designer-index-arrow" />
+              <span className="designer-step-number">{String(index + 1).padStart(2, "0")}</span><span className="designer-index-copy"><strong>{step.name || "未命名步骤"}</strong><small>{capabilityForStep(step, capabilities)?.label ?? stepKindLabels[step.kind]}</small></span><ArrowRight size={13} className="designer-index-arrow" />
             </button>)}
           </div>
           <button className="designer-add-step" onClick={addStep}><Plus size={15} />添加步骤</button>
@@ -1208,7 +1325,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
           <div className="designer-panel-heading">
             <div className="designer-panel-title">
               <span className="designer-panel-icon">{selection.kind === "inputs" ? <FileInput size={17} /> : selection.kind === "outputs" ? <FileOutput size={17} /> : <Blocks size={17} />}</span>
-              <div><h2>{selection.kind === "inputs" ? "场景输入" : selection.kind === "outputs" ? "最终输出" : selectedStep?.name ?? "步骤设置"}</h2><p>{selection.kind === "inputs" ? "定义启动场景时需要填写的数据" : selection.kind === "outputs" ? "把流程中的数据映射为场景最终结果" : `第 ${String(selectedStepIndex + 1).padStart(2, "0")} 步 · ${selectedStep ? stepKindLabels[selectedStep.kind] : ""}`}</p></div>
+              <div><h2>{selection.kind === "inputs" ? "场景输入" : selection.kind === "outputs" ? "最终输出" : selectedStep?.name ?? "步骤设置"}</h2><p>{selection.kind === "inputs" ? "定义启动场景时需要填写的数据" : selection.kind === "outputs" ? "把流程中的数据映射为场景最终结果" : `第 ${String(selectedStepIndex + 1).padStart(2, "0")} 步 · ${selectedCapability?.label ?? (selectedStep ? stepKindLabels[selectedStep.kind] : "")}`}</p></div>
             </div>
             {selection.kind === "step" && selectedStep && <div className="step-move-actions">
               <button className="icon-button" onClick={() => moveStep(selectedStep.id, -1)} title="上移" aria-label="上移" disabled={selectedStepIndex === 0}><ArrowUp size={15} /></button>
@@ -1231,7 +1348,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
               <div className="schema-row-main">
                 <DeferredInput className="text-input schema-label-input" value={field.label} onCommit={(value) => updateInputField(index, { label: value })} aria-label="输入名称" placeholder="输入名称" />
                 <DeferredInput className="text-input schema-key-input" value={field.key} onCommit={(value) => updateInputField(index, { key: value.replace(/[^a-zA-Z0-9_]/g, "_") })} aria-label="输入 key" placeholder="field_key" />
-                <div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(field.type) ?? field.type} onChange={(event) => updateInputField(index, { type: event.target.value as WorkflowFieldType, ...(event.target.value === "select" ? {} : { optionPresetId: undefined }) })} aria-label="输入类型">{fieldTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
+                <div className="media-type-controls"><div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(field.type) ?? field.type} onChange={(event) => updateInputField(index, { type: event.target.value as WorkflowFieldType, ...(event.target.value === "select" ? {} : { optionPresetId: undefined }) })} aria-label="输入类型">{fieldTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div><MediaRoleSelect type={field.type} value={field.mediaRole} onChange={mediaRole => updateInputField(index, { mediaRole })} label={`${field.label}的素材用途`} /></div>
                 <label className="required-toggle"><input type="checkbox" checked={field.required} onChange={(event) => updateInputField(index, { required: event.target.checked })} /><span>必填</span></label>
               </div>
               {field.type === "select" && <div className="schema-options-controls">
@@ -1269,9 +1386,12 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
           {selection.kind === "step" && selectedStep && <section className="step-editor">
             <div className="designer-form-row">
               <div className="field-group"><label className="field-label">步骤名称</label><DeferredInput className="text-input" value={selectedStep.name} onCommit={(value) => updateStep(selectedStep.id, (step) => ({ ...step, name: value }))} /></div>
-              <div className="field-group"><label className="field-label">执行方式</label><div className="select-wrap"><select value={selectedStep.kind} onChange={(event) => changeStepKind(selectedStep.id, event.target.value as WorkflowStepKind)}><option value="hermes">Hermes Agent</option><option value="comfyui">ComfyUI</option><option value="manual">人工处理</option><option value="control">控制节点 · 条件判断</option></select><ChevronDown size={14} /></div></div>
+              <StepCapabilityPicker key={selectedStep.id} step={selectedStep} capabilities={capabilities} onChange={(id) => changeStepCapability(selectedStep.id, id)} />
             </div>
+            {capabilityError && <div className="notice" role="status">能力目录未连接，暂时显示内置能力。{capabilityError}</div>}
+            {selectedCapability ? <CapabilityConfigEditor step={selectedStep} definition={selectedCapability} references={selectedStepReferenceOptions} onChange={(next) => updateStep(selectedStep.id, () => next)} /> : <div className="notice error" role="alert">此能力包未安装，现有配置保留；请安装对应能力后再运行。</div>}
             <div className="designer-subsection execution-config-section step-execution-section">
+              <div className="field-group"><label className="field-label"><input type="checkbox" checked={selectedStep.review?.enabled ?? false} onChange={event => updateStep(selectedStep.id, step => ({ ...step, review: { ...step.review, enabled: event.target.checked } }))} /> 完成后等待人工确认</label><p className="studio-field-hint">结果确认或修改后才执行后续步骤。逐项执行时，整批完成后确认。</p>{selectedStep.review?.enabled && <input className="text-input" placeholder="确认说明，例如：核对人物设定、对白和镜头顺序" value={selectedStep.review.instruction ?? ""} onChange={event => updateStep(selectedStep.id, step => ({ ...step, review: { enabled: true, instruction: event.target.value } }))} />}</div>
               <div className="designer-subsection-heading"><div><h3>步骤执行</h3><p>只让当前步骤按列表逐项运行，前后步骤仍按一次执行</p></div></div>
               <div className="execution-config-row">
                 <label className="field-group"><span className="field-label">列表处理</span><div className="select-wrap"><select value={selectedStep.execution?.mode ?? "once"} onChange={(event) => {
@@ -1285,15 +1405,25 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
                 }} aria-label="步骤列表处理方式"><option value="once">执行一次</option><option value="for_each">按列表逐项执行</option></select><ChevronDown size={13} /></div></label>
                 {selectedStep.execution?.mode === "for_each" && <>
                   <label className="field-group"><span className="field-label">遍历来源</span><ReferenceSelect value={selectedStep.execution.sourceRef ?? ""} options={stepIterationOptions} onChange={(sourceRef) => updateStep(selectedStep.id, (step) => ({ ...step, execution: step.execution ? { ...step.execution, sourceRef } : undefined }))} allowJsonPath /></label>
-                  <label className="field-group"><span className="field-label">最大并行数</span><input className="text-input" type="number" min={1} max={MAX_STEP_CONCURRENCY} step={1} value={String(selectedStep.execution.maxConcurrency ?? 1)} onChange={(event) => {
+                  <label className="field-group"><span className="field-label">状态传递</span><div className="select-wrap"><select value={selectedStep.execution.carry ? "carry" : "independent"} aria-label="逐项状态传递" onChange={event => updateStep(selectedStep.id, step => {
+                    if (!step.execution) return step;
+                    if (event.target.value === "carry") return { ...step, execution: { ...step.execution, maxConcurrency: 1, onError: "stop", carry: { outputKey: step.outputs[0]?.key ?? "" } } };
+                    const { carry: _carry, ...execution } = step.execution;
+                    return { ...step, execution };
+                  })}><option value="independent">各项独立</option><option value="carry">继承上一项输出（串行）</option></select><ChevronDown size={13} /></div></label>
+                  {selectedStep.execution.carry && <>
+                    <label className="field-group"><span className="field-label">传递输出</span><div className="select-wrap"><select value={selectedStep.execution.carry.outputKey} aria-label="状态传递输出键" onChange={event => updateStep(selectedStep.id, step => ({ ...step, execution: step.execution ? { ...step.execution, carry: { ...step.execution.carry, outputKey: event.target.value } } : undefined }))}><option value="">选择本步骤输出</option>{selectedStep.outputs.map(output => <option key={output.key} value={output.key}>{output.label || output.key}</option>)}</select><ChevronDown size={13} /></div></label>
+                    <label className="field-group"><span className="field-label">初始状态（可选）</span><ReferenceSelect value={selectedStep.execution.carry.initialSourceRef ?? ""} options={priorReferenceOptions} allowJsonPath allowMediaIndex onChange={initialSourceRef => updateStep(selectedStep.id, step => ({ ...step, execution: step.execution?.carry ? { ...step.execution, carry: { outputKey: step.execution.carry.outputKey, ...(initialSourceRef ? { initialSourceRef } : {}) } } : step.execution }))} /><small className="field-help">留空时首项无上一段；显式种子必须有效且类型匹配。</small></label>
+                  </>}
+                  <label className="field-group"><span className="field-label">最大并行数</span><input className="text-input" type="number" min={1} max={MAX_STEP_CONCURRENCY} step={1} disabled={Boolean(selectedStep.execution.carry)} value={String(selectedStep.execution.maxConcurrency ?? 1)} onChange={(event) => {
                     const parsed = Number(event.target.value);
                     if (!Number.isFinite(parsed)) return;
                     updateStep(selectedStep.id, (step) => ({ ...step, execution: step.execution ? { ...step.execution, maxConcurrency: Math.min(MAX_STEP_CONCURRENCY, Math.max(1, Math.trunc(parsed))) } : undefined }));
                   }} aria-label="步骤最大并行数" /></label>
-                  <label className="field-group"><span className="field-label">单项失败时</span><div className="select-wrap"><select value={selectedStep.execution.onError ?? "continue"} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, execution: step.execution ? { ...step.execution, onError: event.target.value as "continue" | "stop" } : undefined }))} aria-label="步骤单项失败时的处理方式"><option value="continue">继续下一项</option><option value="stop">停止整个流程</option></select><ChevronDown size={13} /></div></label>
+                  <label className="field-group"><span className="field-label">单项失败时</span><div className="select-wrap"><select disabled={Boolean(selectedStep.execution.carry)} value={selectedStep.execution.onError ?? (selectedStep.execution.carry ? "stop" : "continue")} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, execution: step.execution ? { ...step.execution, onError: event.target.value as "continue" | "stop" } : undefined }))} aria-label="步骤单项失败时的处理方式"><option value="continue">继续下一项</option><option value="stop">停止整个流程</option></select><ChevronDown size={13} /></div></label>
                 </>}
               </div>
-              {selectedStep.execution?.mode === "for_each" && <div className="designer-field-explainer execution-config-note"><Braces size={14} /><span>下方输入可引用“当前遍历项”；步骤输出会按原列表顺序聚合，最多同时执行指定数量的项目。</span></div>}
+              {selectedStep.execution?.mode === "for_each" && <div className="designer-field-explainer execution-config-note"><Braces size={14} /><span>{selectedStep.execution.carry ? "下方可引用上一项输出、是否有上一项、当前序号；串行且失败停止，重做某项会重算后续项。输出仍按原顺序聚合。" : "下方输入可引用当前遍历项；步骤输出会按原列表顺序聚合，最多同时执行指定数量的项目。"}</span></div>}
             </div>
             {(priorConditionSteps.length > 0 || selectedStep.runCondition) && <div className="designer-subsection run-condition-section">
               <div className="designer-subsection-heading"><div><h3>执行条件</h3><p>此步骤仅在指定条件节点返回对应结果时执行</p></div></div>
@@ -1302,10 +1432,10 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
                 {selectedStep.runCondition && <div className="select-wrap"><select value={String(selectedStep.runCondition.expectedResult)} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, runCondition: step.runCondition ? { ...step.runCondition, expectedResult: event.target.value === "true" } : undefined }))} aria-label="条件期望结果"><option value="true">结果为真时执行</option><option value="false">结果为假时执行</option></select><ChevronDown size={14} /></div>}
               </div>
             </div>}
-            {selectedStep.kind === "hermes" && <div className="step-profile-row"><div className="field-group"><label className="field-label">Hermes Profile</label><div className="select-wrap"><select value={selectedStep.hermesProfile ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, hermesProfile: event.target.value }))}><option value="">选择 Profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id}{profile.isDefault ? "（默认）" : enabledProfiles.includes(profile.id) ? "（已启用）" : "（未启用）"}</option>)}</select><ChevronDown size={14} /></div></div><button className="text-button" onClick={onOpenConnections}>管理 Profile <ArrowRight size={13} /></button></div>}
+            {selectedCapability?.editor.profile && <div className="step-profile-row"><div className="field-group"><label className="field-label">Hermes Profile</label><div className="select-wrap"><select value={selectedStep.hermesProfile ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, hermesProfile: event.target.value }))}><option value="">选择 Profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id}{profile.isDefault ? "（默认）" : enabledProfiles.includes(profile.id) ? "（已启用）" : "（未启用）"}</option>)}</select><ChevronDown size={14} /></div></div><button className="text-button" onClick={onOpenConnections}>管理 Profile <ArrowRight size={13} /></button></div>}
             {profileError && <div className="designer-profile-error">{profileError}</div>}
 
-            {selectedStep.kind === "control" && <div className="designer-subsection condition-editor">
+            {selectedCapability?.editor.condition && <div className="designer-subsection condition-editor">
               <div className="designer-subsection-heading"><div><h3>条件判断</h3><p>比较前序数据，按全部或任一规则输出真假结果</p></div><span>输出：result · 布尔值</span></div>
               <div className="condition-match-row"><span>规则关系</span><div className="select-wrap"><select value={selectedControl.match} onChange={(event) => updateControl(selectedStep.id, (control) => ({ ...control, match: event.target.value as WorkflowControlConfig["match"] }))} aria-label="规则关系"><option value="all">满足全部条件（AND）</option><option value="any">满足任一条件（OR）</option></select><ChevronDown size={14} /></div></div>
               {selectedControl.rules.map((rule, index) => {
@@ -1328,7 +1458,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
               <button className="designer-add-field" onClick={() => updateControl(selectedStep.id, (control) => ({ ...control, rules: [...control.rules, newConditionRule(control.rules.length + 1)] }))}><Plus size={14} />添加判断条件</button>
             </div>}
 
-            {selectedStep.kind === "comfyui" && selectedStep.comfyui?.adapter !== "video_concat" && <div className="designer-subsection comfyui-subsection">
+            {selectedCapability?.editor.bindings && <div className="designer-subsection comfyui-subsection">
               <div className="designer-subsection-heading"><div><h3>ComfyUI 工作流</h3><p>选择本机工作流，再把变量映射到节点 ID 和属性</p></div><span>{comfyLoading ? "读取中" : comfyNodes.length ? `${comfyNodes.length} 个节点` : "节点绑定"}</span></div>
               <div className="field-group comfy-workflow-picker"><label className="field-label" htmlFor="comfy-workflow-select">工作流文件</label><div className="select-wrap"><select id="comfy-workflow-select" value={selectedStep.comfyui?.workflowFile ?? ""} onChange={(event) => changeComfyWorkflow(selectedStep.id, event.target.value)}><option value="">选择 ComfyUI 工作流</option>{comfyWorkflows.map((item) => <option value={item.filename} key={item.filename}>{item.filename}</option>)}</select><ChevronDown size={14} /></div></div>
               {comfyError && <div className="designer-profile-error">{comfyError}</div>}
@@ -1343,7 +1473,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
                   const inputDirection = direction === "input";
                   const importableInputs = inputDirection ? workflow.inputs.filter((field) => !bindings.some((binding) => binding.key === field.key)) : [];
                   return <section className="comfy-binding-group" key={direction}>
-                     <div className="comfy-binding-heading"><div><strong>{inputDirection ? "输入变量" : "输出变量"}</strong><small>{inputDirection ? "引用变量或固定值写入节点属性" : "从节点属性读取，供后续步骤和最终结果引用"}</small></div><div className="comfy-binding-actions">{inputDirection && <button className="text-button comfy-import-button" onClick={() => {
+                     <div className="comfy-binding-heading"><div><strong>{inputDirection ? "输入变量" : "输出变量"}</strong><small>{inputDirection ? "ComfyUI只接收媒体列表；分类在上游选择并合并，图片→images、音频→audios、视频→videos" : "从节点属性读取，供后续步骤和最终结果引用"}</small></div><div className="comfy-binding-actions">{inputDirection && <button className="text-button comfy-import-button" onClick={() => {
                       const additions: ComfyUIBinding[] = importableInputs.map((field) => ({
                         key: field.key,
                         label: field.label,
@@ -1351,6 +1481,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
                         nodeId: "",
                         property: "",
                         type: inputValueType(field.type),
+                        mediaRole: field.mediaRole,
                         sourceRef: `input.${field.key}`,
                       }));
                       updateComfyBindings(selectedStep.id, [...selectedComfyBindings, ...additions]);
@@ -1391,7 +1522,7 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
                         <datalist id={nodeListId}>{comfyNodes.map((item) => <option value={item.id} key={item.id}>{item.type}</option>)}</datalist>
                         <DeferredInput className="text-input comfy-property-input" value={binding.property} onCommit={(value) => updateComfyBindingProperty(index, value)} list={propertyListId} placeholder={inputDirection ? "节点输入属性" : "节点输出属性，如 Filenames"} aria-label="ComfyUI 节点属性" />
                         <datalist id={propertyListId}>{nodePropertiesLoaded && propertyOptions.map((property) => <option value={property} key={property} />)}</datalist>
-                        <div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(binding.type) ?? binding.type} onChange={(event) => updateComfyBinding(selectedStep.id, index, { type: event.target.value as WorkflowVariableType })} aria-label="变量类型">{(inputDirection ? variableTypeOptions : outputTypeOptions).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
+                        <div className="media-type-controls"><div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(binding.type) ?? binding.type} onChange={(event) => updateComfyBinding(selectedStep.id, index, { type: event.target.value as WorkflowVariableType })} aria-label="变量类型">{(inputDirection ? variableTypeOptions : outputTypeOptions).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div></div>
                         <button className="icon-button schema-delete" onClick={() => removeComfyBinding(index)} title="删除绑定" aria-label={`删除${binding.label}绑定`}><Trash2 size={14} /></button>
                         {node && <small className="comfy-node-type">{node.type}{nodePropertiesLoaded ? ` · 已加载 ${propertyInfos.length} 个${inputDirection ? "输入" : "输出"}属性` : " · 点击加载属性"}{selectedPropertyInfo?.options?.length ? ` · 选项 ${selectedPropertyInfo.options.length} 个` : ""}</small>}
                       </div>;
@@ -1402,9 +1533,8 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
               </div>}
             </div>}
 
-            {selectedStep.comfyui?.adapter === "video_concat" && <div className="notice success-notice">本机 FFmpeg 按分镜顺序拼接，保留片段原生对白与现场声音，不添加音乐，也不调用 Hermes 或 ComfyUI 重新生成。</div>}
 
-            {(selectedStep.kind === "manual" || selectedStep.kind === "hermes" || ["long_text_video", "video_concat"].includes(selectedStep.comfyui?.adapter ?? "")) && <div className="designer-subsection">
+            {selectedCapability?.editor.inputs === "ports" && !selectedCapability.editor.condition && <div className="designer-subsection">
                <div className="designer-subsection-heading"><div><h3>步骤输入</h3><p>{selectedStep.kind === "hermes" ? "把文本和结构化数据映射给 Hermes；媒体会作为附件发送，JSON 可填写字段路径" : "选择变量引用，或为当前步骤填写固定值"}</p></div><span>{selectedStep.inputs.length} 项映射</span></div>
               {selectedStep.inputs.map((input, index) => {
                 const valueSource = input.valueSource ?? "reference";
@@ -1413,35 +1543,36 @@ export default function FlowDesigner({ sceneId, scenes, scene, workflow, optionP
                 const literalType = input.literalType ?? referenceType ?? "text";
                 return <div className="step-input-row" key={`step-input-${index}`}>
                   <div className="step-input-labels"><DeferredInput className="text-input" value={input.label} onCommit={(value) => setStepInput(index, "label", value)} aria-label="输入标签" placeholder="输入名称" /><DeferredInput className="text-input" value={input.key} onCommit={(value) => setStepInput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输入 key" placeholder="step_input" /></div>
-                  <div className="step-input-source"><div className="select-wrap step-input-source-mode"><select value={valueSource} onChange={(event) => setStepInputSource(index, event.target.value as WorkflowValueSource)} aria-label="输入取值来源"><option value="reference">引用变量</option><option value="literal">固定值</option></select><ChevronDown size={13} /></div>{valueSource === "literal" ? <div className="step-input-literal"><div className="select-wrap step-input-literal-type"><select value={canonicalWorkflowType(literalType) ?? literalType} onChange={(event) => setStepInput(index, "literalType", event.target.value)} aria-label="固定值类型">{variableTypeOptions.map(([type, label]) => <option value={type} key={type}>{label}</option>)}</select><ChevronDown size={13} /></div><LiteralValueControl type={literalType} value={input.literalValue ?? ""} onChange={(literalValue) => setStepInput(index, "literalValue", literalValue)} ariaLabel="输入固定值" /></div> : <ReferenceSelect value={input.sourceRef} options={referenceOptions} selection={input.selection} onChange={(value) => setStepInput(index, "sourceRef", value)} onReferenceChange={(sourceRef, selection) => setStepInputReference(index, sourceRef, selection)} allowJsonPath allowMediaIndex />}</div>
+                  <div className="step-input-source"><div className="select-wrap step-input-source-mode"><select value={valueSource} onChange={(event) => setStepInputSource(index, event.target.value as WorkflowValueSource)} aria-label="输入取值来源"><option value="reference">引用变量</option><option value="literal">固定值</option></select><ChevronDown size={13} /></div>{valueSource === "literal" ? <div className="step-input-literal"><div className="select-wrap step-input-literal-type"><select value={canonicalWorkflowType(literalType) ?? literalType} onChange={(event) => setStepInput(index, "literalType", event.target.value)} aria-label="固定值类型">{variableTypeOptions.map(([type, label]) => <option value={type} key={type}>{label}</option>)}</select><ChevronDown size={13} /></div><LiteralValueControl type={literalType} value={input.literalValue ?? ""} onChange={(literalValue) => setStepInput(index, "literalValue", literalValue)} ariaLabel="输入固定值" /></div> : <><ReferenceSelect value={input.sourceRef} options={referenceOptions} selection={input.selection} onChange={(value) => setStepInput(index, "sourceRef", value)} onReferenceChange={(sourceRef, selection) => setStepInputReference(index, sourceRef, selection)} allowJsonPath allowMediaIndex /><div className="select-wrap"><select value={input.referenceType ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, inputs: step.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, referenceType: (event.target.value || undefined) as typeof item.referenceType } : item) }))} aria-label="引用媒体类型" title="引用JSON字段内的媒体时显式声明；普通文本/JSON保持自动"><option value="">自动识别类型</option><option value="image_list">图片列表</option><option value="video_list">视频列表</option><option value="audio_list">音频列表</option></select><ChevronDown size={13} /></div></>}</div>
                   <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, inputs: step.inputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除输入映射" aria-label={`删除${input.label}映射`}><Trash2 size={14} /></button>
                 </div>;
               })}
               <button className="designer-add-field" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, inputs: [...step.inputs, { key: `input_${step.inputs.length + 1}`, label: "新输入", sourceRef: "" }] }))}><Plus size={14} />添加步骤输入</button>
             </div>}
 
-            {((selectedStep.kind !== "comfyui" && selectedStep.kind !== "control") || ["long_text_video", "video_concat"].includes(selectedStep.comfyui?.adapter ?? "")) && <div className="designer-subsection">
+            {selectedCapability?.editor.outputs === "ports" && !selectedCapability.editor.condition && <div className="designer-subsection">
               <div className="designer-subsection-heading"><div><h3>步骤输出</h3><p>声明此步骤提供给后续步骤的结果</p></div><span>{selectedStep.outputs.length} 项结果</span></div>
               {selectedStep.outputs.map((output, index) => <div className="step-output-row" key={`step-output-${index}`}>
                 <DeferredInput className="text-input" value={output.label} onCommit={(value) => setStepOutput(index, "label", value)} aria-label="输出标签" placeholder="输出名称" />
-                <DeferredInput className="text-input output-key-input" value={output.key} onCommit={(value) => setStepOutput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输出 key" placeholder="output_key" />
-                <div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(output.type) ?? output.type} onChange={(event) => setStepOutput(index, "type", event.target.value)} aria-label="步骤输出类型">{outputTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
-                <button className="icon-button schema-delete" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: step.outputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除步骤输出" aria-label={`删除${output.label}`}><Trash2 size={14} /></button>
+                <DeferredInput className="text-input output-key-input" disabled={selectedCapability.editor.editableOutputs === false} value={output.key} onCommit={(value) => setStepOutput(index, "key", value.replace(/[^a-zA-Z0-9_]/g, "_") )} aria-label="输出 key" placeholder="output_key" />
+                <div className="select-wrap schema-type-select"><select disabled={selectedCapability.editor.editableOutputs === false} value={canonicalWorkflowType(output.type) ?? output.type} onChange={(event) => setStepOutput(index, "type", event.target.value)} aria-label="步骤输出类型">{outputTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div>
+                <button className="icon-button schema-delete" disabled={selectedCapability.editor.editableOutputs === false} onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: step.outputs.filter((_, itemIndex) => itemIndex !== index) }))} title="删除步骤输出" aria-label={`删除${output.label}`}><Trash2 size={14} /></button>
                 <DeferredInput className="text-input step-output-description" value={output.description ?? ""} onCommit={(value) => setStepOutput(index, "description", value)} aria-label="步骤输出字段描述" placeholder="字段描述：说明这里应该输出什么内容" />
               </div>)}
-              <button className="designer-add-field" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: [...step.outputs, { key: `output_${step.outputs.length + 1}`, label: "新输出", type: "text" }] }))}><Plus size={14} />添加步骤输出</button>
+              <button className="designer-add-field" disabled={selectedCapability.editor.editableOutputs === false} onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, outputs: [...step.outputs, { key: `output_${step.outputs.length + 1}`, label: "新输出", type: "text" }] }))}><Plus size={14} />添加步骤输出</button>
             </div>}
 
-            {selectedStep.kind === "hermes" && <div className="designer-subsection prompt-subsection">
+            {selectedCapability?.editor.prompt && <div className="designer-subsection prompt-subsection">
               <div className="designer-subsection-heading"><div><h3>提示词模板</h3><p>使用上方步骤输入，也可直接插入场景变量引用</p></div><span><Braces size={13} />变量引用</span></div>
               <div className={`prompt-reference-tools ${promptReferenceType === "json" ? "has-json-path" : ""}`}><div className="select-wrap"><select value={referenceToInsert} onChange={(event) => { setReferenceToInsert(event.target.value); setReferencePathToInsert(""); }} aria-label="选择要插入的引用"><option value="">选择输入或前序输出</option>{selectedStepPromptOptions.map((option) => <option key={option.value} value={option.value}>{option.label}（{option.value}）</option>)}</select><ChevronDown size={14} /></div>{promptReferenceType === "json" && <><input className="text-input json-path-input" value={referencePathToInsert} onChange={(event) => setReferencePathToInsert(event.target.value)} placeholder="字段路径，如 [0].prompt" title="数组可写 [0].prompt；对象数组可写 shots[0].prompt" aria-label="插入引用的 JSON 字段路径" aria-invalid={Boolean(referencePathToInsert.trim() && promptReferencePathError)} />{referencePathToInsert.trim() && promptReferencePathError && <small className="json-path-error">{promptReferencePathError}</small>}</>}<button type="button" className="button button-outline" onClick={insertReference} disabled={!referenceToInsert || Boolean(promptReferencePathError)}>插入引用</button></div>
               <DeferredTextarea ref={promptRef} className="text-input prompt-textarea" value={selectedStep.promptTemplate} onCommit={(value) => updateStep(selectedStep.id, (step) => ({ ...step, promptTemplate: value }))} placeholder="编写此步骤交给 Hermes 的任务描述……" />
             </div>}
           </section>}
 
-           <div className={`designer-validation ${validation.length ? "has-errors" : ""}`}><span className="validation-mark">{validation.length ? "!" : <Check size={12} />}</span><span>{validation.length ? validation[0] : "输入配置完整"}</span><span>{validation.length ? `${validation.length} 个待处理` : "暂存已保存"}</span></div>
+           <div className={`designer-validation ${validation.length ? "has-errors" : ""}`}><span className="validation-mark">{validation.length ? "!" : <Check size={12} />}</span><span>{validation.length ? validation[0] : "输入配置完整"}</span><span>{validation.length ? `${validation.length} 个待处理` : saveStatus === "saving" ? "保存中 · 等待服务端" : saveStatus === "failed" ? "保存未确认" : "服务端已保存"}</span></div>
         </main>
       </div>
+      {showDiff && <SceneDiffDialog sceneId={sceneId} sceneTitle={scene.title} contentHash={sceneVersionHash(scene, workflow, optionPresets)} saveStatus={saveStatus} onClose={() => setShowDiff(false)} />}
       {showVersions && <SceneVersionsDialog sceneTitle={scene.title} record={versionRecord} onClose={() => setShowVersions(false)} onApply={onApplyVersion} />}
     </div>
   );

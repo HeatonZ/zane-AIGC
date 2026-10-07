@@ -15,6 +15,8 @@ async function discover(directory) {
 }
 const tests = (await Promise.all(["server", "src"].map((directory) => discover(path.join(root, directory))))).flat().sort();
 if (!tests.length) throw new Error("No tests found");
-const result = spawnSync(process.execPath, ["--import", "tsx", "--test", ...tests], { cwd: root, stdio: "inherit" });
+// Bound process fan-out: several integration tests launch an HTTP server plus
+// stdio MCP/tsx children, whose startup budgets must not be consumed by CPU contention.
+const result = spawnSync(process.execPath, ["--import", "tsx", "--test", "--test-concurrency=4", ...tests], { cwd: root, stdio: "inherit" });
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;

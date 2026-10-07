@@ -1,3 +1,4 @@
+import "./smoke-auth.mjs";
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";

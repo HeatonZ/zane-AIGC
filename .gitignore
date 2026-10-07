@@ -17,3 +17,7 @@ backups/
 *~
 *.swp
 .tmp*
+*.log
+*.db
+%SystemDrive%
+Python

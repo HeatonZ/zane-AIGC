@@ -1,3 +1,4 @@
+import { workbenchFetch } from "./workbench-auth.mjs";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const baseUrl = (process.argv[2] ?? "http://127.0.0.1:8799").replace(/\/+$/, "");
 const pkg = parseScenePackage(JSON.parse(await readFile(path.join(root, "examples", "scenes", "long-text-to-video.json"), "utf8")));
 async function json(route, options = {}) {
-  const response = await fetch(baseUrl + route, { ...options, headers: { "Content-Type": "application/json", ...(options.headers ?? {}) }, signal: AbortSignal.timeout(10000) });
+  const response = await workbenchFetch(baseUrl + route, { ...options, headers: { "Content-Type": "application/json", ...(options.headers ?? {}) }, signal: AbortSignal.timeout(10000) });
   if (!response.ok) throw new Error(`${route}: HTTP ${response.status} ${await response.text()}`);
   return response.json();
 }
@@ -21,7 +22,7 @@ if (original.scenes.some((scene) => scene.id === pkg.scene.id)) {
   const health = await json("/api/health");
   if (!["long_text_video", "video_concat"].every((adapter) => health.adapters?.includes(adapter))) throw new Error("当前服务尚未加载长文出视频适配器，请先构建并重启服务；工作区未修改");
   const settings = await json("/api/settings");
-  if (!(settings.enabledHermesProfiles ?? []).includes("writer")) throw new Error("请先启用并配置 Writer Profile；本场景不静默改用其他 Profile");
+  if (!["writer", "aixg"].every(profile => (settings.enabledHermesProfiles ?? []).includes(profile))) throw new Error("请先启用并配置 Writer 和 AIXG Profile；本场景不静默改用其他 Profile");
   const published = createSceneVersion(pkg.scene, pkg.workflow, pkg.optionPresets);
   const desired = { ...original, scenes: [...original.scenes, pkg.scene], workflows: { ...original.workflows, [pkg.scene.id]: pkg.workflow }, sceneVersions: { ...original.sceneVersions, [pkg.scene.id]: { publishedVersionId: published.id, versions: [published] } } };
   const backupDirectory = process.env.ZANE_LONG_VIDEO_BACKUP_DIRECTORY ? path.resolve(process.env.ZANE_LONG_VIDEO_BACKUP_DIRECTORY) : path.join(root, "backups", "long-text-video");

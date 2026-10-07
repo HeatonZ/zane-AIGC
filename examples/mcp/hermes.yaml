@@ -1,0 +1,19 @@
+# 合并到目标 Hermes profile 的 config.yaml，不要替换整份配置。
+# 本机工作台控制者为 comfyui-dev；profile 名含 dev 不代表后台要切到8798。
+# 路径按本机安装修改；本 MCP 不启动/重启后台，也不是 HTTP /mcp 服务。
+mcp_servers:
+  zane-workbench:
+    command: 'C:/Program Files/nodejs/node.exe'
+    args:
+      - 'F:/code/zane-drama/dist-server/mcp/index.js'
+    env:
+      ZANE_BASE_URL: 'http://127.0.0.1:8799'
+      # 从本人账户创建；comfyui-dev 管理业务使用管理员身份。不要提交真实密钥。
+      ZANE_API_TOKEN: 'REPLACE_WITH_OWN_API_TOKEN'
+      ZANE_MCP_TIMEOUT_MS: '45000'
+    enabled: true
+    connect_timeout: 30
+    timeout: 60
+    tools:
+      resources: true
+      prompts: true

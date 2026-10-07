@@ -1,7 +1,9 @@
 import { createScene } from "./sceneStorage";
 import { createId } from "./ids";
 import { canonicalWorkflowType, migrateLegacyComfyInputFormats, normalizeWorkflowMediaTypes } from "./workflowMigration";
+import { validWorkflowMediaRole } from "../../server/domain/workflowMediaRoles.js";
 import type {
+  JsonValue,
   SceneModule,
   WorkflowDefinition,
   WorkflowFieldType,
@@ -34,7 +36,7 @@ const workflowFieldTypes: WorkflowFieldType[] = ["text", "textarea", "number", "
 const workflowVariableTypes: WorkflowVariableType[] = ["text", "number", "boolean", "image_list", "video_list", "audio_list", "json"];
 const workflowExecutionModes = ["once", "for_each"] as const;
 const workflowIterationErrorPolicies = ["continue", "stop"] as const;
-const workflowStepKinds: WorkflowStepDefinition["kind"][] = ["hermes", "comfyui", "manual", "control"];
+const workflowStepKinds: WorkflowStepDefinition["kind"][] = ["hermes", "comfyui", "manual", "control", "capability"];
 const workflowConditionOperators: NonNullable<WorkflowStepDefinition["control"]>["rules"][number]["operator"][] = [
   "equals", "not_equals", "greater_than", "greater_or_equal", "less_than", "less_or_equal",
   "contains", "not_contains", "is_empty", "is_not_empty",
@@ -44,6 +46,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return isRecord(value) && Object.values(value).every(isJsonValue);
+}
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`场景包中的${label}无效`);
   return value;
@@ -106,6 +114,7 @@ function normalizeStepReference(value: unknown, label: string) {
   if (value.valueSource !== undefined) result.valueSource = enumValue(value.valueSource, ["literal", "reference"] as WorkflowValueSource[], `${label}取值来源`);
   if (typeof value.literalValue === "string") result.literalValue = value.literalValue;
   if (value.literalType !== undefined) result.literalType = enumValue(value.literalType, workflowVariableTypes, `${label}固定值类型`);
+  if (value.referenceType !== undefined) result.referenceType = enumValue(value.referenceType, ["image_list", "video_list", "audio_list"] as const, `${label}引用媒体类型`);
   const selection = normalizeMediaSelection(value.selection, label);
   if (selection) result.selection = selection;
   if (result.valueSource === "literal" && result.literalValue === undefined) result.literalValue = "";
@@ -121,7 +130,12 @@ function normalizeWorkflowInput(value: unknown, index: number) {
     type: enumValue(canonicalWorkflowType(value.type), workflowFieldTypes, `第 ${index + 1} 个场景输入类型`),
     required: value.required,
   };
-  if (typeof value.defaultValue === "string" || typeof value.defaultValue === "number" || typeof value.defaultValue === "boolean" || value.defaultValue === null) input.defaultValue = value.defaultValue;
+  if (!validWorkflowMediaRole(value.mediaRole, input.type)) throw new Error("场景包中的素材用途与场景输入类型不兼容");
+  if (value.mediaRole !== undefined) input.mediaRole = value.mediaRole;
+  if (value.defaultValue !== undefined) {
+    if (!isJsonValue(value.defaultValue)) throw new Error(`场景包中的场景输入“${input.label}”默认值不是有效 JSON`);
+    input.defaultValue = structuredClone(value.defaultValue);
+  }
   if (typeof value.placeholder === "string") input.placeholder = value.placeholder;
   if (Array.isArray(value.options)) {
     if (value.options.some((option) => typeof option !== "string")) throw new Error(`场景包中的场景输入“${input.label}”选项无效`);
@@ -184,6 +198,8 @@ function normalizeComfyBinding(value: unknown, index: number) {
     property: requiredString(value.property, `第 ${index + 1} 个 ComfyUI 绑定属性`),
     type: enumValue(canonicalWorkflowType(value.type), workflowVariableTypes, `第 ${index + 1} 个 ComfyUI 绑定类型`),
   };
+  if (!validWorkflowMediaRole(value.mediaRole, binding.type, direction)) throw new Error("场景包中的素材用途与 ComfyUI 绑定类型/方向不兼容");
+  if (value.mediaRole !== undefined) binding.mediaRole = value.mediaRole;
   if (typeof value.required === "boolean") binding.required = value.required;
   if (typeof value.sourceRef === "string") binding.sourceRef = value.sourceRef;
   if (value.valueSource !== undefined) binding.valueSource = enumValue(value.valueSource, ["literal", "reference"] as WorkflowValueSource[], `第 ${index + 1} 个 ComfyUI 绑定取值来源`);
@@ -227,6 +243,13 @@ function normalizeWorkflowStep(value: unknown, index: number): WorkflowStepDefin
     outputs: value.outputs.map(normalizeStepOutput),
     promptTemplate: optionalString(value.promptTemplate),
   };
+  if (value.capabilityId !== undefined) step.capabilityId = requiredString(value.capabilityId, "能力包 ID");
+  if (value.capabilityVersion !== undefined) step.capabilityVersion = requiredString(value.capabilityVersion, "能力包版本");
+  if (value.capabilityConfig !== undefined) {
+    if (!isRecord(value.capabilityConfig)) throw new Error("场景包中的能力包配置无效");
+    step.capabilityConfig = structuredClone(value.capabilityConfig) as NonNullable<WorkflowStepDefinition["capabilityConfig"]>;
+  }
+  if (kind === "capability" && !step.capabilityId) throw new Error("能力步骤缺少能力包 ID");
   const rawExecution = isRecord(value.execution) ? value.execution : undefined;
   if (rawExecution) {
     step.execution = {
@@ -234,6 +257,7 @@ function normalizeWorkflowStep(value: unknown, index: number): WorkflowStepDefin
       ...(typeof rawExecution.sourceRef === "string" && rawExecution.sourceRef.trim() ? { sourceRef: rawExecution.sourceRef.trim() } : {}),
       ...(rawExecution.onError === undefined ? {} : { onError: enumValue(rawExecution.onError, [...workflowIterationErrorPolicies], `第 ${index + 1} 个步骤逐项失败策略`) }),
       ...(rawExecution.maxConcurrency === undefined ? {} : { maxConcurrency: normalizeMaxConcurrency(rawExecution.maxConcurrency, `第 ${index + 1} 个步骤最大并行数`) }),
+      ...(rawExecution.carry === undefined ? {} : { carry: normalizeCarry(rawExecution.carry) }),
     };
   }
   if (typeof value.hermesProfile === "string") step.hermesProfile = value.hermesProfile;
@@ -244,7 +268,7 @@ function normalizeWorkflowStep(value: unknown, index: number): WorkflowStepDefin
       bindings: value.comfyui.bindings.map(normalizeComfyBinding),
     };
     if (value.comfyui.adapter !== undefined) {
-      step.comfyui.adapter = enumValue(value.comfyui.adapter, ["h3_long_video", "commerce_pack", "long_text_video", "video_concat"] as const, "ComfyUI 执行适配器");
+      step.comfyui.adapter = requiredString(value.comfyui.adapter, "ComfyUI 执行适配器");
       if (step.comfyui.adapter === "h3_long_video") {
         const config = value.comfyui.h3LongVideo;
         if (!isRecord(config)) throw new Error("H3 长视频步骤缺少分段和素材引用");
@@ -259,6 +283,10 @@ function normalizeWorkflowStep(value: unknown, index: number): WorkflowStepDefin
   }
 
   if (value.control !== undefined) step.control = normalizeControlConfig(value.control, index);
+  if (value.review !== undefined) {
+    if (!isRecord(value.review) || typeof value.review.enabled !== "boolean" || (value.review.instruction !== undefined && typeof value.review.instruction !== "string")) throw new Error("场景包中的人工确认配置无效");
+    step.review = { enabled: value.review.enabled, ...(typeof value.review.instruction === "string" ? { instruction: value.review.instruction } : {}) };
+  }
   if (value.runCondition !== undefined) step.runCondition = normalizeRunCondition(value.runCondition, index);
   return step;
 }
@@ -278,6 +306,7 @@ function normalizeWorkflow(value: unknown, sceneId: string): WorkflowDefinition 
     };
   });
   const rawExecution = isRecord(value.execution) ? value.execution : undefined;
+  if (rawExecution?.carry !== undefined) throw new Error("状态传递仅支持步骤级for_each");
   const execution = rawExecution
     ? {
       mode: enumValue(rawExecution.mode, [...workflowExecutionModes], "流程执行方式"),
@@ -412,4 +441,11 @@ export function downloadScenePackage(scene: SceneModule, workflow: WorkflowDefin
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function normalizeCarry(value: unknown): NonNullable<WorkflowStepDefinition["execution"]>["carry"] {
+  if (!isRecord(value) || typeof value.outputKey !== "string" || !/^[a-zA-Z0-9_]+$/.test(value.outputKey)
+    || Object.keys(value).some(key => !["outputKey", "initialSourceRef"].includes(key))
+    || (value.initialSourceRef !== undefined && (typeof value.initialSourceRef !== "string" || !value.initialSourceRef.trim()))) throw new Error("状态传递配置无效");
+  return { outputKey: value.outputKey, ...(typeof value.initialSourceRef === "string" ? { initialSourceRef: value.initialSourceRef } : {}) };
 }

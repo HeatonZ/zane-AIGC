@@ -1,3 +1,5 @@
+import { runMediaUrl } from "./runMedia";
+
 export type MediaInputValue = string | Record<string, unknown>;
 
 function mediaValues(value: unknown): MediaInputValue[] {
@@ -39,14 +41,14 @@ export function removeMediaInputValue(values: MediaInputValue[], index: number):
 export function mediaInputLabel(value: MediaInputValue, fallback = "媒体"): string {
   if (typeof value === "string") return value;
   const locator = value.locator as Record<string, unknown> | undefined;
-  for (const candidate of [value.filename, value.path, value.url, locator?.value, locator?.filename]) {
+  for (const candidate of [value.assetName, value.filename, value.path, value.url, locator?.value, locator?.filename]) {
     if (typeof candidate === "string" && candidate) return candidate;
   }
   return fallback;
 }
 
 export function mediaInputPreviewUrl(value: MediaInputValue): string | undefined {
-  if (typeof value === "string") return /^(https?:|data:|blob:|\/)/i.test(value) ? value : undefined;
+  if (typeof value === "string") return runMediaUrl(value);
   const locator = value.locator as Record<string, unknown> | undefined;
   const source = value.previewUrl ?? value.url ?? (locator?.type === "url" ? locator.value : undefined);
   return typeof source === "string" ? source : undefined;

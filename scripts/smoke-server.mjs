@@ -1,7 +1,8 @@
+import "./smoke-auth.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,12 +85,74 @@ try {
   assert.ok((await stat(path.join(data, "zane.db"))).size > 0);
   assert.ok((await stat(path.join(project, ".zane", "runs", runId, "outputs", "result.json"))).size > 0);
   assert.ok((await json(base, `/api/v1/runs/${runId}/events/history`)).events.length >= 4);
+  const catalog = await json(base, "/api/v1/capabilities");
+  assert.equal(catalog.schemaVersion, 1);
+  const template = catalog.capabilities.find((item) => item.id === "text.template");
+  assert.equal(template.version, "1"); assert.equal(template.result.renderer, "text");
+  assert.ok(!("execute" in template));
+  const capabilityRunId = randomUUID();
+  const capabilityWorkflow = {
+    sceneId: "capability-smoke", name: "能力包与局部重做冒烟", inputs: [{ key: "text", type: "text", required: true }],
+    steps: [
+      { id: "draft", name: "原文", kind: "capability", capabilityId: "text.template", capabilityConfig: { template: "原文：{{text}}" }, inputs: [{ key: "text", sourceRef: "input.text" }], outputs: [{ key: "text", type: "text" }] },
+      { id: "publish", name: "发布文案", kind: "capability", capabilityId: "text.template", capabilityConfig: { template: "发布：{{text}}" }, inputs: [{ key: "text", sourceRef: "step.draft.outputs.text" }], outputs: [{ key: "text", type: "text" }] },
+      { id: "independent", name: "独立分支", kind: "capability", capabilityId: "text.template", capabilityConfig: { template: "不变" }, inputs: [], outputs: [{ key: "text", type: "text" }] },
+    ],
+    outputs: [{ key: "result", type: "text", sourceRef: "step.publish.outputs.text" }],
+  };
+  await json(base, "/api/v1/runs", { runId: capabilityRunId, workflow: capabilityWorkflow, inputValues: { text: "样例" } });
+  const sourceStream = await fetch(base + "/api/v1/runs/" + capabilityRunId + "/events", { signal: AbortSignal.timeout(5000) });
+  assert.match(await sourceStream.text(), /"status":"completed"/);
+  const source = await json(base, "/api/v1/runs/" + capabilityRunId);
+  assert.equal(source.outputs[0].value, "发布：原文：样例");
+  assert.equal(source.workflow.steps[0].capabilityVersion, "1");
+  const changes = { outputOverrides: [{ stepId: "draft", outputs: { text: "手动修订" } }] };
+  const preview = await json(base, "/api/v1/runs/" + capabilityRunId + "/rerun/preview", { changes });
+  assert.deepEqual(preview.steps.map((step) => step.action), ["replace", "run", "reuse"]);
+  assert.equal((await json(base, "/api/v1/runs")).runs.length, 2, "preview must not create a run");
+  const revisionId = randomUUID();
+  const revisionSubmission = await json(base, "/api/v1/runs/" + capabilityRunId + "/rerun", { runId: revisionId, changes });
+  assert.equal(revisionSubmission.status, "queued");
+  const revisionStream = await fetch(base + "/api/v1/runs/" + revisionId + "/events", { signal: AbortSignal.timeout(5000) });
+  assert.match(await revisionStream.text(), /"status":"completed"/);
+  const revision = await json(base, "/api/v1/runs/" + revisionId);
+  assert.equal(revision.outputs[0].value, "发布：手动修订");
+  assert.equal(revision.rerunFromRunId, capabilityRunId);
+  assert.equal(revision.steps[0].replaced, true);
+  assert.equal(revision.steps[2].reusedFromRunId, capabilityRunId);
+  assert.deepEqual(await json(base, "/api/v1/runs/" + capabilityRunId), source);
+  // A local replacement is copied before 202; its preview does not depend on
+  // the original file or a running ComfyUI instance.
+  const replacementFile = path.join(temporary, "selected-image.png");
+  const imageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR1EAAAAASUVORK5CYII=", "base64");
+  await writeFile(replacementFile, imageBytes);
+  const mediaWorkflow = {
+    sceneId: "media-smoke", name: "本地图片替换", inputs: [],
+    steps: [{ id: "media", name: "图片", kind: "manual", inputs: [{ key: "images", valueSource: "literal", literalType: "image_list", literalValue: JSON.stringify([replacementFile]) }], outputs: [{ key: "images", type: "image_list" }] }],
+    outputs: [{ key: "images", type: "image_list", sourceRef: "step.media.outputs.images" }],
+  };
+  const mediaSource = await json(base, "/api/v1/runs", { workflow: mediaWorkflow, inputValues: {} });
+  const mediaSourceStream = await fetch(base + "/api/v1/runs/" + mediaSource.runId + "/events", { signal: AbortSignal.timeout(5000) });
+  assert.match(await mediaSourceStream.text(), /"status":"completed"/);
+  const mediaRevision = await json(base, "/api/v1/runs/" + mediaSource.runId + "/rerun", { changes: { outputOverrides: [{ stepId: "media", outputs: { images: [replacementFile] } }] } });
+  await unlink(replacementFile);
+  const mediaRevisionStream = await fetch(base + "/api/v1/runs/" + mediaRevision.runId + "/events", { signal: AbortSignal.timeout(5000) });
+  assert.match(await mediaRevisionStream.text(), /"status":"completed"/);
+  const mediaResult = await json(base, "/api/v1/runs/" + mediaRevision.runId);
+  const storedMedia = mediaResult.outputs[0].value[0];
+  assert.ok(storedMedia.startsWith(mediaResult.artifacts.directory));
+  const mediaRoute = "/api/v1/runs/" + mediaRevision.runId + "/media/" + encodeURIComponent(path.basename(storedMedia));
+  const mediaResponse = await fetch(base + mediaRoute);
+  assert.equal(mediaResponse.status, 200); assert.deepEqual(Buffer.from(await mediaResponse.arrayBuffer()), imageBytes);
   await stop();
   base = await start();
   assert.equal((await json(base, "/api/workspace")).workspace.revision, 1);
   assert.equal((await json(base, `/api/v1/runs/${runId}`)).status, "completed");
-  assert.equal((await json(base, "/api/v1/runs?limit=1")).runs[0].runId, runId);
-  console.log("PASS: compiled server / static UI / workspace / async run / SSE / archive / restart persistence (isolated data, no generation calls)");
+  assert.equal((await json(base, "/api/v1/runs?limit=1")).runs[0].runId, mediaRevision.runId);
+  assert.deepEqual(await json(base, "/api/v1/runs/" + capabilityRunId), source);
+  assert.deepEqual(await json(base, "/api/v1/runs/" + revisionId), revision);
+  assert.deepEqual(Buffer.from(await (await fetch(base + mediaRoute)).arrayBuffer()), imageBytes);
+  console.log("PASS: compiled server / static UI / workspace / capability discovery & execution / revision preview & selective rerun / local replacement media / SSE / archive / restart persistence (isolated data, no generation calls)");
 } finally {
   await stop();
   const resolved = path.resolve(temporary);

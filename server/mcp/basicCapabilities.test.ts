@@ -1,0 +1,52 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import sharp from "sharp";
+import { readFile, writeFile } from "node:fs/promises";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { aiHarness } from "../testing/aiSupport.js";
+import type { CapabilityCatalogPage } from "../capabilities/contracts.js";
+import type { ApiResult } from "./httpClient.js";
+
+// Real stdio transport and temporary HTTP/SQLite/project; external runtimes throw in aiHarness.
+test("真实stdio MCP基础组合：按tier分页发现→创建/编辑冲突→发布对账→选图排版→按需结果", async t => {
+  const h = await aiHarness(t, { emptyWorkspace: true });
+  const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", "tsx", path.resolve("server/mcp/index.ts")], cwd: process.cwd(), env: { ...Object.fromEntries(Object.entries(process.env).filter((item): item is [string, string] => typeof item[1] === "string")), ZANE_BASE_URL: h.base }, stderr: "pipe" });
+  const client = new Client({ name: "basic-media-test", version: "1" }); t.after(() => client.close()); await client.connect(transport);
+  const call = async (name: string, arguments_: Record<string, unknown> = {}) => { const result = await client.callTool({ name, arguments: arguments_ }); return result.structuredContent as ApiResult; };
+  const first = await call("list_capabilities", { tier: "basic", limit: 1 }); assert.equal(first.ok, true); const firstPage = first.data as CapabilityCatalogPage;
+  assert.equal(firstPage.capabilities.length, 1); assert.ok(firstPage.nextCursor && firstPage.hasMore); assert.equal(firstPage.capabilities[0].usage?.tier, "basic");
+  const seen = [...firstPage.capabilities]; let cursor: string | undefined = firstPage.nextCursor;
+  while (cursor) { const response = await call("list_capabilities", { tier: "basic", limit: 2, cursor }); assert.equal(response.ok, true); const page = response.data as CapabilityCatalogPage; assert.equal(page.revision, firstPage.revision); seen.push(...page.capabilities); cursor = page.nextCursor; }
+  assert.equal(seen.length, new Set(seen.map((item) => item.id)).size);
+  const imageCapability = seen.find((item) => item.id === "media.image_layout")!; assert.ok(imageCapability.inputs.find((item) => item.key === "layout")?.valueSchema?.properties);
+  assert.ok(seen.some((item) => item.id === "media.select_references")); assert.ok(seen.every((item) => item.usage?.tier === "basic"));
+  assert.equal((await call("list_capabilities", { tier: "specialized", cursor: firstPage.nextCursor })).error?.code, "INVALID_CAPABILITY_CURSOR");
+  const invalidQuery = await client.callTool({ name: "list_capabilities", arguments: { tier: "invalid" } }); assert.equal(invalidQuery.isError, true);
+  const source = path.join(h.root, "input.png"); await writeFile(source, await sharp({ create: { width: 80, height: 100, channels: 3, background: "#b6c7a4" } }).png().toBuffer());
+  const uploaded = await call("upload_asset", { createId: randomUUID(), filePath: source, kind: "image", name: "隔离源图", category: "material" }); assert.equal(uploaded.ok, true);
+  const asset = uploaded.data as Record<string, any>;
+  const pkg = JSON.parse(await readFile("examples/scenes/basic-image-layout.json", "utf8"));
+  const created = await call("create_scene", { scene: pkg.scene, workflow: pkg.workflow }); assert.equal(created.ok, true); let draft = created.data as Record<string, any>;
+  const changedWorkflow = { ...pkg.workflow, name: "基础组合 MCP 验收" };
+  const edited = await call("update_scene_draft", { sceneId: pkg.scene.id, revision: draft.revision, workflow: changedWorkflow }); assert.equal(edited.ok, true);
+  assert.equal((await call("update_scene_draft", { sceneId: pkg.scene.id, revision: draft.revision, workflow: pkg.workflow })).error?.status, 409);
+  draft = edited.data as Record<string, any>;
+  assert.equal((await call("validate_scene_draft", { sceneId: pkg.scene.id, revision: draft.revision })).ok, true);
+  const publicationId = randomUUID(); const publicationArgs = { sceneId: pkg.scene.id, revision: draft.revision, publicationId };
+  const published = await call("publish_scene", publicationArgs); assert.equal(published.ok, true); assert.equal((published.data as Record<string, any>).versionId, publicationId);
+  assert.equal((await call("publish_scene", publicationArgs)).ok, true, "发布响应丢失用原ID对账，不创建新版本");
+  const inputValues = { images: [asset.reference], selection: { images: [1] }, layouts: [{ width: 320, height: 400, title: "基础封面" }, { width: 400, height: 320, caption: "无需场景定制" }] };
+  const preparation = await call("prepare_scene", { sceneId: pkg.scene.id, versionId: publicationId, inputValues }); assert.equal(preparation.ok, true);
+  const prepared = preparation.data as Record<string, any>; assert.deepEqual(prepared.boundaries.externalSteps, []);
+  const runId = randomUUID(); const submitted = await call("submit_scene", { sceneId: pkg.scene.id, versionId: publicationId, runId, inputValues }); assert.equal(submitted.ok, true);
+  const done = await h.service.wait(h.settings.projectDirectory, runId); assert.equal(done.status, "completed", done.error);
+  assert.equal((await call("submit_scene", { sceneId: pkg.scene.id, versionId: publicationId, runId, inputValues })).error?.code, "RUN_ALREADY_EXISTS");
+  assert.equal((await call("get_run", { runId })).ok, true, "提交响应丢失只读原runId");
+  const outputs = await call("get_run_outputs", { runId, outputKey: "layout_manifest", includeValues: true, valueLimit: 1 }); assert.equal(outputs.ok, true);
+  const output = outputs.data as Record<string, any>; assert.equal(output.outputs[0].value[0].format, "zane-image-layout/item-v1"); assert.equal(output.outputs[0].valuePage.hasMore, true);
+  const selected = await call("get_step_result", { runId, stepId: "references", outputKey: "reference_map", includeValues: true }); assert.equal(selected.ok, true);
+  const stored = await h.workspace.get(); assert.equal((stored?.scenes as unknown[]).length, 1); assert.equal(h.store.listRuns(h.settings.projectDirectory).runs.length, 1);
+});

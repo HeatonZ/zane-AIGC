@@ -160,3 +160,25 @@ test("invalid scene packages are rejected before import", () => {
     /无法识别这个场景文件/,
   );
 });
+
+
+test("能力包身份与嵌套配置跨场景导出、导入和发布版本保持不变", () => {
+  const definition = clone(workflow);
+  definition.steps = [{
+    id: "template", name: "文本模板", kind: "capability", capabilityId: "text.template", capabilityVersion: "1",
+    capabilityConfig: { template: "商品：{{product}}", nested: { values: [1, true, null] } },
+    inputs: [{ key: "product", label: "商品", sourceRef: "input.prompt" }],
+    outputs: [{ key: "text", label: "文本", type: "text" }], promptTemplate: "",
+  }];
+  definition.outputs = [{ key: "result", label: "结果", type: "text", sourceRef: "step.template.outputs.text" }];
+  const packaged = parseScenePackage(JSON.parse(serializeScenePackage(scene, definition, [sharedPreset])));
+  assert.deepEqual(JSON.parse(JSON.stringify(packaged.workflow.steps)), definition.steps);
+  const imported = prepareImportedScene(packaged, []);
+  assert.deepEqual(JSON.parse(JSON.stringify(imported.workflow.steps)), definition.steps);
+  const version = createSceneVersion(imported.scene, imported.workflow, imported.optionPresets);
+  assert.deepEqual(JSON.parse(JSON.stringify(restoreSceneVersionDraft(version, []).workflow.steps)), definition.steps);
+});
+
+test("人工确认设置跨场景导入导出和发布保持不变，无效开关拒绝导入",()=>{
+  const definition=clone(workflow);definition.steps[0].review={enabled:true,instruction:"检查角色与分镜"};const serialized=JSON.parse(serializeScenePackage(scene,definition,[sharedPreset]));const packaged=parseScenePackage(serialized);assert.deepEqual(packaged.workflow.steps[0].review,definition.steps[0].review);const version=createSceneVersion(scene,packaged.workflow,[sharedPreset]);assert.deepEqual(restoreSceneVersionDraft(version,[]).workflow.steps[0].review,definition.steps[0].review);serialized.workflow.steps[0].review.enabled="yes";assert.throws(()=>parseScenePackage(serialized),/人工确认/);
+});

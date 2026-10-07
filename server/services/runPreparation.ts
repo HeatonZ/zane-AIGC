@@ -1,17 +1,27 @@
-import { validateWorkflowShape } from "../domain/workflowValidation.js";
+import { readFeedbackSourceAliases } from "../artifacts/feedbackSources.js";
+import { archiveRerunMedia } from "../artifacts/rerunMedia.js";
+import { validateWorkflowInputs } from "../domain/inputValidation.js";
+import { planRerun, type PlannedRerun } from "./rerunPlanner.js";
+import type { CapabilityDefinition } from "../capabilities/contracts.js";
+import { validateWorkflowShape, validateCarryReferences } from "../domain/workflowValidation.js";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { captureStepFeedback } from "../domain/stepFeedback.js";
 import { HttpError } from "../errors.js";
-import { asRecord, isMediaWorkflowType, isReadableMediaItem, normalizeMediaList, normalizeRunWorkflow, normalizeWorkflowMediaInputs } from "../domain/workflowValues.js";
+import { log } from "../observability/logger.js";
+import { asRecord, normalizeMediaList, normalizeRunWorkflow, normalizeWorkflowMediaInputs } from "../domain/workflowValues.js";
 import type { JsonValue, RunRecord, RunWorkflowDefinition, SavedSettings } from "../domain/types.js";
 import type { PreparedRun } from "../execution/workflowExecutor.js";
 import { isActiveRunStatus } from "../domain/types.js";
-import { prepareRunArtifacts, runArtifactPaths } from "../artifacts/runArtifacts.js";
+import { discardRunArtifacts, prepareRunArtifacts, runArtifactPaths } from "../artifacts/runArtifacts.js";
 import { readJsonFile } from "../storage/jsonFileStore.js";
 
 export interface PreparationDependencies {
   getRun(projectDirectory: string, runId: string): Promise<RunRecord | undefined>;
   supportsStep(kind: string): boolean;
+  capabilities?: CapabilityDefinition[];
+  resolveAssets?(project: string, workflow: RunWorkflowDefinition, values: Record<string, JsonValue>): Promise<Record<string, JsonValue>>;
+  prepareStep?(step: import("../domain/types.js").RunStep): import("../domain/types.js").RunStep;
 }
 export async function prepareRun(body: unknown, runId: string, settings: SavedSettings, dependencies: PreparationDependencies): Promise<PreparedRun> {
   const input = asRecord(body);
@@ -23,6 +33,12 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
   if (value.steps.length > 100 || value.inputs.length > 200) throw new HttpError(400, "工作流规模超出限制");
   if (!settings.projectDirectory) throw new HttpError(400, "请先在集成连接中配置项目目录");
   let resumedFromRunId: string | undefined;
+  let rerunFromRunId: string | undefined;
+  let rerun: PlannedRerun | undefined;
+  if (input?.rerunFromRunId !== undefined) {
+    if (typeof input.rerunFromRunId !== "string" || input.rerunFromRunId === runId || input.resumeFromRunId !== undefined) throw new HttpError(400, "局部重做来源无效，不能同时提交断点续跑");
+    rerunFromRunId = input.rerunFromRunId;
+  }
   if (input?.resumeFromRunId !== undefined) {
     if (typeof input.resumeFromRunId !== "string") throw new HttpError(400, "断点来源运行记录编号无效");
     resumedFromRunId = input.resumeFromRunId;
@@ -33,18 +49,26 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
   let resumeSource: RunRecord | undefined;
   let workflowValue = value;
   let inputValues = structuredClone(rawInputs) as Record<string, JsonValue>;
-  if (resumedFromRunId) {
-    resumeSource = await dependencies.getRun(settings.projectDirectory, resumedFromRunId);
+  if (resumedFromRunId || rerunFromRunId) {
+    const sourceId = resumedFromRunId ?? rerunFromRunId!;
+    resumeSource = await dependencies.getRun(settings.projectDirectory, sourceId);
     if (!resumeSource) throw new HttpError(404, "没有找到断点来源运行记录");
-    if (isActiveRunStatus(resumeSource.status) || resumeSource.status === "completed") throw new HttpError(409, "这条运行记录仍在执行或已经完成，不可续跑");
+    if (resumeSource.status === "waiting") throw new HttpError(409, "请先处理此运行的人工确认关卡", "REVIEW_REQUIRED");
+    if (isActiveRunStatus(resumeSource.status) || (!rerunFromRunId && resumeSource.status === "completed")) throw new HttpError(409, "这条运行记录仍在执行或已经完成，不可续跑");
     if (!resumeSource.workflow || resumeSource.sceneId !== value.sceneId) throw new HttpError(409, "断点来源与当前工作流不匹配");
     workflowValue = resumeSource.workflow as unknown as Record<string, unknown>;
     inputValues = structuredClone(resumeSource.inputValues);
     runTitle ||= resumeSource.runTitle ?? "";
-    const sourcePaths = runArtifactPaths(settings.projectDirectory, resumedFromRunId);
+    if (rerunFromRunId) {
+      rerun = planRerun(resumeSource, input?.rerunRequest, dependencies.capabilities);
+      workflowValue = rerun.workflow as unknown as Record<string, unknown>;
+      inputValues = structuredClone(rerun.inputValues);
+    }
+    const sourcePaths = runArtifactPaths(settings.projectDirectory, sourceId);
     const archivedInput = await readJsonFile(sourcePaths.inputs);
     for (const item of Array.isArray(archivedInput?.files) ? archivedInput.files : []) {
       const file = asRecord(item);
+      if (typeof file?.key === "string" && rerun?.request.inputOverrides && Object.prototype.hasOwnProperty.call(rerun.request.inputOverrides, file.key)) continue;
       if (typeof file?.key !== "string" || typeof file.path !== "string" || !file.path.startsWith("inputs/files/")) continue;
       const filename = path.resolve(sourcePaths.directory, ...file.path.split(/[\/]/));
       if (!filename.startsWith(`${path.resolve(sourcePaths.directory)}${path.sep}`)) continue;
@@ -71,15 +95,15 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
     if ((step.inputs !== undefined && !Array.isArray(step.inputs)) || (step.outputs !== undefined && !Array.isArray(step.outputs))) throw new HttpError(400, "步骤输入或输出格式无效");
   }
   let executionWorkflow = normalizeRunWorkflow(workflowValue as unknown as RunWorkflowDefinition);
-  for (const field of executionWorkflow.inputs) {
-    const value = inputValues[field.key];
-    const media = isMediaWorkflowType(field.type) ? normalizeMediaList(value) : [];
-    const empty = value === undefined || value === null || value === "" || (isMediaWorkflowType(field.type) && media.length === 0);
-    if (field.required && empty) throw new HttpError(400, `请填写必填字段：${field.key}`);
-    if (empty) continue;
-    const correct = isMediaWorkflowType(field.type) ? media.every(isReadableMediaItem) : field.type === "number" ? typeof value === "number" && Number.isFinite(value) : field.type === "boolean" ? typeof value === "boolean" : field.type === "json" ? typeof value === "object" : typeof value === "string";
-    if (!correct) throw new HttpError(400, `字段 ${field.key} 的数据类型不匹配`);
-    if (field.type === "select" && field.options && !field.options.includes(String(value))) throw new HttpError(400, `字段 ${field.key} 的选项无效`);
+  validateCarryReferences(executionWorkflow);
+  if (dependencies.prepareStep) executionWorkflow = { ...executionWorkflow, steps: executionWorkflow.steps.map(dependencies.prepareStep) };
+  if (dependencies.resolveAssets) inputValues = await dependencies.resolveAssets(settings.projectDirectory, executionWorkflow, inputValues);
+  validateWorkflowInputs(executionWorkflow, inputValues);
+  if (rerun) {
+    for (const item of rerun.itemStepOverrides) {
+      validateWorkflowShape({ ...workflowValue, steps: [item.step] });
+      if (dependencies.prepareStep) item.step = dependencies.prepareStep(item.step);
+    }
   }
   const legacyExecution = executionWorkflow.execution;
   if (legacyExecution) {
@@ -93,6 +117,16 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   inputValues = normalizeWorkflowMediaInputs(executionWorkflow, inputValues);
   const createdAt = new Date().toISOString();
+  const feedbackHistory = [...structuredClone(resumeSource?.feedbackHistory ?? []), ...(rerun?.request.feedback ?? []).map(feedback => captureStepFeedback(resumeSource!, feedback, createdAt))];
   const artifacts = await prepareRunArtifacts(settings, runId, executionWorkflow, inputValues, createdAt, runTitle || undefined);
-  return { runId, executionWorkflow, inputValues, settings, artifacts, createdAt, ...(runTitle ? { runTitle } : {}), ...(resumedFromRunId ? { resumedFromRunId, resumeSource } : {}) };
+  let feedbackSourceAliases: Record<string, string> | undefined;
+  try {
+    if (rerun) await archiveRerunMedia(rerun, artifacts);
+    if (feedbackHistory.length) feedbackSourceAliases = await readFeedbackSourceAliases(settings.projectDirectory, runId, feedbackHistory);
+  }
+  catch (error) {
+    await discardRunArtifacts(settings.projectDirectory, runId).catch(failure => log("warn", "run.preparation_cleanup_failed", { runId, error: String(failure) }));
+    throw error;
+  }
+  return { runId, executionWorkflow, inputValues, settings, artifacts, createdAt, ...(feedbackHistory.length ? { feedbackHistory, feedbackSourceAliases } : {}), ...(runTitle ? { runTitle } : {}), ...(resumedFromRunId ? { resumedFromRunId, resumeSource } : {}), ...(rerunFromRunId ? { rerunFromRunId, rerun } : {}) };
 }

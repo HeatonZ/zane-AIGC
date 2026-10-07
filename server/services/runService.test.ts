@@ -3,13 +3,14 @@ import { prepareRunArtifacts } from "../artifacts/runArtifacts.js";
 import { writeJsonFile } from "../storage/jsonFileStore.js";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import path from "node:path";
-import { harness, workflow, submission, until, deferred, id } from "../testing/testSupport.js";
+import { harness, workflow, submission, until, deferred, id, temporaryDirectory } from "../testing/testSupport.js";
 import { waitForAbortable } from "../execution/cancellation.js";
 import { ResourceQueues } from "../execution/resourceQueue.js";
 import { externalizeRuntimeValue, resolveWorkflowReference } from "../domain/workflowValues.js";
 import { RunService } from "./runService.js";
+import { ExecutorRegistry } from "../execution/executorRegistry.js";
 import { HttpError } from "../errors.js";
 
 test("后台执行成功：事件与 JSON 归档在 wait 返回前完成", async (t) => {
@@ -314,4 +315,123 @@ test("关闭之后才返回的提交准备，不访问已关闭的 SQLite", asyn
   store.close();
   settings.resolve({ projectDirectory: "", comfyuiBaseUrl: "", workflowTimeoutMinutes: 1, enabledHermesProfiles: [] });
   await assert.rejects(submitting, (error) => error instanceof HttpError && error.status === 503);
+});
+
+
+test("排队的单项修订跨 SQLite 重开恢复，保留参数和复用范围且不修改源版本", async (t) => {
+  let service: RunService | undefined;
+  let store: SqliteStore | undefined;
+  const root = await temporaryDirectory(t, async () => { await service?.shutdown(100); store?.close(); });
+  const projectDirectory = path.join(root, "project"); await mkdir(projectDirectory);
+  const settings = { projectDirectory, comfyuiBaseUrl: "http://127.0.0.1:1", workflowTimeoutMinutes: 1, enabledHermesProfiles: [] };
+  const calls: { step: string; value?: string; prompt?: string }[] = [];
+  let blocking = false;
+  const executors = new ExecutorRegistry().register({ kind: "fake", async execute(context) {
+    if (context.step.id === "blocker") {
+      blocking = true;
+      await waitForAbortable(new Promise(() => {}), context.signal);
+    }
+    calls.push({ step: context.step.id, value: context.inputValues["iteration.item"] as string | undefined, prompt: context.step.promptTemplate });
+    return { value: context.step.id === "loop" ? String(context.inputValues["iteration.item"]) + (context.step.promptTemplate ?? "") : "independent" };
+  } });
+  const database = path.join(root, "metadata.db");
+  store = new SqliteStore(database);
+  service = new RunService({ store, executors, loadSettings: async () => settings });
+  await service.start();
+  const definition = workflow([
+    { id: "loop", name: "逐项", kind: "fake", outputs: [{ key: "value", type: "text" }], execution: { mode: "for_each", sourceRef: "input.items" } },
+    { id: "independent", name: "独立", kind: "fake", outputs: [{ key: "value", type: "text" }] },
+  ]);
+  definition.inputs = [{ key: "items", type: "json", required: true }];
+  definition.outputs = [{ key: "result", type: "json", sourceRef: "step.loop.outputs.value" }];
+  const initial = await service.submit(submission(id("queued-rerun-source"), definition, { items: ["a", "b", "c"] }));
+  const original = await service.wait(projectDirectory, initial.runId);
+  const originalSnapshot = structuredClone(original);
+  await service.submit(submission(id("queued-rerun-blocker"), workflow([{ id: "blocker", name: "占用 worker", kind: "fake", outputs: [{ key: "value", type: "text" }] }])));
+  await until(() => blocking);
+  const revision = await service.submit({ ...submission(id("queued-rerun-revision"), original.workflow, original.inputValues), rerunFromRunId: original.runId, rerunRequest: { stepOverrides: [{ stepId: "loop", itemIndex: 1, promptTemplate: "-v2" }] } });
+  assert.equal(store.getRun(projectDirectory, revision.runId)?.status, "queued");
+  await service.shutdown(0); store.close();
+  calls.length = 0;
+  store = new SqliteStore(database);
+  service = new RunService({ store, executors, loadSettings: async () => settings });
+  await service.start();
+  const result = await service.wait(projectDirectory, revision.runId);
+  assert.equal(result.status, "completed");
+  assert.equal(result.rerunFromRunId, original.runId);
+  assert.deepEqual(result.outputs[0].value, ["a", "b-v2", "c"]);
+  assert.deepEqual(calls, [{ step: "loop", value: "b", prompt: "-v2" }]);
+  assert.equal(result.steps[0].items?.[1].stepSnapshot?.promptTemplate, "-v2");
+  assert.equal(result.steps[0].items?.[0].reusedFromRunId, original.runId);
+  assert.equal(result.steps[1].reusedFromRunId, original.runId);
+  assert.deepEqual(store.getRun(projectDirectory, original.runId), originalSnapshot);
+});
+
+
+test("替换单项本地图片会归档到新版本并重建聚合，源文件移除后下游仍可读取", async (t) => {
+  const calls: string[] = [];
+  const h = await harness(t, { executor: { kind: "fake", async execute(context): Promise<Record<string, import("../domain/types.js").JsonValue>> {
+    calls.push(context.step.id);
+    if (context.step.id === "images") return { images: [context.inputValues["iteration.item"]] };
+    const images = externalizeRuntimeValue(context.stepValues.get("images")!.images) as string[];
+    return { value: (await Promise.all(images.map((filename) => readFile(filename, "utf8")))).join("|") };
+  } } });
+  const first = path.join(h.root, "first.png"), second = path.join(h.root, "second.png"), replacement = path.join(h.root, "replacement.png");
+  await writeFile(first, "OLD_A"); await writeFile(second, "OLD_B"); await writeFile(replacement, "NEW_B");
+  const definition = workflow([
+    { id: "images", name: "生成图", kind: "fake", inputs: [], outputs: [{ key: "images", type: "image_list" }], execution: { mode: "for_each", sourceRef: "input.items" } },
+    { id: "read", name: "下游", kind: "fake", inputs: [{ key: "images", sourceRef: "step.images.outputs.images" }], outputs: [{ key: "value", type: "text" }] },
+  ]);
+  definition.inputs = [{ key: "items", type: "json", required: true }];
+  await h.service.start();
+  const queued = await h.service.submit({ workflow: definition, inputValues: { items: [first, second] } });
+  const original = await h.service.wait(h.settings.projectDirectory, queued.runId);
+  assert.equal(original.outputs[0].value, "OLD_A|OLD_B"); calls.length = 0;
+  const revised = await h.service.submit({ workflow: original.workflow, inputValues: original.inputValues, rerunFromRunId: original.runId, rerunRequest: { outputOverrides: [{ stepId: "images", itemIndex: 1, outputs: { images: [{ path: replacement }] } }] } });
+  await unlink(replacement);
+  const result = await h.service.wait(h.settings.projectDirectory, revised.runId);
+  assert.equal(result.status, "completed"); assert.equal(result.outputs[0].value, "OLD_A|NEW_B");
+  assert.deepEqual(calls, ["read"]);
+  const stored = result.steps[0].items?.[1].outputs?.images as string[];
+  assert.ok(stored[0].startsWith(result.artifacts.directory)); assert.equal(await readFile(stored[0], "utf8"), "NEW_B");
+  assert.deepEqual(h.store.getRun(h.settings.projectDirectory, original.runId), original);
+});
+
+test("非阻断警告先持久化并去重；单步成功复用及上游失败均保留警告", async t => {
+  const gate = deferred<void>();
+  let warned = false;
+  let firstCalls = 0;
+  let fail = true;
+  const { service, settings, store } = await harness(t, { executor: { kind: "fake", async execute({ step, warn }) {
+    await warn?.(`${step.id} 格式建议`);
+    await warn?.(`${step.id} 格式建议`);
+    if (step.id === "first") { firstCalls++; warned = true; await gate.promise; }
+    if (step.id === "second" && fail) throw new Error("上游不可用，与提示词格式无关");
+    return { value: "ok" };
+  } } });
+  await service.start();
+  const definition = workflow([
+    { id: "first", name: "第一步", kind: "fake", outputs: [{ key: "value", type: "text" }] },
+    { id: "second", name: "第二步", kind: "fake", outputs: [{ key: "value", type: "text" }] },
+  ]);
+  const initial = await service.submit(submission(id("warning-failed"), definition));
+  t.after(() => gate.resolve());
+  await until(() => warned);
+  const checkpoint = await service.getRun(settings.projectDirectory, initial.runId);
+  assert.equal(checkpoint?.status, "running");
+  assert.deepEqual(checkpoint?.steps[0].warnings, ["first 格式建议"]);
+  gate.resolve();
+  const failed = await service.wait(settings.projectDirectory, initial.runId);
+  assert.equal(failed.status, "failed");
+  assert.deepEqual(failed.steps.map(step => step.warnings), [["first 格式建议"], ["second 格式建议"]]);
+  assert.match(failed.error!, /上游不可用/);
+  assert.doesNotMatch(failed.error!, /格式建议/);
+  assert.deepEqual(JSON.parse(await readFile(failed.artifacts.runtime, "utf8")).steps[1].warnings, ["second 格式建议"]);
+  fail = false;
+  const resumed = await service.submit({ ...submission(id("warning-resumed"), definition), resumeFromRunId: initial.runId });
+  const done = await service.wait(settings.projectDirectory, resumed.runId);
+  assert.equal(done.status, "completed");
+  assert.equal(firstCalls, 1);
+  assert.deepEqual(done.steps.map(step => step.warnings), [["first 格式建议"], ["second 格式建议"]]);
+  assert.deepEqual(store.getRun(settings.projectDirectory, done.runId)?.steps[0].warnings, ["first 格式建议"]);
 });

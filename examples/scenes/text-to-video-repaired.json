@@ -1,0 +1,211 @@
+{
+  "format": "zane-studio-scene",
+  "version": 1,
+  "exportedAt": "2026-10-01T14:31:12.141Z",
+  "scene": {
+    "id": "scene_8ea4173e-d278-4703-9bec-418498ace6ee",
+    "title": "AI文生视频",
+    "shortTitle": "AI文生视频",
+    "summary": "",
+    "description": "",
+    "cover": "",
+    "coverPosition": "center",
+    "accent": "green",
+    "stages": []
+  },
+  "workflow": {
+    "sceneId": "scene_8ea4173e-d278-4703-9bec-418498ace6ee",
+    "name": "AI文生视频流程",
+    "inputs": [
+      {
+        "key": "thought",
+        "label": "想",
+        "type": "textarea",
+        "required": true,
+        "placeholder": "描述希望生成的内容"
+      },
+      {
+        "key": "time",
+        "label": "秒数",
+        "type": "number",
+        "required": true
+      },
+      {
+        "key": "mp",
+        "label": "像素",
+        "type": "number",
+        "required": false
+      },
+      {
+        "key": "ratio",
+        "label": "画幅",
+        "type": "select",
+        "required": false,
+        "options": [
+          "1:1 (Square)",
+          "2:3 (Portrait Photo)",
+          "3:2 (Photo)",
+          "3:4 (Portrait Standard)",
+          "4:3 (Standard)",
+          "9:16 (Portrait Widescreen)",
+          "16:9 (Widescreen)",
+          "21:9 (Ultrawide)"
+        ],
+        "optionPresetId": "option_preset_mukmzjwh_1"
+      }
+    ],
+    "steps": [
+      {
+        "id": "generate",
+        "name": "内容生成",
+        "kind": "hermes",
+        "inputs": [],
+        "outputs": [
+          {
+            "key": "result",
+            "label": "视频脚本",
+            "type": "text",
+            "description": "视频脚本"
+          }
+        ],
+        "promptTemplate": "基于用户想法来联想并扩写视频脚本，自然语言描述主体、场景、构图、动作、细节\n画面参数： {{input.ratio}}，{{input.time}}秒\n用户输入：{{input.thought}}",
+        "hermesProfile": "writer"
+      },
+      {
+        "id": "step_mul07sy6_2",
+        "name": "提示词",
+        "kind": "hermes",
+        "hermesProfile": "aixg",
+        "inputs": [],
+        "outputs": [
+          {
+            "key": "result",
+            "label": "提示词",
+            "type": "text",
+            "description": "提示词结果"
+          }
+        ],
+        "promptTemplate": "转换文案为提示词，模型：Minimax H3，r2v，文案脚本：{{step.generate.outputs.result}}"
+      },
+      {
+        "id": "step_mul09e0j_3",
+        "name": "h3生成",
+        "kind": "comfyui",
+        "inputs": [
+          {
+            "key": "prompt",
+            "label": "提示词",
+            "sourceRef": "step.step_mul07sy6_2.outputs.result",
+            "valueSource": "reference"
+          },
+          {
+            "key": "time",
+            "label": "秒数",
+            "sourceRef": "input.time"
+          },
+          {
+            "key": "mp",
+            "label": "像素",
+            "sourceRef": "input.mp"
+          },
+          {
+            "key": "ratio",
+            "label": "画幅",
+            "sourceRef": "input.ratio"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "result",
+            "label": "视频",
+            "type": "video_list"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "workflowFile": "Zane/video_双采.json",
+          "bindings": [
+            {
+              "key": "result",
+              "label": "视频",
+              "direction": "output",
+              "nodeId": "92",
+              "property": "video",
+              "type": "video_list"
+            },
+            {
+              "key": "prompt",
+              "label": "提示词",
+              "direction": "input",
+              "nodeId": "192",
+              "property": "prompt",
+              "type": "text",
+              "sourceRef": "step.step_mul07sy6_2.outputs.result",
+              "required": true,
+              "valueSource": "reference",
+              "sourceOutputFormat": {
+                "stepId": "step_mul07sy6_2",
+                "outputKey": "result",
+                "type": "text"
+              }
+            },
+            {
+              "key": "time",
+              "label": "秒数",
+              "direction": "input",
+              "nodeId": "155",
+              "property": "value",
+              "type": "number",
+              "sourceRef": "input.time",
+              "required": true
+            },
+            {
+              "key": "mp",
+              "label": "像素",
+              "direction": "input",
+              "nodeId": "115",
+              "property": "megapixels",
+              "type": "number",
+              "sourceRef": "input.mp",
+              "required": true
+            },
+            {
+              "key": "ratio",
+              "label": "画幅",
+              "direction": "input",
+              "nodeId": "115",
+              "property": "aspect_ratio",
+              "type": "text",
+              "sourceRef": "input.ratio",
+              "required": true
+            }
+          ]
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "key": "result",
+        "label": "生成结果",
+        "type": "video_list",
+        "sourceRef": "step.step_mul09e0j_3.outputs.result"
+      }
+    ]
+  },
+  "optionPresets": [
+    {
+      "id": "option_preset_mukmzjwh_1",
+      "name": "画幅",
+      "options": [
+        "1:1 (Square)",
+        "2:3 (Portrait Photo)",
+        "3:2 (Photo)",
+        "3:4 (Portrait Standard)",
+        "4:3 (Standard)",
+        "9:16 (Portrait Widescreen)",
+        "16:9 (Widescreen)",
+        "21:9 (Ultrawide)"
+      ]
+    }
+  ]
+}

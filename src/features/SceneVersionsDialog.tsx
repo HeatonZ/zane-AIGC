@@ -30,9 +30,9 @@ export default function SceneVersionsDialog({ sceneTitle, record, onClose, onApp
             return <li key={version.id} className={published ? "current" : ""}>
               <div className="scene-version-marker">{published ? <Check size={13} /> : <Clock3 size={13} />}</div>
               <div className="scene-version-copy">
-                <div><strong>v{version.version} · {version.workflow.name}</strong>{published && <span>当前发布</span>}</div>
+                <div><strong>v{version.version} · {version.scene.title}</strong>{published && <span>当前发布</span>}</div>
                 <small>{formatPublishedAt(version.publishedAt)}</small>
-                <p>{version.scene.title}{version.scene.summary ? ` · ${version.scene.summary}` : ""}</p>
+                {version.scene.summary && <p>{version.scene.summary}</p>}
               </div>
               <button className="button button-outline scene-version-apply" onClick={() => { onApply(version); onClose(); }}>
                 <Rocket size={13} />应用到暂存

@@ -28,6 +28,11 @@ export function workflowTimeoutLabel(minutes: number) {
   return `${minutes} 分钟`;
 }
 
+function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number) {
+  const numeric = value === undefined || value.trim() === "" ? NaN : Number(value);
+  return Number.isInteger(numeric) && numeric >= minimum && numeric <= maximum ? numeric : fallback;
+}
+
 export function parseEnvFile(text: string) {
   const values: Record<string, string> = {};
   for (const line of text.split(/\r?\n/)) {
@@ -82,6 +87,11 @@ export const distDirectory = path.resolve(nonEmpty(process.env.DIST_DIR) ?? "dis
 export const hermesHome = path.resolve(nonEmpty(process.env.HERMES_HOME) ?? nonEmpty(process.env.HERMES_INSTALL_ROOT) ?? path.join(os.homedir(), ".hermes"));
 export const configuredComfyuiBaseUrl = nonEmpty(process.env.COMFYUI_BASE_URL)?.replace(/\/+$/, "");
 export const configuredWorkflowTimeoutMinutes = normalizeWorkflowTimeoutMinutes(process.env.ZANE_WORKFLOW_TIMEOUT_MINUTES);
+// Network retries are deliberately bounded: enough time for a local Hermes Gateway
+// reload to finish, without making a genuinely offline service look hung forever.
+export const hermesRetryAttempts = boundedInteger(process.env.HERMES_RETRY_ATTEMPTS, 6, 0, 20);
+export const hermesRetryInitialDelayMs = boundedInteger(process.env.HERMES_RETRY_INITIAL_DELAY_MS, 250, 0, 10_000);
+export const hermesRetryMaxDelayMs = boundedInteger(process.env.HERMES_RETRY_MAX_DELAY_MS, 4_000, 0, 60_000);
 export const ffmpegBinary = nonEmpty(process.env.FFMPEG_BIN) ?? "ffmpeg";
 export const ffprobeBinary = nonEmpty(process.env.FFPROBE_BIN) ?? "ffprobe";
 export const execFileAsync = promisify(execFile);
@@ -94,5 +104,18 @@ export const defaults: SavedSettings = {
 
 
 export const databaseFile = path.join(localDirectory, "zane.db");
-export const maxActiveRuns = Math.max(1, Math.min(32, Number.parseInt(process.env.ZANE_MAX_ACTIVE_RUNS ?? "2", 10) || 2));
+export const maxActiveRuns = boundedInteger(process.env.ZANE_MAX_ACTIVE_RUNS, 2, 1, 32);
 export const shutdownTimeoutMs = Math.max(1000, Number.parseInt(process.env.ZANE_SHUTDOWN_TIMEOUT_MS ?? "15000", 10) || 15000);
+
+// Optional second ingress: same process/services/SQLite, ordinary users only. Not enabled by default.
+export const publicUserPort = nonEmpty(process.env.ZANE_PUBLIC_USER_PORT) === undefined ? undefined : Number(process.env.ZANE_PUBLIC_USER_PORT);
+export const publicUserHost = nonEmpty(process.env.ZANE_PUBLIC_USER_HOST) ?? "127.0.0.1";
+const loginNumber = (key: string) => nonEmpty(process.env[key]) === undefined ? undefined : Number(process.env[key]);
+const loginWindowSeconds = loginNumber("ZANE_LOGIN_WINDOW_SECONDS");
+if (loginWindowSeconds !== undefined && !Number.isInteger(loginWindowSeconds)) throw new Error("ZANE_LOGIN_WINDOW_SECONDS 必须为整数秒");
+export const loginLimitOptions = {
+  windowMs: loginWindowSeconds === undefined ? undefined : loginWindowSeconds * 1000,
+  accountAttempts: loginNumber("ZANE_LOGIN_ACCOUNT_ATTEMPTS"),
+  sourceAttempts: loginNumber("ZANE_LOGIN_SOURCE_ATTEMPTS"),
+  maxConcurrent: loginNumber("ZANE_LOGIN_MAX_CONCURRENT"),
+};

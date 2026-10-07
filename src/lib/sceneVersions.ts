@@ -70,7 +70,8 @@ export function sceneDraftMatchesVersion(
   version: SceneVersion | undefined,
 ) {
   if (!version) return false;
-  return JSON.stringify(versionContent(scene, workflow, optionPresets)) === JSON.stringify(versionContent(version.scene, version.workflow, version.optionPresets));
+  const draftHash = shortMd5(versionContent(scene, workflow, optionPresets));
+  return draftHash === version.publication?.draftContentHash || draftHash === shortMd5(versionContent(version.scene, version.workflow, version.optionPresets));
 }
 
 export function initialSceneVersions(

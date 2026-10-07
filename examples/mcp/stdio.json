@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "zane-workbench": {
+      "command": "node",
+      "args": [
+        "F:/code/zane-drama/dist-server/mcp/index.js"
+      ],
+      "env": {
+        "ZANE_BASE_URL": "http://127.0.0.1:8799",
+        "ZANE_MCP_TIMEOUT_MS": "45000",
+        "ZANE_API_TOKEN": "REPLACE_WITH_OWN_API_TOKEN"
+      }
+    }
+  }
+}

@@ -4,6 +4,16 @@ import type { JsonValue, RunStep, RunStepInput, RunWorkflowDefinition } from "./
 // Media values have one runtime shape inside the workflow engine: a flat list.
 // The declared workflow type still describes the item kind, while adapters at
 // the boundary decide whether an external API receives one item or the list.
+/** Nested typed media remains an attachment even when its reference root is JSON. */
+export function workflowMediaValueKind(value: unknown, type: unknown) {
+  const declared = mediaKindFromWorkflowType(type);
+  if (isRuntimeMediaValue(value)) {
+    if (declared && declared !== value.mediaKind) throw new Error("媒体来源与声明类型不一致");
+    return value.mediaKind;
+  }
+  return declared;
+}
+
 export function isMediaWorkflowType(type: unknown): boolean {
   return mediaKindFromWorkflowType(type) !== undefined;
 }
@@ -89,7 +99,7 @@ export function uniqueStrings(values: unknown[]) {
 }
 
 export function splitWorkflowReference(reference: string) {
-  const match = /^(iteration\.item|input\.[a-zA-Z0-9_]+|step\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_]+)([\s\S]*)$/.exec(reference);
+  const match = /^(iteration\.(?:item|previous|hasPrevious|index)|input\.[a-zA-Z0-9_]+|step\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_]+)([\s\S]*)$/.exec(reference);
   if (!match) return undefined;
   const suffix = match[2];
   return {
@@ -172,7 +182,7 @@ export function resolveWorkflowReference(reference: string, inputs: Record<strin
   const inputMatch = /^input\.([a-zA-Z0-9_]+)$/.exec(parsed.root);
   const outputMatch = /^step\.([a-zA-Z0-9_-]+)\.outputs\.([a-zA-Z0-9_]+)$/.exec(parsed.root);
   let value: JsonValue | undefined;
-  if (parsed.root === "iteration.item") value = inputs["iteration.item"];
+  if (parsed.root.startsWith("iteration.")) value = inputs[parsed.root];
   else if (inputMatch) value = inputs[inputMatch[1]];
   else if (outputMatch) value = stepValues.get(outputMatch[1])?.[outputMatch[2]];
   else throw new Error(`不支持的数据引用：${reference || "（空）"}`);
@@ -244,11 +254,11 @@ export function parseWorkflowLiteral(value: unknown, type: string | undefined, l
 }
 
 export function resolveWorkflowValue(input: RunStepInput, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>) {
-  const sourceType = input.valueSource === "literal" ? input.literalType : undefined;
+  const sourceType = input.valueSource === "literal" ? input.literalType : input.referenceType;
   const rawValue = input.valueSource === "literal"
     ? parseWorkflowLiteral(input.literalValue, input.literalType, input.label ?? input.key)
     : resolveWorkflowReference(input.sourceRef ?? "", inputs, stepValues);
-  const mediaKind = mediaKindFromWorkflowType(sourceType);
+  const mediaKind = workflowMediaValueKind(rawValue, sourceType);
   const normalized = mediaKind && !isRuntimeMediaValue(rawValue) ? createRuntimeMediaValue(mediaKind, rawValue) : rawValue;
   return input.selection ? selectRuntimeMedia(normalized, input.selection) : normalized;
 }
@@ -266,11 +276,13 @@ export function resolveStepInputs(step: RunStep, inputValues: Record<string, Jso
 export function resolvePromptTemplate(template: string, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types?: Map<string, string>) {
   return template.replace(/\{\{([^{}]+)\}\}/g, (_match, reference: string) => {
     const sourceRef = reference.trim();
-    const type = types?.get(workflowReferenceRoot(sourceRef));
+    const type = types?.get(sourceRef) ?? types?.get(workflowReferenceRoot(sourceRef));
     if (mediaKindFromWorkflowType(type) === "image") return "[图片已作为附件提供]";
     if (mediaKindFromWorkflowType(type) === "video") return "[视频代表帧已作为图片附件提供]";
     const value = resolveWorkflowReference(sourceRef, inputs, stepValues);
     if (value === undefined || value === null) return "";
+    if (workflowMediaValueKind(value, type) === "image") return "[图片已作为附件提供]";
+    if (workflowMediaValueKind(value, type) === "video") return "[视频代表帧已作为图片附件提供]";
     return typeof value === "string" ? value : JSON.stringify(value);
   });
 }

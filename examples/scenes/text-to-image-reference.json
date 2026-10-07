@@ -1,0 +1,309 @@
+{
+  "format": "zane-studio-scene",
+  "version": 1,
+  "exportedAt": "2026-10-01T09:47:41.111Z",
+  "scene": {
+    "id": "scene_bc9235eb-c72e-4a6f-acf3-0a6da7dfcefe",
+    "title": "AI文生图",
+    "shortTitle": "AI文生图",
+    "summary": "",
+    "description": "",
+    "cover": "",
+    "coverPosition": "center",
+    "accent": "green",
+    "stages": []
+  },
+  "workflow": {
+    "sceneId": "scene_bc9235eb-c72e-4a6f-acf3-0a6da7dfcefe",
+    "name": "AI文生图流程",
+    "inputs": [
+      {
+        "key": "thought",
+        "label": "描述",
+        "type": "textarea",
+        "required": false,
+        "placeholder": "无参考图时填写描述；上传参考图时可留空"
+      },
+      {
+        "key": "reference_images",
+        "label": "参考图片",
+        "type": "image_list",
+        "required": false,
+        "placeholder": "仅用于 AIXG 反推提示词，不传入生图模型；描述可留空"
+      },
+      {
+        "key": "ratio",
+        "label": "生成画幅",
+        "type": "select",
+        "required": true,
+        "options": [
+          "1:1 (Square)",
+          "2:3 (Portrait Photo)",
+          "3:2 (Photo)",
+          "3:4 (Portrait Standard)",
+          "4:3 (Standard)",
+          "9:16 (Portrait Widescreen)",
+          "16:9 (Widescreen)",
+          "21:9 (Ultrawide)"
+        ],
+        "optionPresetId": "option_preset_mukmzjwh_1",
+        "defaultValue": "1:1 (Square)"
+      },
+      {
+        "key": "mp",
+        "label": "生成像素（MP）",
+        "type": "number",
+        "required": true,
+        "defaultValue": 1
+      }
+    ],
+    "steps": [
+      {
+        "id": "step_reference_images_condition",
+        "name": "判断是否有参考图",
+        "kind": "control",
+        "inputs": [],
+        "outputs": [
+          {
+            "key": "result",
+            "label": "有参考图",
+            "type": "boolean"
+          }
+        ],
+        "promptTemplate": "",
+        "control": {
+          "type": "condition",
+          "match": "all",
+          "rules": [
+            {
+              "id": "reference_images_present",
+              "leftRef": "input.reference_images",
+              "operator": "is_not_empty",
+              "valueSource": "literal",
+              "rightValue": "",
+              "rightRef": ""
+            }
+          ]
+        }
+      },
+      {
+        "id": "step_aixg_reverse_prompt",
+        "name": "参考图提示词反推",
+        "kind": "hermes",
+        "hermesProfile": "aixg",
+        "inputs": [
+          {
+            "key": "reference_images",
+            "label": "参考图片",
+            "sourceRef": "input.reference_images"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "output_1",
+            "label": "反推后的正向提示词",
+            "type": "text",
+            "description": "根据参考图片反推出的生图提示词"
+          }
+        ],
+        "promptTemplate": "请读取附带的参考图片，反推出一条详细、独立的纯文生图提示词。生成模型不会看到任何参考图片，提示词必须只靠文字完整说明画面。按全景构图→前景/中景/背景→由左到右的顺序描述：主体的准确数量、可辨识外观、大小、位置、朝向和相互关系，以及场景、物品层级、背景、摄影视角、画面裁切、风格、材质、光线和色彩。多张图片时以第一张为主要画面，其他图片只补充同一主体的可见细节，不拼贴互相矛盾的场景。不臆测不可见细节或无法辨认的文字，不新增、删减或美化主体。输出必须是具体画面描述，不写“参考原图”“保持原图”“按图编辑”等依赖图片的指令。仅返回提示词文本，不附加解释，不调用工具，不搜索，不生成或编辑图片。",
+        "runCondition": {
+          "conditionStepId": "step_reference_images_condition",
+          "expectedResult": true
+        }
+      },
+      {
+        "id": "step_mukr3erd_2",
+        "name": "润色",
+        "kind": "hermes",
+        "hermesProfile": "writer",
+        "inputs": [],
+        "outputs": [
+          {
+            "key": "output_1",
+            "label": "新输出",
+            "type": "text",
+            "description": "润色后的文案"
+          }
+        ],
+        "promptTemplate": "基于用户想法来联想并扩写画面，画面参数： {{input.ratio}}，自然语言描述主体、场景、构图、动作、细节：{{input.thought}}",
+        "runCondition": {
+          "conditionStepId": "step_reference_images_condition",
+          "expectedResult": false
+        }
+      },
+      {
+        "id": "step_mukrnpps_3",
+        "name": "整理纯文生图提示词",
+        "kind": "hermes",
+        "hermesProfile": "aixg",
+        "inputs": [
+          {
+            "key": "reverse_prompt",
+            "label": "参考图反推结果",
+            "sourceRef": "step.step_aixg_reverse_prompt.outputs.output_1"
+          },
+          {
+            "key": "polished_prompt",
+            "label": "润色后的文案",
+            "sourceRef": "step.step_mukr3erd_2.outputs.output_1"
+          },
+          {
+            "key": "thought",
+            "label": "用户补充要求（可空）",
+            "sourceRef": "input.thought"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "output_1",
+            "label": "新输出",
+            "type": "text",
+            "description": "正向提示词"
+          },
+          {
+            "key": "output_2",
+            "label": "新输出",
+            "type": "text",
+            "description": "负向提示词"
+          }
+        ],
+        "promptTemplate": "将反推文本或润色文案整理成 qwen image 2.1 的纯文生图正向提示词和负向提示词。生成模型不会看到原图，只会收到两个文本字段。反推结果非空时，以反推文字为依据，逐项保留具体主体数量、可辨识外观、左右与前后位置、陈列层级、构图、背景、摄影视角、材质、光线和风格，不重新联想或美化。用户补充要求为空时不增删元素；不为空时只落实其明确修改。反推结果为空时使用润色后的文案进行文生图。正向提示词必须是独立、自足的画面描述，不能写“保持原图”“第一张参考图”“根据图片编辑”等依赖图片的指令。负向提示词描述不希望出现的缺陷与多余元素，不与正向描述冲突。仅整理文本，不调用工具，不执行图像生成或编辑，不搜索或下载资源。按约定只输出 output_1（正向）和 output_2（负向）两个文本字段，不附加解释。\n反推文本：{{step.step_aixg_reverse_prompt.outputs.output_1}}\n润色文案：{{step.step_mukr3erd_2.outputs.output_1}}\n用户补充要求：{{input.thought}}"
+      },
+      {
+        "id": "step_mukrmtmz_2",
+        "name": "ComfyUI 纯文生图",
+        "kind": "comfyui",
+        "inputs": [
+          {
+            "key": "input_1",
+            "label": "新输入变量",
+            "sourceRef": "step.step_mukrnpps_3.outputs.output_1"
+          },
+          {
+            "key": "input_2",
+            "label": "新输入变量",
+            "sourceRef": "input.ratio"
+          },
+          {
+            "key": "input_3",
+            "label": "新输入变量",
+            "sourceRef": "input.mp"
+          },
+          {
+            "key": "input_4",
+            "label": "新输入变量",
+            "sourceRef": "step.step_mukrnpps_3.outputs.output_2"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "output_1",
+            "label": "新输出变量",
+            "type": "image_list"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "workflowFile": "Zane/t2i_UI.json",
+          "bindings": [
+            {
+              "key": "input_1",
+              "label": "新输入变量",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "prompt",
+              "type": "text",
+              "sourceRef": "step.step_mukrnpps_3.outputs.output_1",
+              "sourceOutputFormat": {
+                "stepId": "step_mukrnpps_3",
+                "outputKey": "output_1",
+                "type": "text"
+              },
+              "required": true
+            },
+            {
+              "key": "input_2",
+              "label": "新输入变量",
+              "direction": "input",
+              "nodeId": "13",
+              "property": "aspect_ratio",
+              "type": "text",
+              "sourceRef": "input.ratio",
+              "required": true
+            },
+            {
+              "key": "input_3",
+              "label": "新输入变量",
+              "direction": "input",
+              "nodeId": "13",
+              "property": "megapixels",
+              "type": "number",
+              "sourceRef": "input.mp",
+              "required": true
+            },
+            {
+              "key": "input_4",
+              "label": "新输入变量",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "negative_prompt",
+              "type": "text",
+              "sourceRef": "step.step_mukrnpps_3.outputs.output_2",
+              "sourceOutputFormat": {
+                "stepId": "step_mukrnpps_3",
+                "outputKey": "output_2",
+                "type": "text"
+              },
+              "required": true
+            },
+            {
+              "key": "output_1",
+              "label": "新输出变量",
+              "direction": "output",
+              "nodeId": "461",
+              "property": "images",
+              "type": "image_list"
+            }
+          ]
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "key": "result",
+        "label": "生成结果",
+        "type": "image_list",
+        "sourceRef": "step.step_mukrmtmz_2.outputs.output_1"
+      },
+      {
+        "key": "output_2",
+        "label": "反推提示词",
+        "type": "text",
+        "sourceRef": "step.step_aixg_reverse_prompt.outputs.output_1"
+      },
+      {
+        "key": "output_3",
+        "label": "实际生图提示词",
+        "type": "text",
+        "sourceRef": "step.step_mukrnpps_3.outputs.output_1"
+      }
+    ]
+  },
+  "optionPresets": [
+    {
+      "id": "option_preset_mukmzjwh_1",
+      "name": "画幅",
+      "options": [
+        "1:1 (Square)",
+        "2:3 (Portrait Photo)",
+        "3:2 (Photo)",
+        "3:4 (Portrait Standard)",
+        "4:3 (Standard)",
+        "9:16 (Portrait Widescreen)",
+        "16:9 (Widescreen)",
+        "21:9 (Ultrawide)"
+      ]
+    }
+  ]
+}

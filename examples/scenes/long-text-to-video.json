@@ -7,13 +7,14 @@
     "title": "长文出视频",
     "shortTitle": "长文出视频",
     "summary": "提供剧情与资产，一键生成原生有声剧情成片",
-    "description": "长文/剧情 + 人物/场景/道具 + 参考音色 → Writer制作分镜 → H3原生有声片段 → 本机顺序合成。无独立配音、无关键帧生成、无质检节点、禁止音乐。",
+    "description": "长文/剧情 + 人物/场景/道具 + 参考音色 → Writer制作分镜 → AIXG逐镜转换H3提示词 → H3原生有声片段 → 本机顺序合成。无独立配音、无关键帧生成、无质检节点、禁止音乐。",
     "cover": "/long-text-video.svg",
     "coverPosition": "center",
     "accent": "green",
     "stages": [
       "剧情与资产",
       "Writer制作分镜",
+      "AIXG转提示词",
       "H3原生有声片段",
       "顺序合成成片"
     ]
@@ -33,25 +34,29 @@
         "key": "character_assets",
         "label": "人物资产（按说明顺序上传；项目总参考图最多12张）",
         "type": "image_list",
-        "required": true
+        "required": true,
+        "mediaRole": "character"
       },
       {
         "key": "scene_assets",
         "label": "场景资产（按说明顺序上传）",
         "type": "image_list",
-        "required": true
+        "required": true,
+        "mediaRole": "scene"
       },
       {
         "key": "prop_assets",
         "label": "道具资产（没有关键道具可不传）",
         "type": "image_list",
-        "required": false
+        "required": false,
+        "mediaRole": "prop"
       },
       {
         "key": "voice_reference_audio",
         "label": "参考音色（清晰纯人声样本；每片段最多3个）",
         "type": "audio_list",
-        "required": false
+        "required": false,
+        "mediaRole": "voice_reference"
       },
       {
         "key": "asset_notes",
@@ -103,7 +108,7 @@
     "steps": [
       {
         "id": "writer",
-        "name": "Writer · 制作级分镜与有声提示词",
+        "name": "Writer · 制作级分镜与对白",
         "kind": "hermes",
         "hermesProfile": "writer",
         "inputs": [
@@ -164,7 +169,66 @@
             "description": "对象数组，index从1连续递增，每项seconds为5..15数字，包含characters/scenes/props/voices选择数组及六段H3 prompt；直接供生成，不再调用模型改写"
           }
         ],
-        "promptTemplate": "你是长文/剧情视频的制作导演、编剧和分镜师。把用户给定的长文/剧情直接改编为可执行、可生成的制作级视频分镜脚本，并同时写出每个片段的 MiniMax H3 原生有声参考生视频提示词。不要输出规划建议、分析过程或待完成事项。\n\n【项目】\n长文/剧情：\n{{input.content}}\n目标成片时长：{{input.target_seconds}} 秒；画幅：{{input.ratio}}；画面风格与改编要求：{{input.production_notes}}\n人物/场景/道具/音色对应说明：\n{{input.asset_notes}}\n参考音频文件信息（仅用于确定数量/对应关系，你不能据此假装听过音频）：{{input.voice_reference_audio}}\n人物、场景、道具图片作为分组附件提供。上传序号分别从1开始，不跨组编号；资产说明优先于你的视觉猜测。\n\n【制作边界】\n1. Writer 一次完成故事改编、镜头拆分、对白、连续性和模型提示词。不需要 AIXG 再次改写或重新拆镜头，不需要生成资产、关键帧、独立配音/TTS，也不设计质量检查节点。\n2. 保留核心剧情、因果、人物关系、关键事件和结局。按目标时长压缩重复表达，不随意增添支线或反转；用可见动作表达心理和信息。开头直接进入正在发生的事件，结尾完成情绪或事件回收。\n3. 每个片段5到15秒，优先6到10秒，一个明确的叙事任务和主要动作，通常一个场景、一个主镜头；复杂动作、场景切换、多人抢话、长对白必须拆分。所有 seconds 之和尽量接近目标时长。H3 将在24fps的17k+5帧网格上对齐，实际成片可有小幅时长偏差。\n4. 每段都写景别、机位/人物相对位置、视线与运动方向、具体动作及起止状态、光线/时间、必要道具持有位置；镜头运动用于叙事，不堆叠推拉摇移/形容词。避免不必要的字幕、水印、画面文字。\n5. 每段提示词须独立可执行，不能只写“保持上一镜头”。同一人物的面容、服装、体型，场景布局/光线，道具颜色/位置/持有状态，须继承前镜的结束状态；在 continuity_in/continuity_out 明确记录。\n6. 对白逐字列出，标明说话人、音色资产、语气、停顿、相对时间范围。按自然中文语速约每秒3到4字预留动作和呼吸时间，不为压时长加速对白，不截断句子。对白在片段结束前完成，预留短收尾。以人物对白和现场动作为主，必要时才有少量旁白。\n7. 视频片段直接生成对白/旁白、对应口型和必要的现场声音。<Voice n> 仅是音色/发声风格参考，不是实际台词或背景音轨，不复制参考音频的文字、内容、时间轴及背景声。按说明把音色固定绑定到人物/旁白，跨镜头不得互换；没有参考的说话人可使用一致的自然音色，但不能虚构音频序号。没有台词的片段不得新增说话声。\n8. 所有片段都禁止音乐：无背景音乐、配乐、旋律、乐器声、歌曲、演唱、哼唱、片头片尾音乐，也不能复用参考样本的音乐。只允许明确写出的正常说话声和必要现场环境声/动作音效；如果原故事涉及音乐，用画面行为或正常对白承载信息，声音不得演奏或演唱。\n\n【资产绑定协议】\n- characters/scenes/props/voices 分别是本镜头使用的各组上传编号数组（1-based），升序且不能重复；未用的类别必须填[]。每镜至少引用一个场景，人物/场景/道具合计最多9张，参考音色最多3个；按剧情选所需素材，不能把整个资产库塞进每个镜头。\n- prompt 使用全局标记 <Character 1>、<Scene 1>、<Prop 1>、<Voice 1>，标记中的序号必须出现在对应选择数组，必须实际存在。程序会按本镜头人物→场景→道具顺序编译为 <Picture n>，音色编译为 <Audio n>。你不要自行输出 Picture/Audio 局部编号，也不要使用 @图1 等其他标签。\n- 参考图控制外观/空间/物体，参考音频只控制对应人物的音色。多角色必须分别定义身份和说话人，避免混脸、换装、串音色。只描写当前镜头真实出场的人物，不把场景图中的路人当新增角色。\n\n【每段H3提示词】\n必须是字符串，按顺序包含以下六个英文标题（不要Markdown代码块）：\nsubject_definitions:\n定义当前出场人物、场景、道具及音色的对应关系，使用上述全局资产标记。\nsummary:\n简述这一镜头发生什么、叙事任务是什么。\nretention_analysis:\n说明各参考资产需要保留的外观、服装、布局和音色特征；不是观众留存分析。\ndetailed_description:\n用相对于片段起点的时间段，依次写画面、动作、机位/景别/运动、表情、说话人和逐字台词；不要越过 seconds；音画互相对应。\noverall_soundscape:\n逐字对白/必要旁白及其说话人、参考音色、自然语速、语气与停顿，必要的现场环境声和动作音效。再次声明音频参考只用于音色，不复用样本内容，禁止任何音乐。无台词则只写必要的现场声。\nnon_diegetic_music:\nN/A\n\n【输出契约】\n只输出一个可直接解析的JSON对象，顶层只有 storyboard 和 shots。不要把JSON或数组转成字符串，不要添加正文、代码围栏或额外顶层字段。\n- storyboard：可读的制作分镜脚本文本，包含改编摘要、人物/场景/道具/音色对应表、总时长、各镜头的叙事任务、景别/动作/对白/连续性；不要另做资产生成、配音、关键帧或质检流程。\n- shots：按成片顺序排列的非空对象数组，index 必须从1连续递增。每项必须包含 index、seconds（数字）、characters、scenes、props、voices（数组）、purpose（镜头任务）、continuity_in、continuity_out、dialogue（说话人/voice编号或null/逐字text/语气delivery/相对时间范围）、prompt（六段完整H3提示词）。\n结构示意（示意中的提示词必须替换为完整内容）：\n{\"storyboard\":\"完整可读的制作分镜脚本\", \"shots\":[{\"index\":1,\"seconds\":8,\"characters\":[1],\"scenes\":[1],\"props\":[],\"voices\":[1],\"purpose\":\"镜头叙事任务\",\"continuity_in\":\"人物/道具/场景起始状态\",\"continuity_out\":\"镜头结束状态\",\"dialogue\":[{\"speaker\":\"人物名\",\"voice\":1,\"text\":\"逐字台词\",\"delivery\":\"自然语速与语气\",\"start\":1,\"end\":5}],\"prompt\":\"subject_definitions:\\n...\\nsummary:\\n...\\nretention_analysis:\\n...\\ndetailed_description:\\n...\\noverall_soundscape:\\n...\\nnon_diegetic_music:\\nN/A\"}]}"
+        "promptTemplate": "你是长文/剧情视频的制作导演、编剧和分镜师。把用户给定的长文/剧情直接改编为可执行、可生成的制作级视频分镜脚本；只负责镜头内容和制作分镜，模型提示词由后续 AIXG 转换。不要输出规划建议、分析过程或待完成事项。\n\n【项目】\n长文/剧情：\n{{input.content}}\n目标成片时长：{{input.target_seconds}} 秒；画幅：{{input.ratio}}；画面风格与改编要求：{{input.production_notes}}\n人物/场景/道具/音色对应说明：\n{{input.asset_notes}}\n参考音频文件信息（仅用于确定数量/对应关系，你不能据此假装听过音频）：{{input.voice_reference_audio}}\n人物、场景、道具图片作为分组附件提供。上传序号分别从1开始，不跨组编号；资产说明优先于你的视觉猜测。\n\n【制作边界】\n1. Writer 完成故事改编、镜头拆分、对白和连续性，输出可读 storyboard 与结构化 shots，不输出 H3 模型提示词。后续 AIXG 只把已确定的镜头转换为提示词，不重新编剧或拆镜头，不需要生成资产、关键帧、独立配音/TTS，也不设计质量检查节点。\n2. 保留核心剧情、因果、人物关系、关键事件和结局。按目标时长压缩重复表达，不随意增添支线或反转；用可见动作表达心理和信息。开头直接进入正在发生的事件，结尾完成情绪或事件回收。\n3. 每个片段5到15秒，优先6到10秒，一个明确的叙事任务和主要动作，通常一个场景、一个主镜头；复杂动作、场景切换、多人抢话、长对白必须拆分。所有 seconds 之和尽量接近目标时长。H3 将在24fps的17k+5帧网格上对齐，实际成片可有小幅时长偏差。\n4. 每段都写景别、机位/人物相对位置、视线与运动方向、具体动作及起止状态、光线/时间、必要道具持有位置；镜头运动用于叙事，不堆叠推拉摇移/形容词。避免不必要的字幕、水印、画面文字。\n5. 每段 visual_description 须独立可执行，不能只写“保持上一镜头”。同一人物的面容、服装、体型，场景布局/光线，道具颜色/位置/持有状态，须继承前镜的结束状态；在 continuity_in/continuity_out 明确记录。\n6. 对白逐字列出，标明说话人、音色资产、语气、停顿、相对时间范围。按自然中文语速约每秒3到4字预留动作和呼吸时间，不为压时长加速对白，不截断句子。对白在片段结束前完成，预留短收尾。以人物对白和现场动作为主，必要时才有少量旁白。\n7. 视频片段直接生成对白/旁白、对应口型和必要的现场声音。<Voice n> 仅是音色/发声风格参考，不是实际台词或背景音轨，不复制参考音频的文字、内容、时间轴及背景声。按说明把音色固定绑定到人物/旁白，跨镜头不得互换；没有参考的说话人可使用一致的自然音色，但不能虚构音频序号。没有台词的片段不得新增说话声。\n8. 所有片段都禁止音乐：无背景音乐、配乐、旋律、乐器声、歌曲、演唱、哼唱、片头片尾音乐，也不能复用参考样本的音乐。只允许明确写出的正常说话声和必要现场环境声/动作音效；如果原故事涉及音乐，用画面行为或正常对白承载信息，声音不得演奏或演唱。\n\n【资产绑定协议】\n- characters/scenes/props/voices 分别是本镜头使用的各组上传编号数组（1-based），升序且不能重复；未用的类别必须填[]。每镜至少引用一个场景，人物/场景/道具合计最多9张，参考音色最多3个；按剧情选所需素材，不能把整个资产库塞进每个镜头。\n- visual_description 与对白说明使用全局标记 <Character 1>、<Scene 1>、<Prop 1>、<Voice 1>，标记中的序号必须出现在对应选择数组，必须实际存在。程序会按本镜头人物→场景→道具顺序编译为 <Picture n>，音色编译为 <Audio n>。你不要自行输出 Picture/Audio 局部编号，也不要使用 @图1 等其他标签。\n- 参考图控制外观/空间/物体，参考音频只控制对应人物的音色。多角色必须分别定义身份和说话人，避免混脸、换装、串音色。只描写当前镜头真实出场的人物，不把场景图中的路人当新增角色。\n\n【输出契约】\n只输出一个可直接解析的JSON对象，顶层只有 storyboard 和 shots；不要添加正文、代码围栏或额外顶层字段，不把JSON/数组转成字符串。\n- storyboard：可读的制作分镜脚本文本，包含改编摘要、人物/场景/道具/音色对应表、总时长、逐镜任务、画面/动作/对白/连续性。\n- shots：按成片顺序排列的非空对象数组；index 从1连续递增。每项必须包含 index、seconds（数字）、characters、scenes、props、voices（1-based数组）、purpose、visual_description（自足画面、景别/机位/运动、光线、人物动作和相对时间）、continuity_in、continuity_out、dialogue（数组，每条含speaker、voice编号或null、逐字text、delivery、相对start/end秒数）。无台词填[]；禁止写模型prompt字段或六段H3标题。\n结构示意：\n{\"storyboard\":\"完整可读的制作分镜脚本\",\"shots\":[{\"index\":1,\"seconds\":8,\"characters\":[1],\"scenes\":[1],\"props\":[],\"voices\":[1],\"purpose\":\"镜头叙事任务\",\"visual_description\":\"0-8秒，中近景，<Character 1>位于<Scene 1>，先看向门口再说话\",\"continuity_in\":\"人物和场景起始状态\",\"continuity_out\":\"镜头结束状态\",\"dialogue\":[{\"speaker\":\"人物名\",\"voice\":1,\"text\":\"逐字台词\",\"delivery\":\"自然语速\",\"start\":1,\"end\":5}]}]}"
+      },
+      {
+        "id": "aixg",
+        "name": "AIXG · 逐镜转换H3提示词",
+        "kind": "hermes",
+        "hermesProfile": "aixg",
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "step.writer.outputs.shots",
+          "onError": "stop",
+          "maxConcurrency": 1
+        },
+        "inputs": [
+          {
+            "key": "shot",
+            "label": "Writer确定的当前分镜",
+            "sourceRef": "iteration.item",
+            "valueSource": "reference"
+          },
+          {
+            "key": "characters",
+            "label": "人物资产",
+            "sourceRef": "input.character_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "scenes",
+            "label": "场景资产",
+            "sourceRef": "input.scene_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "props",
+            "label": "道具资产",
+            "sourceRef": "input.prop_assets",
+            "valueSource": "reference"
+          },
+          {
+            "key": "asset_notes",
+            "label": "全局资产与音色对应说明",
+            "sourceRef": "input.asset_notes",
+            "valueSource": "reference"
+          },
+          {
+            "key": "production_notes",
+            "label": "制作要求",
+            "sourceRef": "input.production_notes",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "prompt",
+            "label": "当前镜头H3提示词",
+            "type": "text",
+            "description": "仅转换本镜提示词；逐项结果按Writer镜头顺序汇总，不改镜头元数据"
+          }
+        ],
+        "promptTemplate": "你是 AIXG 模型提示词转换师。只把 Writer 已确定的当前分镜转换成 MiniMax H3 原生有声参考生视频提示词，不重新改编、拆镜、改时长、改对白或改素材选择。\n【当前分镜】\n{{iteration.item}}\n【资产与音色对应说明】\n{{input.asset_notes}}\n【制作要求】\n{{input.production_notes}}\n【参考音色文件信息】\n{{input.voice_reference_audio}}\n人物/场景/道具图片作为分组附件提供，各组独立从1编号；你不能听到参考音频，不要假装已试听。\n必须原样承载 Writer 的 purpose、visual_description、continuity_in/out、逐字对白和相对时间；不新增/删减剧情、台词、人物或动作，不加速/截断台词，不修改 seconds 或引用编号。\n只使用当前镜头 characters/scenes/props/voices 数组中已选的 <Character n>/<Scene n>/<Prop n>/<Voice n> 全局资产标记；不使用其他镜头的素材，不自行写 <Picture n>/<Audio n> 局部编号，局部映射由程序完成。每镜须自足，跨镜保持外观、布局、道具位置及声线一致。\n参考音频仅用于对应人物音色，不是驱动音轨，不复制文字、内容、时间轴或背景声音。禁止任何音乐、演唱和哼唱，仅生成脚本逐字对白与必要现场声；无台词不得新增说话声。non_diegetic_music 必须为 N/A。\n【每段H3提示词】\n必须是字符串，按顺序包含以下六个英文标题（不要Markdown代码块）：\nsubject_definitions:\n定义当前出场人物、场景、道具及音色的对应关系，使用上述全局资产标记。\nsummary:\n简述这一镜头发生什么、叙事任务是什么。\nretention_analysis:\n说明各参考资产需要保留的外观、服装、布局和音色特征；不是观众留存分析。\ndetailed_description:\n用相对于片段起点的时间段，依次写画面、动作、机位/景别/运动、表情、说话人和逐字台词；不要越过 seconds；音画互相对应。\noverall_soundscape:\n逐字对白/必要旁白及其说话人、参考音色、自然语速、语气与停顿，必要的现场环境声和动作音效。再次声明音频参考只用于音色，不复用样本内容，禁止任何音乐。无台词则只写必要的现场声。\nnon_diegetic_music:\nN/A\n\n\n【输出契约】\n只输出可解析 JSON 对象 {\"prompt\":\"六段完整H3提示词\"}，prompt为非空字符串。不得返回 shots、改写镜头对象、正文、代码围栏或额外顶层字段；不调用工具、搜索或执行生成。"
       },
       {
         "id": "generate",
@@ -206,6 +270,12 @@
             "label": "参考音色库",
             "sourceRef": "input.voice_reference_audio",
             "valueSource": "reference"
+          },
+          {
+            "key": "prompts",
+            "label": "AIXG按分镜顺序转换的提示词列表",
+            "sourceRef": "step.aixg.outputs.prompt",
+            "valueSource": "reference"
           }
         ],
         "outputs": [
@@ -224,13 +294,13 @@
         "promptTemplate": "",
         "comfyui": {
           "adapter": "long_text_video",
-          "workflowFile": "Zane/video_json.json",
+          "workflowFile": "Zane/video_双采_json.json",
           "bindings": [
             {
               "key": "shot_json",
               "label": "当前分镜JSON",
               "direction": "input",
-              "nodeId": "196",
+              "nodeId": "201",
               "property": "String",
               "type": "text",
               "sourceRef": "iteration.item",
@@ -283,46 +353,24 @@
               "required": true
             },
             {
-              "key": "character_assets",
-              "label": "本镜人物图",
+              "key": "reference_images",
+              "label": "参考图片列表（人物→场景→道具，按本镜选择合并）",
               "direction": "input",
               "nodeId": "192",
               "property": "ref_images",
               "type": "image_list",
-              "sourceRef": "input.character_assets",
+              "sourceRef": "iteration.item.references.images",
               "valueSource": "reference",
-              "required": false
+              "required": true
             },
             {
-              "key": "scene_assets",
-              "label": "本镜场景图",
-              "direction": "input",
-              "nodeId": "192",
-              "property": "ref_images",
-              "type": "image_list",
-              "sourceRef": "input.scene_assets",
-              "valueSource": "reference",
-              "required": false
-            },
-            {
-              "key": "prop_assets",
-              "label": "本镜道具图",
-              "direction": "input",
-              "nodeId": "192",
-              "property": "ref_images",
-              "type": "image_list",
-              "sourceRef": "input.prop_assets",
-              "valueSource": "reference",
-              "required": false
-            },
-            {
-              "key": "voice_reference_audio",
-              "label": "本镜参考音色",
+              "key": "reference_audio",
+              "label": "参考音频列表（本镜参考音色合并）",
               "direction": "input",
               "nodeId": "192",
               "property": "ref_audios",
               "type": "audio_list",
-              "sourceRef": "input.voice_reference_audio",
+              "sourceRef": "iteration.item.references.audios",
               "valueSource": "reference",
               "required": false
             },

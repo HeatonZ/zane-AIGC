@@ -13,7 +13,15 @@ export class RetainedSaveQueue<T> {
   private running?: Promise<void>;
   private inFlight?: PendingSave<T>;
   private paused = false;
-  constructor(private readonly options: SaveQueueOptions<T>) { this.entries = options.initial ?? []; }
+  constructor(private readonly options: SaveQueueOptions<T>) {
+    this.entries = options.initial ?? [];
+    // Reloaded intent is not authority and must never be sent without an explicit retry.
+    this.paused = this.entries.length > 0;
+  }
+  async waitForSaved() {
+    await this.running;
+    if (this.entries.length) throw new Error("服务端保存尚未确认，请读取原对象对账或处理冲突");
+  }
   get pendingCount() { return this.entries.length; }
   get latest() { return this.entries.at(-1)?.desired; }
   enqueue(base: T, desired: T) {
@@ -25,6 +33,15 @@ export class RetainedSaveQueue<T> {
     if (!this.paused) void this.drain();
   }
   retry() { this.paused = false; if (!this.persist()) return Promise.resolve(); return this.drain(); }
+  /** Discard failed local saves after an explicit user choice. */
+  discard() {
+    if (this.inFlight) return false;
+    const retained = this.entries.splice(0, this.entries.length);
+    this.paused = false;
+    if (this.persist()) return true;
+    this.entries.push(...retained);
+    return false;
+  }
   private persist() {
     try { this.options.persist(this.entries); return true; }
     catch (error) { this.fail(error); return false; }

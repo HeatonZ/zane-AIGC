@@ -18,3 +18,11 @@ test("独立电商场景包导入/导出保留适配器；商品展示不被覆�
   assert.equal(defaultWorkflows.commerce.steps.at(-1)!.id, "product_video");
   assert.equal(defaultScenes.filter((scene) => scene.id === "commerce_pack").length, 1);
 });
+
+
+test("新默认方案以基础组合为首，旧电商只保留兼容入口，不覆盖已有商品流程", () => {
+  assert.equal(defaultScenes[0].id, "basic_image_layout");
+  assert.ok(defaultWorkflows.basic_image_layout.steps.every((step) => ["media.select_references", "media.image_layout"].includes(step.capabilityId!)));
+  assert.match(defaultScenes.find((scene) => scene.id === "commerce_pack")!.title, /旧版兼容/);
+  assert.equal(defaultScenes.at(-1)!.id, "commerce_pack");
+});

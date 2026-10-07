@@ -1,6 +1,9 @@
+import type { WorkflowMediaRole } from "../server/domain/workflowMediaRoles.js";
+export type { WorkflowMediaRole };
+
 export type SceneId = string;
 
-export type PageId = "home" | "history" | "runs" | "assets" | "connections" | "studio" | "flows";
+export type PageId = "home" | "history" | "runs" | "assets" | "connections" | "studio" | "flows" | "users" | "feedback";
 
 export interface SceneModule {
   id: SceneId;
@@ -22,6 +25,7 @@ export interface WorkflowDraft {
   summary: string;
   inputValues?: Record<string, JsonValue>;
   createdAt: string;
+  isFavorite?: boolean;
   status: "draft" | "completed" | "failed";
   runResult?: WorkflowRunResult;
 }
@@ -113,7 +117,7 @@ export interface ComfyAudioAttachment {
 export type WorkflowMediaListType = "image_list" | "video_list" | "audio_list";
 export type WorkflowLegacyMediaType = "image" | "video" | "audio";
 export type WorkflowFieldType = "text" | "textarea" | "number" | "boolean" | "select" | WorkflowMediaListType | WorkflowLegacyMediaType | "json";
-export type WorkflowStepKind = "hermes" | "comfyui" | "manual" | "control";
+export type WorkflowStepKind = "hermes" | "comfyui" | "manual" | "control" | "capability";
 export type WorkflowVariableType = Exclude<WorkflowFieldType, "textarea" | "select">;
 export type WorkflowValueSource = "literal" | "reference";
 
@@ -150,6 +154,7 @@ export interface WorkflowRunCondition {
 }
 
 export interface WorkflowInputField {
+  mediaRole?: WorkflowMediaRole;
   key: string;
   label: string;
   type: WorkflowFieldType;
@@ -157,7 +162,7 @@ export interface WorkflowInputField {
   placeholder?: string;
   options?: string[];
   optionPresetId?: string;
-  defaultValue?: string | number | boolean | null;
+  defaultValue?: JsonValue;
 }
 
 export interface WorkflowOptionPreset {
@@ -167,6 +172,7 @@ export interface WorkflowOptionPreset {
 }
 
 export interface SceneVersion {
+  publication?: { expectedRevision: string; draftContentHash: string };
   id: string;
   version: string;
   publishedAt: string;
@@ -187,6 +193,7 @@ export interface WorkflowStepInput {
   valueSource?: WorkflowValueSource;
   literalValue?: string;
   literalType?: WorkflowVariableType;
+  referenceType?: "image_list" | "video_list" | "audio_list";
   selection?: WorkflowMediaSelection;
 }
 
@@ -201,6 +208,9 @@ export interface WorkflowStepDefinition {
   id: string;
   name: string;
   kind: WorkflowStepKind;
+  capabilityId?: string;
+  capabilityVersion?: string;
+  capabilityConfig?: Record<string, JsonValue>;
   hermesProfile?: string;
   inputs: WorkflowStepInput[];
   outputs: WorkflowStepOutput[];
@@ -208,10 +218,12 @@ export interface WorkflowStepDefinition {
   execution?: WorkflowExecutionConfig;
   comfyui?: ComfyUIWorkflowConfig;
   control?: WorkflowControlConfig;
+  review?: { enabled: boolean; instruction?: string };
   runCondition?: WorkflowRunCondition;
 }
 
 export interface ComfyUIBinding {
+  mediaRole?: WorkflowMediaRole;
   key: string;
   label: string;
   direction: "input" | "output";
@@ -240,7 +252,7 @@ export interface ComfyUIBinding {
 export interface ComfyUIWorkflowConfig {
   workflowFile: string;
   bindings: ComfyUIBinding[];
-  adapter?: "h3_long_video" | "commerce_pack" | "long_text_video" | "video_concat";
+  adapter?: string;
   h3LongVideo?: {
     planRef: string;
     promptRowsRef: string;
@@ -265,6 +277,7 @@ export interface WorkflowExecutionConfig {
   sourceRef?: string;
   onError?: WorkflowIterationErrorPolicy;
   maxConcurrency?: number;
+  carry?: { outputKey: string; initialSourceRef?: string };
 }
 
 export interface WorkflowDefinition {
@@ -273,11 +286,17 @@ export interface WorkflowDefinition {
   inputs: WorkflowInputField[];
   steps: WorkflowStepDefinition[];
   outputs: WorkflowOutputField[];
-  execution?: WorkflowExecutionConfig;
+  execution?: Omit<WorkflowExecutionConfig, "carry">;
 }
 
 export interface WorkflowRunStepResult {
+  warnings?: string[];
+  review?: { status: "pending" | "approved"; id: string; decidedAt?: string };
+  reusedFromRunId?: string;
+  replaced?: boolean;
   stepId: string;
+  capabilityId?: string;
+  capabilityVersion?: string;
   name: string;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
   message?: string;
@@ -290,6 +309,10 @@ export interface WorkflowRunStepResult {
 }
 
 export interface WorkflowRunStepItemResult {
+  warnings?: string[];
+  reusedFromRunId?: string;
+  replaced?: boolean;
+  stepSnapshot?: WorkflowStepDefinition;
   index: number;
   value: JsonValue;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
@@ -316,7 +339,7 @@ export interface WorkflowRunItemResult {
   error?: string;
 }
 
-export type WorkflowRunStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "stale";
+export type WorkflowRunStatus = "waiting" | "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "stale";
 
 export interface WorkflowRunResult {
   runId: string;
@@ -330,7 +353,13 @@ export interface WorkflowRunResult {
   finishedAt?: string;
   durationMs?: number;
   archiveWarnings?: string[];
+  pendingReview?: import("../server/domain/productionContracts").PendingReview;
+  reviewHistory?: import("../server/domain/productionContracts").ReviewDecision[];
+  feedbackHistory?: import("../server/domain/feedbackContracts.js").StepFeedbackRecord[];
   resumedFromRunId?: string;
+  rerunFromRunId?: string;
+  rerunPlan?: import("../server/domain/rerunContracts.js").RerunPlan;
+  rerunRequest?: import("../server/domain/rerunContracts.js").RerunRequest;
   artifacts?: WorkflowRunArtifacts;
 }
 
@@ -342,7 +371,15 @@ export interface WorkflowRunArtifacts {
   output: string;
 }
 
+export interface WorkflowRunSubmitter {
+  userId: string;
+  username: string;
+  displayName: string;
+}
+
 export interface WorkflowRunHistoryItem {
+  ownerUserId?: string;
+  submitter?: WorkflowRunSubmitter;
   createdAt?: string;
   runId: string;
   sceneId: SceneId;
@@ -359,6 +396,8 @@ export interface WorkflowRunHistoryItem {
 }
 
 export interface WorkflowRunRecord extends WorkflowRunResult {
+  ownerUserId?: string;
+  submitter?: WorkflowRunSubmitter;
   sceneId: SceneId;
   workflowName: string;
   runTitle?: string;
@@ -397,4 +436,18 @@ export interface ComfyUIWorkflowDetail {
   format: "ui" | "api" | "unknown";
   converted?: boolean;
   nodes: ComfyUIWorkflowNode[];
+}
+
+/** Administrator-only, system-wide scheduler configuration; never cached in localStorage. */
+export interface TaskConcurrencySettings {
+  format: "zane-studio.task-concurrency/v1";
+  id: "task-concurrency";
+  revision: number;
+  maxActiveRuns: number;
+  defaultMaxActiveRuns: number;
+  source: "environment" | "saved";
+  scope: "system";
+  applyPolicy: "immediate_without_interrupting_active_runs";
+  worker: { active: number; queued: number; preparing: number };
+  nextAction: "update_with_revision";
 }

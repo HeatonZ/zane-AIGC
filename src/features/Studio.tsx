@@ -1,8 +1,12 @@
 import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronDown, CircleHelp, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Music2, Package, Play, Plus, Save, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from "react";
-import { loadConnectionSettings, pickLocalMediaFile, uploadComfyUIAudio, uploadComfyUIImage } from "../lib/api";
+import { loadWorkflowRun, loadConnectionSettings, pickLocalMediaFile, uploadComfyUIAudio, uploadComfyUIImage } from "../lib/api";
 import { createId } from "../lib/ids";
+import { AssetPickerDialog } from "../components/AssetBrowser";
 import JsonEditor from "../components/JsonEditor";
+import RerunDialog, { type RerunTarget } from "../components/RerunDialog";
+import type { RerunRequest } from "../../server/domain/rerunContracts.js";
+import type { WorkflowRunRecord } from "../types";
 import WorkflowRunPanel from "../components/WorkflowRunPanel";
 import { canonicalWorkflowMediaType } from "../lib/workflowMigration";
 import { appendMediaInputValue, mediaInputLabel, mediaInputPreviewUrl, mediaListValues, moveMediaInputValue, removeMediaInputValue } from "../lib/mediaInput";
@@ -11,23 +15,22 @@ import type { JsonValue, PageId, SceneId, SceneModule, WorkflowDefinition, Workf
 interface StudioProps {
   sceneId: SceneId;
   scene: SceneModule;
+  publication?: { id: string; version: string };
   workflow: WorkflowDefinition;
   draft?: WorkflowDraft;
   onNavigate: (page: PageId) => void;
   onBack: () => void;
-  onSaveDraft: (draft: WorkflowDraft) => void;
+  onSaveDraft: (draft: WorkflowDraft) => void | Promise<void>;
   onStartRun: (workflow: WorkflowDefinition, inputValues: Record<string, JsonValue>, runId: string, runTitle?: string) => Promise<WorkflowRunResult>;
   onCancelRun: (runId: string) => void;
+  onRerunRun: (run: WorkflowRunRecord, changes: RerunRequest) => Promise<void>;
 }
 
-function draftInputValues(workflow: WorkflowDefinition, draft?: WorkflowDraft): Record<string, string> {
+export function draftInputValues(workflow: WorkflowDefinition, draft?: WorkflowDraft): Record<string, string> {
   return Object.fromEntries(workflow.inputs.map((field) => {
-    const value = draft?.inputValues?.[field.key];
-    if (value === undefined) {
-      const defaultValue = field.defaultValue;
-      return [field.key, defaultValue === undefined || defaultValue === null ? "" : String(defaultValue)];
-    }
-    if (value === null) return [field.key, ""];
+    const storedValue = draft?.inputValues?.[field.key];
+    const value = storedValue === undefined ? field.defaultValue : storedValue;
+    if (value === undefined || value === null) return [field.key, ""];
     if (typeof value === "boolean") return [field.key, value ? "true" : "false"];
     if (typeof value === "object") return [field.key, JSON.stringify(value)];
     return [field.key, String(value)];
@@ -56,6 +59,7 @@ function DynamicField({
   const id = `studio-input-${field.key}`;
   const multiline = field.type === "textarea" || field.type === "json";
   const controlClass = `text-input studio-dynamic-control${multiline ? " text-area" : ""}`;
+  const [choosingAsset, setChoosingAsset] = useState(false);
   const imageFileInputRef = useRef<HTMLInputElement>(null);
   const audioFileInputRef = useRef<HTMLInputElement>(null);
   const mediaType = canonicalWorkflowMediaType(field.type);
@@ -66,6 +70,9 @@ function DynamicField({
   return (
     <div className={`studio-dynamic-field ${multiline ? "wide-field" : ""}`}>
       <label className="field-label" htmlFor={id}>{field.label}{field.required && <span>必填</span>}</label>
+      {mediaType && <button className="text-button production-pick-asset" type="button" disabled={pickerBusy} onClick={() => setChoosingAsset(true)}>从素材库选择</button>}
+      {choosingAsset && mediaType && <AssetPickerDialog kind={mediaType === "video_list" ? "video" : mediaType === "audio_list" ? "audio" : "image"} onClose={() => setChoosingAsset(false)} onPick={reference => onChange(appendMediaInputValue(value, reference as unknown as Record<string, unknown>))} />}
+      {mediaType === "image_list" && field.placeholder && <p className="studio-field-hint">{field.placeholder}</p>}
       {field.type === "json" ? (
         <JsonEditor id={id} value={value} onChange={onChange} required={field.required} placeholder={field.placeholder} />
       ) : multiline ? (
@@ -150,8 +157,9 @@ function DynamicField({
   );
 }
 
-export default function Studio({ sceneId, scene, workflow, draft, onNavigate, onBack, onSaveDraft, onStartRun, onCancelRun }: StudioProps) {
-  const [values, setValues] = useState<Record<string, string>>(() => draftInputValues(workflow, draft));
+export default function Studio({ sceneId, scene, workflow, publication, draft, onNavigate, onBack, onSaveDraft, onStartRun, onCancelRun, onRerunRun }: StudioProps) {
+  const studioWorkflow = workflow;
+  const [values, setValues] = useState<Record<string, string>>(() => draftInputValues(studioWorkflow, draft));
   const [runTitle, setRunTitle] = useState(() => draft?.runTitle ?? "");
   const [saved, setSaved] = useState(false);
   const [formError, setFormError] = useState("");
@@ -159,13 +167,25 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
   const [projectDirectory, setProjectDirectory] = useState<string | null>(null);
   const [pickingField, setPickingField] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<WorkflowRunResult | null>(null);
+  const [feedbackTarget, setFeedbackTarget] = useState<{ run: WorkflowRunRecord; target: RerunTarget } | null>(null);
+  const feedbackRequestRef = useRef(0);
+  useEffect(() => { setFeedbackTarget(null); return () => { feedbackRequestRef.current += 1; }; }, [runResult?.runId]);
+  async function openFeedback(stepId: string, itemIndex?: number) {
+    if (!runResult) return;
+    const requestId = ++feedbackRequestRef.current;
+    setFormError("");
+    try {
+      const record = await loadWorkflowRun(runResult.runId);
+      if (feedbackRequestRef.current === requestId) setFeedbackTarget({ run: record, target: { stepId, itemIndex, mode: "feedback" } });
+    } catch (reason) { if (feedbackRequestRef.current === requestId) setFormError(reason instanceof Error ? reason.message : "无法读取反馈来源结果"); }
+  }
   const formRef = useRef<HTMLFormElement>(null);
   const currentRunIdRef = useRef<string | null>(null);
   const draftIdRef = useRef<string | null>(draft?.id ?? null);
 
   useEffect(() => {
     draftIdRef.current = draft?.id ?? null;
-    setValues(draftInputValues(workflow, draft));
+    setValues(draftInputValues(studioWorkflow, draft));
     setRunTitle(draft?.runTitle ?? "");
     setRunResult(draft?.runResult ?? null);
     setFormError("");
@@ -187,7 +207,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
 
   function collectInputValues(): Record<string, JsonValue> {
     const inputValues: Record<string, JsonValue> = {};
-    for (const field of workflow.inputs) {
+    for (const field of studioWorkflow.inputs) {
       const value = values[field.key] ?? "";
       if (field.required && value.trim() === "") throw new Error(`请填写必填字段：${field.label}`);
       const mediaType = canonicalWorkflowMediaType(field.type);
@@ -226,10 +246,10 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
   }
 
   function draftFor(inputValues: Record<string, JsonValue>, result?: WorkflowRunResult): WorkflowDraft {
-    const titleField = workflow.inputs.find((field) => field.key === "project_name") ?? workflow.inputs[0];
+    const titleField = studioWorkflow.inputs.find((field) => field.key === "project_name") ?? studioWorkflow.inputs[0];
     const titleValue = titleField ? inputValues[titleField.key] : undefined;
     const title = runTitle.trim() || (typeof titleValue === "string" || typeof titleValue === "number" ? String(titleValue) : "").trim() || `${scene.shortTitle}草稿`;
-    const summary = workflow.inputs
+    const summary = studioWorkflow.inputs
       .map((field) => ({ field, value: inputValues[field.key] }))
       .filter(({ value }) => value !== "" && value !== undefined && value !== null)
       .map(({ field, value }) => `${field.label}：${canonicalWorkflowMediaType(field.type) ? Array.isArray(value) ? value.map((item) => typeof item === "object" && item !== null && "filename" in item ? String(item.filename) : typeof item === "string" ? item : "媒体").join("、") : String(value) : typeof value === "boolean" ? (value ? "是" : "否") : typeof value === "object" ? JSON.stringify(value) : value}`)
@@ -239,7 +259,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
       sceneId,
       title,
       ...(runTitle.trim() ? { runTitle: runTitle.trim() } : {}),
-      summary: summary || workflow.name,
+      summary: summary || scene.title,
       inputValues,
       createdAt: new Date().toISOString(),
       status: result?.status === "completed" ? "completed" : result?.status === "failed" ? "failed" : "draft",
@@ -247,10 +267,10 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     };
   }
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     try {
-      onSaveDraft(draftFor(collectInputValues()));
+      await onSaveDraft(draftFor(collectInputValues()));
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2600);
     } catch (error) {
@@ -266,12 +286,12 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
     setRunResult(null);
     try {
       const inputValues = collectInputValues();
-      onSaveDraft(draftFor(inputValues));
+      await onSaveDraft(draftFor(inputValues));
       const runId = createId();
       currentRunIdRef.current = runId;
-      const result = await onStartRun(workflow, inputValues, runId, runTitle.trim() || undefined);
+      const result = await onStartRun(studioWorkflow, inputValues, runId, runTitle.trim() || undefined);
       setRunResult(result);
-      onSaveDraft(draftFor(inputValues, result));
+      await onSaveDraft(draftFor(inputValues, result));
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "流程执行失败");
     } finally {
@@ -330,6 +350,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
         <div>
           <div className={`eyebrow`}><span className={`eyebrow-line ${scene.accent === "coral" ? "coral-line" : ""}`} />{scene.title.toUpperCase()}</div>
           <h1>{scene.title}</h1>
+          {publication && <p className="workspace-view-label" title={`发布快照 ID：${publication.id}，与 MCP get_scene 一致。`}>当前发布版 · v{publication.version}（不是流程草稿）</p>}
           <p className="page-subtitle">{scene.description}</p>
         </div>
         <span className={`studio-heading-mark ${scene.accent}`}><Sparkles size={20} /></span>
@@ -338,7 +359,7 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
         <form ref={formRef} className="studio-form" onSubmit={submit}>
           <div className="form-intro">
             <span className={`scene-icon-box ${scene.accent}`}>{sceneId === "comic" ? <Film size={18} /> : sceneId === "commerce" ? <Package size={18} /> : <ImageIcon size={18} />}</span>
-            <div><h2>{workflow.name}</h2><p>{scene.description}</p></div>
+            <div><h2>{scene.title}</h2><p>{scene.description}</p></div>
           </div>
 
           <div className="studio-input-grid">
@@ -346,16 +367,16 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
               <label className="field-label" htmlFor="studio-run-title">作品标题（可选）</label>
               <input id="studio-run-title" className="text-input studio-dynamic-control" type="text" maxLength={120} value={runTitle} onChange={(event) => { setRunTitle(event.target.value); setFormError(""); setRunResult(null); }} placeholder="方便在运行记录中查找" />
             </div>
-            {workflow.inputs.map((field) => <DynamicField key={field.key} field={field} value={values[field.key] ?? ""} onChange={(value) => updateValue(field.key, value)} onPickFile={(type) => void pickFile(field.key, type)} onPickImage={(file) => void addImage(field.key, file)} onPickAudio={(file) => void addAudio(field.key, file)} picking={pickingField === field.key} pickerBusy={pickingField !== null} />)}
+            {studioWorkflow.inputs.map((field) => <DynamicField key={field.key} field={field} value={values[field.key] ?? ""} onChange={(value) => updateValue(field.key, value)} onPickFile={(type) => void pickFile(field.key, type)} onPickImage={(file) => void addImage(field.key, file)} onPickAudio={(file) => void addAudio(field.key, file)} picking={pickingField === field.key} pickerBusy={pickingField !== null} />)}
           </div>
 
           <div className="workflow-preview">
-            <div className="workflow-preview-heading"><div><span className={`eyebrow-line ${scene.accent === "coral" ? "coral-line" : ""}`} /><h3>工作流程</h3></div><span>{workflow.steps.length} 个步骤</span></div>
+            <div className="workflow-preview-heading"><div><span className={`eyebrow-line ${scene.accent === "coral" ? "coral-line" : ""}`} /><h3>工作流程</h3></div><span>{studioWorkflow.steps.length} 个步骤</span></div>
             <div className="workflow-steps">
-              {workflow.steps.map((step, index) => (
+              {studioWorkflow.steps.map((step, index) => (
                 <div className={`workflow-step ${index === 0 ? `current ${scene.accent === "coral" ? "coral-current" : ""}` : ""}`} key={step.id}>
                   <span className="step-index">{String(index + 1).padStart(2, "0")}</span><strong>{step.name}</strong>
-                  {index < workflow.steps.length - 1 && <span className="step-line" />}
+                  {index < studioWorkflow.steps.length - 1 && <span className="step-line" />}
                 </div>
               ))}
             </div>
@@ -365,23 +386,24 @@ export default function Studio({ sceneId, scene, workflow, draft, onNavigate, on
             {formError && <div className="studio-form-error" role="alert">{formError}</div>}
             {projectDirectory === "" && <div className="studio-project-notice">运行前需要设置项目目录。<button type="button" className="text-button" onClick={() => onNavigate("connections")}>前往集成连接 <FolderOpen size={13} /></button></div>}
             {projectDirectory === null && <div className="studio-project-notice">正在读取项目目录设置…</div>}
-            <span className="form-save-hint">草稿保存在此设备</span>
+            <span className="form-save-hint">草稿保存到服务端</span>
             <div className="studio-action-buttons">
               <button className="button button-outline" type="submit" disabled={running}><Save size={15} />{saved ? <><Check size={15} />已保存</> : "保存草稿"}</button>
               <button className="button button-dark" type="button" onClick={running ? cancelRun : run} disabled={!running && !projectDirectory}><>{running ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{running ? "取消运行" : "运行流程"}</></button>
             </div>
           </div>
-          {runResult && <WorkflowRunPanel result={runResult} inputValues={runResult.artifacts ? undefined : draft?.inputValues} onOpenRuns={() => onNavigate("runs")} />}
+          {runResult && <WorkflowRunPanel result={runResult} workflow={workflow} onFeedbackStep={(stepId, itemIndex) => void openFeedback(stepId, itemIndex)} inputValues={runResult.artifacts ? undefined : draft?.inputValues} onOpenRuns={() => onNavigate("runs")} />}
         </form>
+        {feedbackTarget && <RerunDialog run={feedbackTarget.run} target={feedbackTarget.target} onClose={() => setFeedbackTarget(null)} onSubmit={changes => onRerunRun(feedbackTarget.run, changes)} />}
         <aside className="studio-aside">
           <div className={`studio-aside-image ${scene.accent}`}><img src={scene.cover} alt="" style={{ objectPosition: scene.coverPosition }} /><span>{scene.shortTitle}制作</span></div>
           <div className="aside-section">
             <span className="aside-label">最终输出</span>
-            {workflow.outputs.length ? <ul className="output-list">
-              {workflow.outputs.map((output) => <li key={output.key}><Check size={14} /><span>{output.label}</span></li>)}
+            {studioWorkflow.outputs.length ? <ul className="output-list">
+              {studioWorkflow.outputs.map((output) => <li key={output.key}><Check size={14} /><span>{output.label}</span></li>)}
             </ul> : <div className="studio-empty-outputs"><CircleHelp size={14} />尚未定义最终输出</div>}
           </div>
-          <div className="aside-note"><CircleHelp size={15} /><span>保存后创建本地草稿。</span></div>
+          <div className="aside-note"><CircleHelp size={15} /><span>保存后同步到共享工作区。</span></div>
         </aside>
       </div>
     </div>

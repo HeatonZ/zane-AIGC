@@ -1,0 +1,254 @@
+{
+  "format": "zane-studio-scene",
+  "version": 1,
+  "exportedAt": "2026-10-05T00:00:00.000Z",
+  "scene": {
+    "id": "image_to_image",
+    "title": "基础图生图",
+    "shortTitle": "图生图",
+    "summary": "Writer 整理想法 → AIXG 转提示词 → ComfyUI 图生图",
+    "description": "上传有序参考图片和想法，Writer 先整理编辑说明，AIXG 再转换 Qwen Image 2.1 提示词；只需设置随机种子、画幅和像素。",
+    "cover": "https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?auto=format&fit=crop&w=1200&q=85",
+    "coverPosition": "center 42%",
+    "accent": "coral",
+    "stages": [
+      "图片与想法",
+      "Writer 整理",
+      "AIXG 转提示词",
+      "ComfyUI 图生图",
+      "生成结果"
+    ]
+  },
+  "workflow": {
+    "sceneId": "image_to_image",
+    "name": "基础图生图流程",
+    "inputs": [
+      {
+        "key": "reference_images",
+        "label": "图片",
+        "type": "image_list",
+        "required": true,
+        "placeholder": "按使用顺序逐张添加参考图"
+      },
+      {
+        "key": "prompt",
+        "label": "想法",
+        "type": "textarea",
+        "required": true,
+        "placeholder": "描述想怎样修改图片，不需要自己写提示词"
+      },
+      {
+        "key": "seed",
+        "label": "随机种子",
+        "type": "number",
+        "required": false,
+        "placeholder": "留空使用工作流默认值"
+      },
+      {
+        "key": "ratio",
+        "label": "画幅",
+        "type": "select",
+        "required": true,
+        "defaultValue": "1:1 (Square)",
+        "options": [
+          "1:1 (Square)",
+          "2:3 (Portrait Photo)",
+          "3:2 (Photo)",
+          "3:4 (Portrait Standard)",
+          "4:3 (Standard)",
+          "9:16 (Portrait Widescreen)",
+          "16:9 (Widescreen)",
+          "21:9 (Ultrawide)"
+        ]
+      },
+      {
+        "key": "mp",
+        "label": "像素",
+        "type": "number",
+        "required": true,
+        "defaultValue": 1,
+        "placeholder": "单位 MP，例如 1 表示约 100 万像素"
+      }
+    ],
+    "steps": [
+      {
+        "id": "image_edit_writer",
+        "name": "Writer 整理想法",
+        "kind": "hermes",
+        "hermesProfile": "writer",
+        "inputs": [
+          {
+            "key": "reference_images",
+            "label": "有序参考图片",
+            "sourceRef": "input.reference_images"
+          },
+          {
+            "key": "idea",
+            "label": "用户想法",
+            "sourceRef": "input.prompt"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "edit_brief",
+            "label": "整理后的编辑说明",
+            "type": "text",
+            "description": "非空的编辑说明：用户目标、主图与其他参考图的角色、具体修改及未修改区域的保持约束。保留原意与指定文字，不含生成参数或最终模型方言提示词。"
+          }
+        ],
+        "promptTemplate": "你是图像编辑需求整理 Writer。结合真实图片附件，把用户的想法整理为清楚、可执行的编辑说明，供下一步 AIXG 转换成 Qwen Image 2.1 提示词。只整理需求，不调用工具、不搜索、不生成或编辑图片。\n忠实保留用户原意、主体数量、明确修改及引号中的指定文字。把零散想法整理为编辑目标、参考图角色、修改区域与动作、位置和融合关系、需要保持的未修改属性；不要扩写成故事、广告文案或自由联想的文生图画面。\n图片以真实附件顺序编号，默认第一张是待编辑主图，其他图片只承担用户指定的主体、服装、背景、材质或风格参考。用户指定其他主图时服从用户；不得虚构图片编号、不可见细节、人物、物品、文字或水印。多图不等于拼贴。\n区分修改要求与保持约束，不要求保持用户要改变的属性。含糊之处采用最少改动的保守表述，不自行增加改动。不要把文件名、路径、URL 或媒体 JSON 写入说明。\n不编写模型方言、标签堆砌或权重语法，不生成负向提示词、随机种子、画幅、像素、步数、CFG 等参数；这些不是本步骤的输出。\n按步骤契约只返回 JSON 对象，edit_brief 字段为非空的整理后编辑说明，不附加推理、解释或其他字段。\n用户想法：{{input.prompt}}"
+      },
+      {
+        "id": "qwen_image_prompt",
+        "name": "AIXG → Qwen Image 2.1 编辑提示词",
+        "kind": "hermes",
+        "hermesProfile": "aixg",
+        "inputs": [
+          {
+            "key": "reference_images",
+            "label": "有序参考图片",
+            "sourceRef": "input.reference_images"
+          },
+          {
+            "key": "prompt",
+            "label": "Writer 整理后的编辑说明",
+            "sourceRef": "step.image_edit_writer.outputs.edit_brief"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "prompt",
+            "label": "Qwen Image 2.1 图像编辑提示词",
+            "type": "text",
+            "description": "非空的中文自然语言图像编辑指令；多图按实际附件顺序引用 <image1>、<image2> 等。只包含最终编辑提示词，不含解释、Markdown、路径、URL 或生成参数。"
+          }
+        ],
+        "promptTemplate": "你负责把 Writer 整理后的编辑说明转换为 Qwen Image 2.1 图像编辑方言提示词。只编写提示词，不调用工具、不搜索、不执行图像生成或编辑。\n先识别用户要做的局部修改、增删、替换、文字编辑、风格转换或多图融合，再写成具体、连贯的中文自然语言指令；不要输出标签堆砌、权重语法或空泛的画质口号。用户明确要求优先，不擅自改变任务。\n参考图片以实际附件顺序为准，编号从 1 开始，用 <image1>、<image2> 等标记准确指代。没有对应附件的编号不得出现；不要把图片文件名、路径、URL 或整份媒体 JSON 写进提示词。默认 <image1> 是待编辑的主画布，其他图片仅按用户指定的主体、服装、背景、材质或风格角色提供参考；用户明确指定其他主画布时服从用户。\n先说清楚改什么、从哪张图取什么，再说明位置、相对尺寸、遮挡、透视、光照和融合关系。多图不等于拼贴，不把每张参考图的所有元素自动加入结果；没有明确要求时不要复制主体或增加无关人物、物品、文字、水印。\n明确写出应该保持的主体身份、数量、形状、颜色、材质、构图、背景及未编辑区域，只保留与任务相容的约束；用户要求改变的属性不能同时要求保持。不要猜测图中看不见的细节，也不要把局部编辑改写成脱离参考图的纯文生图描述。\n文字编辑时用引号逐字保留用户指定的新文字，说明对应文字区域与需要延续的排版；不要自行翻译、改写品牌、Logo 或未要求修改的原有文字。风格转换也要保留用户未要求改变的内容和结构。\n不生成新的负向字段，不编造比例、分辨率、像素、随机种子、步数或 CFG；生成参数由后续独立绑定或工作流固定配置提供。\n按步骤输出契约返回 JSON 对象，其中 prompt 字段仅放最终非空编辑提示词，不附加推理、解释或其他字段。\nWriter 整理后的编辑说明：{{step.image_edit_writer.outputs.edit_brief}}"
+      },
+      {
+        "id": "image_to_image",
+        "name": "ComfyUI 图生图",
+        "kind": "comfyui",
+        "inputs": [
+          {
+            "key": "reference_images",
+            "label": "图片",
+            "sourceRef": "input.reference_images"
+          },
+          {
+            "key": "prompt",
+            "label": "Qwen Image 2.1 编辑提示词",
+            "sourceRef": "step.qwen_image_prompt.outputs.prompt"
+          },
+          {
+            "key": "seed",
+            "label": "随机种子",
+            "sourceRef": "input.seed"
+          },
+          {
+            "key": "ratio",
+            "label": "画幅",
+            "sourceRef": "input.ratio"
+          },
+          {
+            "key": "mp",
+            "label": "像素",
+            "sourceRef": "input.mp"
+          }
+        ],
+        "outputs": [
+          {
+            "key": "images",
+            "label": "生成图像",
+            "type": "image_list"
+          }
+        ],
+        "promptTemplate": "",
+        "comfyui": {
+          "workflowFile": "Zane/i2i_UI.json",
+          "bindings": [
+            {
+              "key": "reference_images",
+              "label": "参考图片",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "images",
+              "type": "image_list",
+              "sourceRef": "input.reference_images",
+              "required": true
+            },
+            {
+              "key": "prompt",
+              "label": "正向提示词",
+              "direction": "input",
+              "nodeId": "471",
+              "property": "prompt",
+              "type": "text",
+              "sourceRef": "step.qwen_image_prompt.outputs.prompt",
+              "required": true
+            },
+            {
+              "key": "seed",
+              "label": "随机种子",
+              "direction": "input",
+              "nodeId": "476",
+              "property": "seed",
+              "type": "number",
+              "sourceRef": "input.seed",
+              "required": false
+            },
+            {
+              "key": "ratio",
+              "label": "画幅",
+              "direction": "input",
+              "nodeId": "481",
+              "property": "aspect_ratio",
+              "type": "text",
+              "sourceRef": "input.ratio",
+              "required": true
+            },
+            {
+              "key": "mp",
+              "label": "像素",
+              "direction": "input",
+              "nodeId": "481",
+              "property": "megapixels",
+              "type": "number",
+              "sourceRef": "input.mp",
+              "required": true
+            },
+            {
+              "key": "configured_canvas",
+              "label": "按画幅与像素建立目标画布（固定）",
+              "direction": "input",
+              "nodeId": "479",
+              "property": "switch",
+              "type": "boolean",
+              "valueSource": "literal",
+              "literalValue": "true",
+              "sourceRef": "",
+              "required": true
+            },
+            {
+              "key": "images",
+              "label": "生成图像",
+              "direction": "output",
+              "nodeId": "461",
+              "property": "images",
+              "type": "image_list"
+            }
+          ]
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "key": "images",
+        "label": "生成图像",
+        "type": "image_list",
+        "sourceRef": "step.image_to_image.outputs.images"
+      }
+    ]
+  },
+  "optionPresets": []
+}

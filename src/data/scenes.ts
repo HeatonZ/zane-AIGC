@@ -1,8 +1,11 @@
+import commerceAiPackage from "../../examples/scenes/commerce-ai.json";
+import basicImageLayoutPackage from "../../examples/scenes/basic-image-layout.json";
 import commercePackPackage from "../../examples/scenes/commerce-pack.json";
 import type { SceneModule } from "../types";
 
 export const defaultScenes: SceneModule[] = [
-  commercePackPackage.scene as SceneModule,
+  basicImageLayoutPackage.scene as SceneModule,
+  commerceAiPackage.scene as SceneModule,
   {
     id: "text_to_image",
     title: "基础文生图",
@@ -19,12 +22,12 @@ export const defaultScenes: SceneModule[] = [
     id: "image_to_image",
     title: "基础图生图",
     shortTitle: "图生图",
-    summary: "按顺序上传多张参考图并进行图生图",
-    description: "按上传顺序将参考图作为图生图条件",
+    summary: "Writer 整理想法 → AIXG 转提示词 → ComfyUI 图生图",
+    description: "上传有序参考图片和想法，Writer 先整理编辑说明，AIXG 再转换 Qwen Image 2.1 提示词；只需设置随机种子、画幅和像素。",
     cover: "https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?auto=format&fit=crop&w=1200&q=85",
     coverPosition: "center 42%",
     accent: "coral",
-    stages: ["参考图片", "提示词", "ComfyUI 图生图", "生成结果"],
+    stages: ["图片与想法","Writer 整理","AIXG 转提示词","ComfyUI 图生图","生成结果"],
   },
   {
     id: "comic",
@@ -50,9 +53,11 @@ export const defaultScenes: SceneModule[] = [
     accent: "coral",
     stages: ["商品理解", "卖点提炼", "镜头脚本", "画面生成"],
   },
+  // Retain the old package for explicit compatibility, not as the default first solution.
+  { ...commercePackPackage.scene, title: "电商套图（旧版兼容）", summary: "仅保留旧图包协议；新方案优先使用基础图片生成与排版", description: "已有图包流程保留；新场景用通用逐项执行 + 基础ComfyUI + 图片画布与排版，不为每个商品场景定制执行器。" } as SceneModule,
 ];
 
-export function getScene(sceneId: string | undefined, availableScenes: SceneModule[] = defaultScenes): SceneModule {
+export function getScene(sceneId: string | undefined, availableScenes: SceneModule[]): SceneModule {
   return availableScenes.find((scene) => scene.id === sceneId) ?? {
     id: sceneId ?? "unknown",
     title: "已删除场景",
