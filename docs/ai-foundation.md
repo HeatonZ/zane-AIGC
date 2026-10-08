@@ -1,8 +1,23 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.5.21。当前 91 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.5.25。当前 91 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
+
+### comfy-static-switch
+
+精简长文基础组合：data.zip可选ordinalField校验1-based连续整数序号，无需额外步骤；逐项JSON来源内媒体与上游输出共用归档，保持新运行的carry恢复匹配。单工作流上下文切换：运行绑定后仅对可证明静态Boolean的内置ComfySwitchNode断开未选中可选输入；未知、循环和自定义选择器不处理，保留所有节点/输出和其他消费者，不执行表达式或节点。显式空可选视频清除原图示例路径，选中必需输入仍校验；同服务支持HTTP/MCP、固定发布及恢复，配置不生成、旧版不迁移。机器契约x-comfy-static-switch v1。
+
+| 工具 | HTTP | 副作用 |
+| --- | --- | --- |
+| `create_scene` | `POST /api/v1/scenes` | write |
+| `update_scene_draft` | `PATCH /api/v1/scenes/{sceneId}/draft` | write |
+| `validate_scene_draft` | `POST /api/v1/scenes/{sceneId}/validate` | read |
+| `submit_scene` | `POST /api/v1/scenes/{sceneId}/runs` | execute |
+| `resume_run` | `POST /api/v1/runs/{sourceRunId}/resume` | execute |
+| `rerun` | `POST /api/v1/runs/{sourceRunId}/rerun` | execute |
+| `submit_own_scene` | `POST /api/v1/self/scenes/{sceneId}/runs` | execute |
+| `resume_own_run` | `POST /api/v1/self/runs/{runId}/resume` | execute |
 
 ### comfy-ui-routing
 
@@ -245,9 +260,23 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 | `initialize_workspace` | `POST /api/workspace/initialize` | write |
 | `merge_workspace` | `POST /api/workspace/merge` | write |
 
+### scene-input-defaults
+
+流程输入可设置类型匹配的workflow.inputs[].defaultValue（select必须属于options）；草稿revision写入后由validate_scene_draft检查，显式发布后只影响该固定发布版的新输入表单与prepare默认值，用户显式输入覆盖默认值；UI/HTTP/MCP复用同一契约，不自动发布或执行
+
+| 工具 | HTTP | 副作用 |
+| --- | --- | --- |
+| `create_scene` | `POST /api/v1/scenes` | write |
+| `get_scene_draft` | `GET /api/v1/scenes/{sceneId}/draft` | read |
+| `update_scene_draft` | `PATCH /api/v1/scenes/{sceneId}/draft` | write |
+| `validate_scene_draft` | `POST /api/v1/scenes/{sceneId}/validate` | read |
+| `publish_scene` | `POST /api/v1/scenes/{sceneId}/publish` | write |
+| `get_scene` | `GET /api/v1/scenes/{sceneId}` | read |
+| `prepare_scene` | `POST /api/v1/scenes/{sceneId}/prepare` | read |
+
 ### scenes
 
-与网页同源同序的revision绑定分页目录，显式草稿/发布名称与差异；场景展示取对应scene.title，不以独立workflow.name代替，不改历史；场景草稿创建/编辑/校验/发布/恢复/删除，固定版本输入契约和预检；用基础步骤组合新场景，不为场景另造执行器；Qwen Image 2.1图生图以基础Hermes writer整理有序图片与想法，再由aixg将text edit_brief转为text prompt连接正向端口；仅图片/想法/seed/ratio/mp五项输入，画幅与MP走目标画布且参考图片仍参与条件编码，其余参数用固定配置，revision保护编辑后显式发布；双采视频复用workflowFile和bindings的草稿编辑/校验/显式发布，长文采用Writer分镜→基础Hermes aixg逐镜输出prompt→既有H3适配→拼接，保留Writer时长/对白/选择与整镜JSON/24fps；业务分类留在上游，ComfyUI仅接收图片/音频/视频列表；基础引用选择images/audios/videos输出按分组顺序合并，H3本镜分类素材先选择并合并为references.images/audios，保留全局标签到连续局部编号的映射；输入与兼容旧ComfyUI绑定的可选mediaRole区分人物/场景/道具/参考音色，类型不变，固定发布契约回传用途；省略兼容旧版，revision编辑不自动迁移或发布
+与网页同源同序的revision绑定分页目录，显式草稿/发布名称与差异；场景展示取对应scene.title，不以独立workflow.name代替，不改历史；场景草稿创建/编辑/校验/发布/恢复/删除，固定版本输入契约和预检；用基础步骤组合新场景，不为场景另造执行器；Qwen Image 2.1图生图以基础Hermes writer整理有序图片与想法，再由aixg将text edit_brief转为text prompt连接正向端口；仅图片/想法/seed/ratio/mp五项输入，画幅与MP走目标画布且参考图片仍参与条件编码，其余参数用固定配置，revision保护编辑后显式发布；双采视频复用workflowFile和bindings的草稿编辑/校验/显式发布，长文精简草稿采用Writer一次写制作级视频分镜（storyboard/shots无prompt）→基础Hermes aixg一次批量转换prompts、不重编剧情→data.zip等长对齐与确定性素材映射→同一个ComfyUI上下文开关工作流for_each.carry串行续接→拼接，共7步、两次AI调用，保留Writer时长/对白/选择与整镜JSON/24fps；业务分类留在上游，ComfyUI仅接收图片/音频/视频列表；基础引用选择images/audios/videos输出按分组顺序合并，H3本镜分类素材先选择并合并为references.images/audios，保留全局标签到连续局部编号的映射；输入与兼容旧ComfyUI绑定的可选mediaRole区分人物/场景/道具/参考音色，类型不变，固定发布契约回传用途；省略兼容旧版，revision编辑不自动迁移或发布
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -283,7 +312,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### runs
 
-固定发布版执行、管理员分页历史/详情含服务端验证并记录的提交人身份快照、有界等待、事件、取消和恢复
+固定发布版执行、管理员分页历史/详情含服务端验证并记录的提交人身份快照；get_run保存已执行Hermes步骤实际发送提示词agentPrompt，解析或输出校验失败时保存完整未trim原始回复agentResponse，for_each按item.agentPrompt/agentResponse保存；get_step_result可分页读原始回复；有界等待、事件、取消和恢复
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -297,7 +326,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### results
 
-最终输出/单步/逐项按需读取和媒体引用；可选textOffset/textLimit按Unicode码点读取长文本，明确valuePage与页预算，不静默截断
+最终输出/单步/逐项按需读取和媒体引用；可选textOffset/textLimit按Unicode码点读取长文本，Hermes失败原始回复agentResponse同样分页且明确valuePage与页预算，不静默截断
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -316,7 +345,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### asset-execution-access
 
-UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为同一任务私有归档，Hermes/AIXG读取字节构造inline图片、ComfyUI按参考图顺序上传同一来源；Hermes保留现有预算/压缩，不改选版本，不依赖受保护previewUrl或转发工作台token；管理员兼容本后台同源/相对固定素材URL，预检提前拒绝错误版本/类型/丢失文件；普通用户仍仅本人固定引用；原运行不变、显式断点续跑不盲重放
+UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为同一任务私有归档，Hermes/AIXG读取字节构造inline图片、ComfyUI按参考图顺序上传同一来源；基础audio_list从已授权固定音色私有路径（含media.select_references/data.zip中间JSON）读取原字节，按引用顺序上传再连接LoadAudio；每文件100MB、合法既有附件不重传、preview不回退、失败在prompt前停止且不自动重试，机器契约audioConsumers；Hermes保留现有预算/压缩，不改选版本，不依赖受保护previewUrl或转发工作台token；管理员兼容本后台同源/相对固定素材URL，预检提前拒绝错误版本/类型/丢失文件；普通用户仍仅本人固定引用；原运行不变、显式断点续跑不盲重放
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |

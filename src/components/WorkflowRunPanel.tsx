@@ -7,17 +7,11 @@ import ClipSelectionDialog from "./ClipSelectionDialog";
 import ReviewPanel from "./ReviewPanel";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../types";
 import SaveAssetButton from "./SaveAssetButton";
+import RunValueView from "./RunValueView";
 import type { AssetSource } from "../../server/domain/productionContracts";
 import { runOutputMediaItems } from "../lib/runMedia";
 import { useCapabilities } from "../hooks/useCapabilities";
 import type { JsonValue, WorkflowRunOutput, WorkflowRunResult } from "../types";
-
-function outputText(output: WorkflowRunOutput) {
-  if (typeof output.value === "boolean") return output.value ? "真" : "假";
-  if (output.value === null) return "无结果";
-  if (typeof output.value === "object") return JSON.stringify(output.value, null, 2);
-  return String(output.value);
-}
 
 function StepValue({ value, type, source }: { value: JsonValue; type?: string; source?: Omit<AssetSource,"mediaIndex"> }) {
   const media = runOutputMediaItems(value, type, source);
@@ -25,7 +19,7 @@ function StepValue({ value, type, source }: { value: JsonValue; type?: string; s
     {item.isVideo ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : item.isAudio ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}
     {source && <SaveAssetButton kind={item.isVideo ? "video" : item.isAudio ? "audio" : "image"} source={{ ...source, mediaIndex: item.mediaIndex }} />}
   </div>)}</div>;
-  return <pre>{value === null ? "无值" : typeof value === "object" ? JSON.stringify(value, null, 2) : String(value)}</pre>;
+  return <RunValueView value={value} type={type} source={source} />;
 }
 
 function stepStatusLabel(status: WorkflowRunResult["steps"][number]["status"]) {
@@ -43,7 +37,13 @@ function stepItemStatusLabel(status: NonNullable<WorkflowRunResult["steps"][numb
 function outputValueLabel(value: JsonValue) {
   if (value && typeof value === "object" && !Array.isArray(value) && typeof value.filename === "string") return value.filename;
   if (typeof value === "string") return value;
-  return JSON.stringify(value);
+  if (Array.isArray(value)) return `包含 ${value.length} 项`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, JsonValue>;
+    for (const key of ["title", "name", "text", "content"]) if (typeof record[key] === "string") return record[key] as string;
+    return `包含 ${Object.keys(record).length} 个字段`;
+  }
+  return value === null ? "空值" : String(value);
 }
 
 function RunOutput({ output, runId, className = "workflow-run-output", renderer = "auto" }: { output: WorkflowRunOutput; runId?: string; className?: string; renderer?: "auto" | "text" | "json" | "media" }) {
@@ -54,7 +54,7 @@ function RunOutput({ output, runId, className = "workflow-run-output", renderer 
   return <article className={className}>
     <div className="workflow-run-output-heading"><strong>{output.label}</strong><small>{output.type}</small></div>
     {media.length ? <div className="workflow-run-media">{media.map((item,index) => <div className="production-media-item" key={item.url + index}>{isVideoOutput ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : isAudioOutput ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}{runId && <SaveAssetButton kind={isVideoOutput ? "video" : isAudioOutput ? "audio" : "image"} source={{ runId, outputKey: output.key, mediaIndex: item.mediaIndex }} />}</div>)}</div>
-      : <pre>{outputText(output)}</pre>}
+      : <RunValueView value={output.value} type={renderType} source={runId ? { runId, outputKey: output.key } : undefined} />}
   </article>;
 }
 
@@ -126,12 +126,12 @@ export default function WorkflowRunPanel({
       {!['queued','running','cancelling','waiting'].includes(result.status) && result.steps.some(step => step.items?.some(item => item.status === "completed") && Object.values(step.outputTypes ?? {}).some(type => /^(video|video_list)$/.test(type))) && <button className="button button-outline" type="button" onClick={() => setSelectingClips(true)}>镜头选版 / 合成</button>}
       {selectingClips && <ClipSelectionDialog run={result as WorkflowRunRecord} onClose={() => setSelectingClips(false)} onComposed={runId => { setSelectingClips(false); if (onComposedRun) onComposedRun(runId); else onOpenRuns?.(); }} />}
       {result.status === "waiting" && result.pendingReview && (onReviewSubmitted ? <ReviewPanel key={result.pendingReview.id} run={result as WorkflowRunRecord} onSubmitted={onReviewSubmitted} /> : <div className="production-review"><strong>等待确认：{result.pendingReview.name}</strong>{onOpenRuns && <button className="text-button" onClick={onOpenRuns}>前往运行记录处理</button>}</div>)}
-      {result.reviewHistory?.length ? <details className="run-input-snapshot"><summary>确认历史（{result.reviewHistory.length} 次）</summary><pre>{JSON.stringify(result.reviewHistory,null,2)}</pre></details> : null}
-      {result.feedbackHistory?.length ? <details className="run-input-snapshot hermes-feedback-history"><summary>Hermes 反馈历史（{result.feedbackHistory.length} 条）</summary><ol>{result.feedbackHistory.map(feedback => <li key={feedback.id}><strong>{result.steps.find(step => step.stepId === feedback.stepId)?.name ?? feedback.stepId}{feedback.itemIndex === undefined ? " · 整步" : " · 第 " + (feedback.itemIndex + 1) + " 项"}</strong><small>{new Date(feedback.createdAt).toLocaleString("zh-CN")} · 来源版本 {feedback.sourceRunId.slice(0, 8)}</small><p>{feedback.message}</p><details><summary>查看反馈时的原结果</summary><pre>{JSON.stringify(feedback.originalItems ? { outputs: feedback.originalOutputs, items: feedback.originalItems } : feedback.originalOutputs, null, 2)}</pre></details></li>)}</ol></details> : null}
+      {result.reviewHistory?.length ? <details className="run-input-snapshot"><summary>确认历史（{result.reviewHistory.length} 次）</summary><ol className="run-history-list">{result.reviewHistory.map((review, index) => <li key={review.reviewId || index}><strong>{result.steps.find(step => step.stepId === review.stepId)?.name ?? review.stepId} · {review.action === "approve" ? "已确认" : "退回重做"}</strong><small>{new Date(review.at).toLocaleString("zh-CN")}</small>{review.feedback && <p>{review.feedback}</p>}{review.originalOutputs && <details><summary>确认前结果</summary><RunValueView value={review.originalOutputs} type="json" /></details>}{review.editedOutputs && <details><summary>修改后的结果</summary><RunValueView value={review.editedOutputs} type="json" /></details>}</li>)}</ol></details> : null}
+      {result.feedbackHistory?.length ? <details className="run-input-snapshot hermes-feedback-history"><summary>Hermes 反馈历史（{result.feedbackHistory.length} 条）</summary><ol>{result.feedbackHistory.map(feedback => <li key={feedback.id}><strong>{result.steps.find(step => step.stepId === feedback.stepId)?.name ?? feedback.stepId}{feedback.itemIndex === undefined ? " · 整步" : " · 第 " + (feedback.itemIndex + 1) + " 项"}</strong><small>{new Date(feedback.createdAt).toLocaleString("zh-CN")} · 来源版本 {feedback.sourceRunId.slice(0, 8)}</small><p>{feedback.message}</p><details><summary>查看反馈时的原结果</summary><RunValueView value={feedback.originalItems ? { outputs: feedback.originalOutputs, items: feedback.originalItems } : feedback.originalOutputs} type="json" /></details></li>)}</ol></details> : null}
       {cancelled && <div className="workflow-run-cancellation-reason" role="status"><strong>取消原因</strong><span>{result.cancellationReason ?? (result.error && result.error !== "运行已取消" ? result.error : "这条历史记录没有保存具体取消原因")}</span></div>}
       {result.error && !cancelled && <div className="workflow-run-error" role="alert">{result.error}</div>}
       {result.archiveWarnings?.length ? <div className="workflow-run-warning" role="status">部分生成媒体没有复制到项目目录：{result.archiveWarnings.join("；")}</div> : null}
-      {inputValues && <details className="run-input-snapshot"><summary>查看本次输入</summary><pre>{JSON.stringify(inputValues, null, 2)}</pre></details>}
+      {inputValues && <details className="run-input-snapshot"><summary>查看本次输入</summary><RunValueView value={inputValues} type="json" /></details>}
       {result.items?.length ? <div className="workflow-run-items">
         {result.items.map((item) => <article className="workflow-run-item" key={`workflow-run-item-${item.index}`}>
           <div className="workflow-run-item-heading"><strong>第 {item.index + 1} 项</strong><small className={item.status}>{itemStatusLabel(item.status)}</small></div>
@@ -147,21 +147,24 @@ export default function WorkflowRunPanel({
           const inputValues = step.inputs ?? {};
           const outputValues = step.outputs ?? {};
           const outputRenderer = capabilities.find((item) => item.id === step.capabilityId && item.version === step.capabilityVersion)?.result.renderer;
+          const legacyPromptTemplate = isHermes && !step.agentPrompt && !step.items?.length ? definition?.promptTemplate : undefined;
           const inputKeys = Object.keys(inputValues);
+          const inputCount = inputKeys.length + (step.agentPrompt || legacyPromptTemplate ? 1 : 0);
           const outputKeys = [...new Set([...Object.keys(step.outputLabels ?? {}), ...Object.keys(outputValues)])];
           return <li key={step.stepId} className={step.status}>
             <details className="workflow-run-step">
               <summary className="workflow-run-step-summary">
                 <span className="workflow-run-step-name"><ChevronRight size={14} /><strong>{step.name}</strong></span>
-                <span className="workflow-run-step-meta"><span className={`workflow-run-step-status ${step.status}`}>{stepStatusLabel(step.status)}</span>{step.message && <small>{step.message}</small>}{(step.warnings?.length || step.items?.some(item => item.warnings?.length)) ? <small>⚠ {(step.warnings?.length ?? 0) + (step.items ?? []).reduce((sum, item) => sum + (item.warnings?.length ?? 0), 0)} 条提示</small> : null}<span>{inputKeys.length} 个输入 · {outputKeys.length} 个输出</span></span>
+                <span className="workflow-run-step-meta"><span className={`workflow-run-step-status ${step.status}`}>{stepStatusLabel(step.status)}</span>{step.message && <small>{step.message}</small>}{(step.warnings?.length || step.items?.some(item => item.warnings?.length)) ? <small>⚠ {(step.warnings?.length ?? 0) + (step.items ?? []).reduce((sum, item) => sum + (item.warnings?.length ?? 0), 0)} 条提示</small> : null}<span>{inputCount} 个输入 · {outputKeys.length} 个输出</span></span>
               </summary>
               <div className="workflow-run-step-content"><RunWarnings warnings={step.warnings} />
                 {onRerunStep && <div className="rerun-step-actions"><button className="text-button" type="button" onClick={() => onRerunStep(step.stepId, undefined, "rerun")}>重做本步骤</button>{step.status === "completed" && !step.items?.length && <button className="text-button" type="button" onClick={() => onRerunStep(step.stepId, undefined, "replace")}>修改本步结果</button>}{step.reusedFromRunId && <small>{step.replaced ? "使用手动替换结果" : "复用历史结果"}</small>}</div>}
                 {submitFeedback && feedbackAllowed && isHermes && ((step.status === "completed" && Object.keys(outputValues).length > 0) || step.items?.some(item => item.status === "completed" && Object.keys(item.outputs ?? {}).length > 0)) && <div className="rerun-step-actions"><button className="text-button workflow-run-feedback" type="button" onClick={() => submitFeedback(step.stepId)}><MessageSquare size={14} />{step.items?.length ? "反馈并重做整个步骤" : "反馈并重做"}</button><small>说明哪里不好，让 Hermes 根据原结果修改</small></div>}
                 <section className="workflow-run-step-section">
-                  <div className="workflow-run-step-section-heading"><strong>输入</strong><small>{inputKeys.length}</small></div>
-                  {inputKeys.length ? <dl>{inputKeys.map((key) => <div className="workflow-run-step-value" key={key}><dt>{step.inputLabels?.[key] ?? key}<small>{step.inputLabels?.[key] ? key : ""}</small></dt><dd><StepValue value={inputValues[key]} /></dd></div>)}</dl> : <p className="workflow-run-step-empty">未配置步骤输入</p>}
+                  <div className="workflow-run-step-section-heading"><strong>输入</strong><small>{inputCount}</small></div>
+                  {inputCount ? <dl>{step.agentPrompt && <div className="workflow-run-step-value"><dt>提示词<small>实际发送</small></dt><dd><StepValue value={step.agentPrompt} type="text" /></dd></div>}{legacyPromptTemplate && <div className="workflow-run-step-value"><dt>提示词模板<small>旧记录未保存实际文本</small></dt><dd><StepValue value={legacyPromptTemplate} type="text" /></dd></div>}{inputKeys.map((key) => <div className="workflow-run-step-value" key={key}><dt>{step.inputLabels?.[key] ?? key}<small>{step.inputLabels?.[key] ? key : ""}</small></dt><dd><StepValue value={inputValues[key]} /></dd></div>)}</dl> : <p className="workflow-run-step-empty">未配置步骤输入</p>}
                 </section>
+                {step.agentResponse !== undefined && <section className="workflow-run-step-section workflow-run-step-agent-response"><div className="workflow-run-step-section-heading"><strong>Hermes 原始返回</strong><small>解析失败时保存</small></div><dl><div className="workflow-run-step-value"><dt>完整响应<small>保留首尾空白</small></dt><dd><StepValue value={step.agentResponse} type="text" /></dd></div></dl></section>}
                 <section className="workflow-run-step-section">
                   <div className="workflow-run-step-section-heading"><strong>输出</strong><small>{outputKeys.length}</small></div>
                   {outputKeys.length ? <dl>{outputKeys.map((key) => <div className="workflow-run-step-value" key={key}><dt>{step.outputLabels?.[key] ?? key}<small>{step.outputLabels?.[key] ? key : ""}</small></dt><dd>{Object.prototype.hasOwnProperty.call(outputValues, key) ? <StepValue value={outputValues[key]} source={step.status === "completed" ? { runId: result.runId, stepId: step.stepId, outputKey: key } : undefined} type={outputRenderer === "text" || outputRenderer === "json" ? outputRenderer : step.outputTypes?.[key]} /> : <p className="workflow-run-step-empty">{step.status === "running" ? "步骤完成后生成" : step.status === "skipped" ? "步骤未执行" : "尚未生成"}</p>}</dd></div>)}</dl> : <p className="workflow-run-step-empty">此步骤没有定义输出</p>}
@@ -173,6 +176,8 @@ export default function WorkflowRunPanel({
                       const itemInputValues = item.inputs ?? {};
                       const itemOutputValues = item.outputs ?? {};
                       const itemInputKeys = Object.keys(itemInputValues);
+                      const legacyItemPromptTemplate = isHermes && !item.agentPrompt ? item.stepSnapshot?.promptTemplate ?? definition?.promptTemplate : undefined;
+                      const itemInputCount = itemInputKeys.length + (item.agentPrompt || legacyItemPromptTemplate ? 1 : 0);
                       const itemOutputKeys = [...new Set([...Object.keys(step.outputLabels ?? {}), ...Object.keys(itemOutputValues)])];
                       return <details className="workflow-run-step-item" key={`${step.stepId}-item-${item.index}`}>
                         <summary><strong>第 {item.index + 1} 项</strong><span className={`workflow-run-step-status ${item.status}`}>{stepItemStatusLabel(item.status)}</span><small>{outputValueLabel(item.value)}</small>{!!item.warnings?.length && <small>⚠ {item.warnings.length} 条提示</small>}</summary>
@@ -180,8 +185,9 @@ export default function WorkflowRunPanel({
                           {onRerunStep && <div className="rerun-step-actions"><button className="text-button" type="button" onClick={() => onRerunStep(step.stepId, item.index, "rerun")}>只重做第 {item.index + 1} 项</button>{item.status === "completed" && <button className="text-button" type="button" onClick={() => onRerunStep(step.stepId, item.index, "replace")}>替换此项结果</button>}{item.reusedFromRunId && <small>复用历史结果</small>}</div>}
                           {submitFeedback && feedbackAllowed && isHermes && item.status === "completed" && Object.keys(itemOutputValues).length > 0 && <div className="rerun-step-actions"><button className="text-button workflow-run-feedback" type="button" onClick={() => submitFeedback(step.stepId, item.index)}><MessageSquare size={14} />反馈并重做第 {item.index + 1} 项</button></div>}
                           {item.error && <div className="workflow-run-item-error">{item.error}</div>}<RunWarnings warnings={item.warnings} />
+                          {item.agentResponse !== undefined && <section className="workflow-run-step-agent-response"><div className="workflow-run-step-section-heading"><strong>Hermes 原始返回</strong><small>解析失败时保存</small></div><dl><div className="workflow-run-step-value"><dt>完整响应<small>保留首尾空白</small></dt><dd><StepValue value={item.agentResponse} type="text" /></dd></div></dl></section>}
                           <div className="workflow-run-step-item-values">
-                            <section><div className="workflow-run-step-section-heading"><strong>输入</strong><small>{itemInputKeys.length}</small></div>{itemInputKeys.length ? <dl>{itemInputKeys.map((key) => <div className="workflow-run-step-value" key={key}><dt>{step.inputLabels?.[key] ?? key}<small>{step.inputLabels?.[key] ? key : ""}</small></dt><dd><StepValue value={itemInputValues[key]} /></dd></div>)}</dl> : <p className="workflow-run-step-empty">未配置步骤输入</p>}</section>
+                            <section><div className="workflow-run-step-section-heading"><strong>输入</strong><small>{itemInputCount}</small></div>{itemInputCount ? <dl>{item.agentPrompt && <div className="workflow-run-step-value"><dt>提示词<small>实际发送</small></dt><dd><StepValue value={item.agentPrompt} type="text" /></dd></div>}{legacyItemPromptTemplate && <div className="workflow-run-step-value"><dt>提示词模板<small>旧记录未保存实际文本</small></dt><dd><StepValue value={legacyItemPromptTemplate} type="text" /></dd></div>}{itemInputKeys.map((key) => <div className="workflow-run-step-value" key={key}><dt>{step.inputLabels?.[key] ?? key}<small>{step.inputLabels?.[key] ? key : ""}</small></dt><dd><StepValue value={itemInputValues[key]} /></dd></div>)}</dl> : <p className="workflow-run-step-empty">未配置步骤输入</p>}</section>
                             <section><div className="workflow-run-step-section-heading"><strong>输出</strong><small>{itemOutputKeys.length}</small></div>{itemOutputKeys.length ? <dl>{itemOutputKeys.map((key) => <div className="workflow-run-step-value" key={key}><dt>{step.outputLabels?.[key] ?? key}<small>{step.outputLabels?.[key] ? key : ""}</small></dt><dd>{Object.prototype.hasOwnProperty.call(itemOutputValues, key) ? <StepValue value={itemOutputValues[key]} source={item.status === "completed" ? { runId: result.runId, stepId: step.stepId, itemIndex: item.index, outputKey: key } : undefined} type={outputRenderer === "text" || outputRenderer === "json" ? outputRenderer : step.outputTypes?.[key]} /> : <p className="workflow-run-step-empty">尚未生成</p>}</dd></div>)}</dl> : <p className="workflow-run-step-empty">此项没有输出</p>}</section>
                           </div>
                         </div>

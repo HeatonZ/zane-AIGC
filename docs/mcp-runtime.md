@@ -19,6 +19,12 @@ npm run start:prod
 
 这是用户显式运维命令，不是 AI 业务工具。不会启动/重启 Hermes Gateway、ComfyUI 或其他 MCP，也不授予任何生成/发布/审批权限。构建失败会保持停机，修复后再执行命令；不会悄悄恢复旧代码或重复业务请求。
 
+## Windows 后台守护
+
+正式后台可以由 Windows 计划任务每分钟运行 `npm run watch:prod`。watchdog 只在 `/api/health` 和 `/api/ready` 不可用、8799 端口已释放且没有进行中的升级时启动 `dist-server/index.js --production`；升级的 `preparing/checking/ready/waiting/stopping/switching/starting` 状态会跳过自动启动。它不强杀进程、不复用旧 PID，也不重启 Hermes Gateway 或 ComfyUI。启动日志写入 `APP_DATA_DIR/watchdog-server.log`，动作日志写入 `APP_DATA_DIR/watchdog.log`。
+
+计划任务应设置为“如果任务已经运行则不启动新实例”，并使用当前用户的交互式凭据。升级仍只通过 `npm run start:prod` 完成；watchdog 不参与版本构建、备份、切换或任务恢复。
+
 ## MCP 的重启方式
 
 MCP 启动命令仍是 `node F:/code/zane-drama/dist-server/mcp/index.js`；`npm run mcp`、`npm run mcp:dev` 也保留。

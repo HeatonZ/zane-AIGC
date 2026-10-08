@@ -1,0 +1,2513 @@
+{
+  "ComfyMathExpression": {
+    "input": {
+      "required": {
+        "expression": [
+          "STRING",
+          {}
+        ],
+        "values": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "input": {
+                "required": {
+                  "value": [
+                    "FLOAT,INT,BOOLEAN",
+                    {}
+                  ]
+                }
+              },
+              "names": [
+                "a",
+                "b",
+                "c",
+                "d",
+                "e",
+                "f",
+                "g",
+                "h",
+                "i",
+                "j",
+                "k",
+                "l",
+                "m",
+                "n",
+                "o",
+                "p",
+                "q",
+                "r",
+                "s",
+                "t",
+                "u",
+                "v",
+                "w",
+                "x",
+                "y",
+                "z"
+              ],
+              "min": 1
+            }
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "expression",
+        "values"
+      ]
+    },
+    "output": [
+      "FLOAT",
+      "INT",
+      "BOOLEAN"
+    ],
+    "output_node": false
+  },
+  "CLIPLoader": {
+    "input": {
+      "required": {
+        "clip_name": [
+          [
+            "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+            "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+            "qwen3vl_4b_fp8_scaled.safetensors",
+            "qwen3vl_8b_int8_convrot.safetensors",
+            "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+            "qwen_3_4b_fp8_mixed.safetensors",
+            "qwen_3_8b_fp8mixed.safetensors",
+            "umt5-xxl-enc-fp8_e4m3fn.safetensors",
+            "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+          ]
+        ],
+        "type": [
+          [
+            "stable_diffusion",
+            "stable_cascade",
+            "sd3",
+            "stable_audio",
+            "mochi",
+            "ltxv",
+            "pixart",
+            "cosmos",
+            "lumina2",
+            "wan",
+            "hidream",
+            "chroma",
+            "ace",
+            "omnigen2",
+            "qwen_image",
+            "hunyuan_image",
+            "flux2",
+            "ovis",
+            "longcat_image",
+            "cogvideox",
+            "lens",
+            "pixeldit",
+            "ideogram4",
+            "boogu",
+            "krea2",
+            "joyimage",
+            "mage",
+            "minimax",
+            "yue2"
+          ]
+        ]
+      },
+      "optional": {
+        "device": [
+          [
+            "__fixture_choice__"
+          ],
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "clip_name",
+        "type"
+      ],
+      "optional": [
+        "device"
+      ]
+    },
+    "output": [
+      "CLIP"
+    ],
+    "output_node": false
+  },
+  "ModelAttentionBackend": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "attention": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "pytorch attention",
+              "comfy kitchen attention"
+            ]
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "attention"
+      ]
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_node": false
+  },
+  "LoraLoaderModelOnly": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "lora_name": [
+          [
+            "h3\\H3_Combat_V2.safetensors",
+            "h3\\KungFu_MiniMaxH3_LoRA_step4500_fl2va_no-adaln.safetensors",
+            "h3\\Motion_Repair.safetensors",
+            "h3\\MysticXXX_MMH3-V1.safetensors",
+            "h3\\h3-realism-people-t2v-i2v-r2v.safetensors",
+            "h3\\h3_turbo_larryvrh_minimax_h3_turbo_v4_step600_ema.safetensors",
+            "h3\\minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy.safetensors",
+            "h3\\minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors",
+            "h3\\minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+            "h3\\minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+            "h3\\minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+            "h3\\wushu_action_v7_2000step-int8convrot_bf16te.safetensors",
+            "h3\\动作i连续性修复LORA.safetensors",
+            "klein\\Klein 9B Perfect Body & Face Enhancer.safetensors",
+            "klein\\KleinBase9B_ProductImage.safetensors",
+            "klein\\Mrpopo_photorealistic_klein9b.safetensors",
+            "klein\\bfs_head_v1_flux-klein_9b_step3500_rank128.safetensors",
+            "klein\\flux-klein-tryon-comfy_fal_vton.safetensors",
+            "klein\\klein_9B_Turbo_r128.safetensors",
+            "klein\\klein_snofs_v1_3.safetensors",
+            "krea2\\Krea2-realism-V2.safetensors",
+            "krea2\\krea2-Cc-天魔-身材.safetensors",
+            "krea2\\krea2-Cc风情万种-人像.safetensors",
+            "krea2\\krea2_identity_edit_v1_2.safetensors",
+            "krea2\\krea2_identity_edit_v1_2_r128.safetensors",
+            "krea2\\krea2_realism_gokaygokay_Krea-2-Realism-LoRA.safetensors",
+            "qwen-image-2.1\\Qwen-Image-2.1-Fun-Acc-4Step.safetensors",
+            "qwen-image-2.1\\p_qwen_image_2.1_8step_v0.1.safetensors",
+            "qwen-image-edit-2511\\AnythingtoRealCharacters2511_20.safetensors",
+            "qwen-image-edit-2511\\One-click breast enhancement_p.safetensors",
+            "qwen-image-edit-2511\\Qwen-Edit_2509_ProductImage.safetensors",
+            "qwen-image-edit-2511\\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+            "qwen-image-edit-2511\\Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors",
+            "qwen-image-edit-2511\\Qwen-edit-2511_LightningRemap_Alpha0.2.safetensors",
+            "qwen-image-edit-2511\\URP_20.safetensors",
+            "qwen-image-edit-2511\\clothes_tryon_qwen-edit-lora.safetensors",
+            "qwen-image-edit-2511\\clothes_tryon_qwen-edit-lora_civitai_1940532.safetensors",
+            "qwen-image-edit-2511\\cospose_20.safetensors",
+            "qwen-image-edit-2511\\extract-outfit_v3.safetensors",
+            "qwen-image-edit-2511\\ootd_colour-19-3600.safetensors",
+            "qwen-image-edit-2511\\qcartoonv1E4B887E789A9E7.BGQj.safetensors",
+            "qwen-image-edit-2511\\qwen-edit-skin_1.1_000002750.safetensors",
+            "qwen-image-edit-2511\\qwen-image-edit-2511-multiple-angles-lora.safetensors",
+            "qwen-image-edit-2511\\qwen_2511_lightning_8step_bf16.safetensors",
+            "qwen-image-edit-2511\\qwen_image_edit_2511_upscale.safetensors",
+            "wan2.1\\Wan2.1 - Fun-14B-InP-HPS2.1.safetensors",
+            "wan2.1\\Wan21_CausVid_bidirect2_T2V_1_3B_lora_rank32.safetensors",
+            "wan2.1\\lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
+            "wan2.1\\lightx2v_I2V_14B_480p_cfg_step_distill_rank32_bf16.safetensors",
+            "wan2.1\\lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank128_bf16.safetensors",
+            "wan2.1\\lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank256_bf16.safetensors",
+            "wan2.1\\lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank32_bf16.safetensors",
+            "wan2.1\\lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16.safetensors",
+            "wan2.1\\wan2.1_SCAIL_2_DPO_lora_bf16.safetensors",
+            "wan2.1\\wan2.1_SCAIL_2_relight_lora_bf16.safetensors",
+            "wan2.1\\wan2.1_i2v_lora_rank64_lightx2v_4step.safetensors"
+          ]
+        ],
+        "strength_model": [
+          "FLOAT",
+          {
+            "min": -100,
+            "max": 100,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "lora_name",
+        "strength_model"
+      ]
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_node": false
+  },
+  "VAEDecode": {
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {}
+        ],
+        "vae": [
+          "VAE",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "samples",
+        "vae"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_node": false
+  },
+  "VAEDecodeAudio": {
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {}
+        ],
+        "vae": [
+          "VAE",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "samples",
+        "vae"
+      ]
+    },
+    "output": [
+      "AUDIO"
+    ],
+    "output_node": false
+  },
+  "UNETLoader": {
+    "input": {
+      "required": {
+        "unet_name": [
+          [
+            "Cobijada_H3_Hybrid_Uncensored_pruned_hybrid_int8_convrot_pruned.safetensors",
+            "Flux2-Klein-9B-True-V3-int8mixedrow.safetensors",
+            "Krea2-turbo-Ink_Jade-AIO-V1-fp8.safetensors",
+            "krea2_turbo_int8_convrot.safetensors",
+            "minimax_h3_fl2va_int8_convrot.safetensors",
+            "minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
+            "minimax_h3_ref2va_int8_convrot.safetensors",
+            "minimax_music3_dit_int8_convrot.safetensors",
+            "qwen_image_2.1_bf16.safetensors"
+          ]
+        ],
+        "weight_dtype": [
+          [
+            "__fixture_choice__"
+          ],
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "unet_name",
+        "weight_dtype"
+      ]
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_node": false
+  },
+  "ConditioningZeroOut": {
+    "input": {
+      "required": {
+        "conditioning": [
+          "CONDITIONING"
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "conditioning"
+      ]
+    },
+    "output": [
+      "CONDITIONING"
+    ],
+    "output_node": false
+  },
+  "VAELoader": {
+    "input": {
+      "required": {
+        "vae_name": [
+          [
+            "Wan2_2_VAE_bf16.safetensors",
+            "ae.safetensors",
+            "ema_vae_fp16.safetensors",
+            "flux1_vae_bf16.safetensors",
+            "flux2-vae.safetensors",
+            "full_encoder_small_decoder.safetensors",
+            "minimax_h3_audio_vae_fp32.safetensors",
+            "minimax_h3_video_vae_fp16.safetensors",
+            "minimax_h3_video_vae_int8_convrot.safetensors",
+            "minimax_music3_dav.safetensors",
+            "qwen_image_2.1_vae_bf16.safetensors",
+            "qwen_image_vae.safetensors",
+            "wan_2.1_vae.safetensors",
+            "pixel_space"
+          ]
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "vae_name"
+      ]
+    },
+    "output": [
+      "VAE"
+    ],
+    "output_node": false
+  },
+  "KSamplerSelect": {
+    "input": {
+      "required": {
+        "sampler_name": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "euler",
+              "euler_cfg_pp",
+              "euler_ancestral",
+              "euler_ancestral_cfg_pp",
+              "heun",
+              "heunpp2",
+              "exp_heun_2_x0",
+              "exp_heun_2_x0_sde",
+              "dpm_2",
+              "dpm_2_ancestral",
+              "lms",
+              "dpm_fast",
+              "dpm_adaptive",
+              "dpmpp_2s_ancestral",
+              "dpmpp_2s_ancestral_cfg_pp",
+              "dpmpp_sde",
+              "dpmpp_sde_gpu",
+              "dpmpp_2m",
+              "dpmpp_2m_cfg_pp",
+              "dpmpp_2m_sde",
+              "dpmpp_2m_sde_gpu",
+              "dpmpp_2m_sde_heun",
+              "dpmpp_2m_sde_heun_gpu",
+              "dpmpp_3m_sde",
+              "dpmpp_3m_sde_gpu",
+              "ddpm",
+              "lcm",
+              "ipndm",
+              "ipndm_v",
+              "deis",
+              "cfgpp_ud10_ab",
+              "res_multistep",
+              "res_multistep_cfg_pp",
+              "res_multistep_ancestral",
+              "res_multistep_ancestral_cfg_pp",
+              "gradient_estimation",
+              "gradient_estimation_cfg_pp",
+              "er_sde",
+              "seeds_2",
+              "seeds_3",
+              "sa_solver",
+              "sa_solver_pece",
+              "ddim",
+              "uni_pc",
+              "uni_pc_bh2",
+              "legacy_rk",
+              "rk",
+              "rk_beta",
+              "deis_3m_ode",
+              "deis_2m_ode",
+              "deis_3m",
+              "deis_2m",
+              "res_6s_ode",
+              "res_5s_ode",
+              "res_3s_ode",
+              "res_2s_ode",
+              "res_3m_ode",
+              "res_2m_ode",
+              "res_6s",
+              "res_5s",
+              "res_3s",
+              "res_2s",
+              "res_3m",
+              "res_2m"
+            ]
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "sampler_name"
+      ]
+    },
+    "output": [
+      "SAMPLER"
+    ],
+    "output_node": false
+  },
+  "CreateVideo": {
+    "input": {
+      "required": {
+        "images": [
+          "IMAGE",
+          {}
+        ],
+        "fps": [
+          "FLOAT",
+          {
+            "min": 1,
+            "max": 120,
+            "step": 1
+          }
+        ]
+      },
+      "optional": {
+        "audio": [
+          "AUDIO",
+          {}
+        ],
+        "bit_depth": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "auto",
+              8,
+              10
+            ]
+          }
+        ],
+        "color_space": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "sRGB",
+              "HDR",
+              "HDR PQ"
+            ]
+          }
+        ],
+        "codec": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "none",
+              "auto",
+              "h264",
+              "av1"
+            ]
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "images",
+        "fps"
+      ],
+      "optional": [
+        "audio",
+        "bit_depth",
+        "color_space",
+        "codec"
+      ]
+    },
+    "output": [
+      "VIDEO"
+    ],
+    "output_node": false
+  },
+  "ComfySwitchNode": {
+    "input": {
+      "required": {
+        "switch": [
+          "BOOLEAN",
+          {}
+        ]
+      },
+      "optional": {
+        "on_false": [
+          "COMFY_MATCHTYPE_V3",
+          {
+            "lazy": true,
+            "template": {
+              "template_id": "switch",
+              "allowed_types": "*"
+            }
+          }
+        ],
+        "on_true": [
+          "COMFY_MATCHTYPE_V3",
+          {
+            "lazy": true,
+            "template": {
+              "template_id": "switch",
+              "allowed_types": "*"
+            }
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "switch"
+      ],
+      "optional": [
+        "on_false",
+        "on_true"
+      ]
+    },
+    "output": [
+      "COMFY_MATCHTYPE_V3"
+    ],
+    "output_node": false
+  },
+  "PrimitiveInt": {
+    "input": {
+      "required": {
+        "value": [
+          "INT",
+          {
+            "min": -9223372036854776000,
+            "max": 9223372036854776000
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "value"
+      ]
+    },
+    "output": [
+      "INT"
+    ],
+    "output_node": false
+  },
+  "BasicScheduler": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "scheduler": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "simple",
+              "sgm_uniform",
+              "karras",
+              "exponential",
+              "ddim_uniform",
+              "beta",
+              "normal",
+              "linear_quadratic",
+              "kl_optimal",
+              "bong_tangent",
+              "beta57"
+            ]
+          }
+        ],
+        "steps": [
+          "INT",
+          {
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "denoise": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 1,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "scheduler",
+        "steps",
+        "denoise"
+      ]
+    },
+    "output": [
+      "SIGMAS"
+    ],
+    "output_node": false
+  },
+  "ResolutionSelector": {
+    "input": {
+      "required": {
+        "aspect_ratio": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "1:1 (Square)",
+              "2:3 (Portrait Photo)",
+              "3:2 (Photo)",
+              "3:4 (Portrait Standard)",
+              "4:3 (Standard)",
+              "9:16 (Portrait Widescreen)",
+              "16:9 (Widescreen)",
+              "21:9 (Ultrawide)"
+            ]
+          }
+        ],
+        "megapixels": [
+          "FLOAT",
+          {
+            "min": 0.1,
+            "max": 16,
+            "step": 0.1
+          }
+        ],
+        "multiple": [
+          "INT",
+          {
+            "min": 8,
+            "max": 128,
+            "step": 4
+          }
+        ]
+      },
+      "optional": {
+        "preview": [
+          "RESOLUTION_PREVIEW",
+          {
+            "socketless": true,
+            "ratio_widget": "aspect_ratio",
+            "megapixels_widget": "megapixels",
+            "multiple_widget": "multiple"
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "aspect_ratio",
+        "megapixels",
+        "multiple"
+      ],
+      "optional": [
+        "preview"
+      ]
+    },
+    "output": [
+      "INT",
+      "INT"
+    ],
+    "output_node": false
+  },
+  "VideoTemporalCrop": {
+    "input": {
+      "required": {
+        "video": [
+          "VIDEO",
+          {}
+        ],
+        "start_frame": [
+          "INT",
+          {
+            "min": 0,
+            "max": 99999
+          }
+        ],
+        "length": [
+          "INT",
+          {
+            "min": 1,
+            "max": 99999
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "video",
+        "start_frame",
+        "length"
+      ]
+    },
+    "output": [
+      "VIDEO"
+    ],
+    "output_node": false
+  },
+  "SaveVideo": {
+    "input": {
+      "required": {
+        "video": [
+          "VIDEO",
+          {}
+        ],
+        "filename_prefix": [
+          "STRING",
+          {}
+        ],
+        "format": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "options": [
+              {
+                "key": "auto",
+                "inputs": {
+                  "required": {
+                    "codec": [
+                      "COMFY_DYNAMICCOMBO_V3",
+                      {
+                        "options": [
+                          {
+                            "key": "auto",
+                            "inputs": {
+                              "required": {}
+                            }
+                          },
+                          {
+                            "key": "h264",
+                            "inputs": {
+                              "required": {},
+                              "optional": {
+                                "encoding": [
+                                  "COMFY_DYNAMICCOMBO_V3",
+                                  {
+                                    "options": [
+                                      {
+                                        "key": "auto",
+                                        "inputs": {
+                                          "required": {}
+                                        }
+                                      },
+                                      {
+                                        "key": "re-encode",
+                                        "inputs": {
+                                          "required": {
+                                            "crf": [
+                                              "FLOAT",
+                                              {
+                                                "min": 0,
+                                                "max": 51,
+                                                "step": 1
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          },
+                          {
+                            "key": "av1",
+                            "inputs": {
+                              "required": {},
+                              "optional": {
+                                "encoding": [
+                                  "COMFY_DYNAMICCOMBO_V3",
+                                  {
+                                    "options": [
+                                      {
+                                        "key": "auto",
+                                        "inputs": {
+                                          "required": {}
+                                        }
+                                      },
+                                      {
+                                        "key": "re-encode",
+                                        "inputs": {
+                                          "required": {
+                                            "crf": [
+                                              "FLOAT",
+                                              {
+                                                "min": 0,
+                                                "max": 63,
+                                                "step": 1
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "mp4",
+                "inputs": {
+                  "required": {
+                    "codec": [
+                      "COMFY_DYNAMICCOMBO_V3",
+                      {
+                        "options": [
+                          {
+                            "key": "auto",
+                            "inputs": {
+                              "required": {}
+                            }
+                          },
+                          {
+                            "key": "h264",
+                            "inputs": {
+                              "required": {},
+                              "optional": {
+                                "encoding": [
+                                  "COMFY_DYNAMICCOMBO_V3",
+                                  {
+                                    "options": [
+                                      {
+                                        "key": "auto",
+                                        "inputs": {
+                                          "required": {}
+                                        }
+                                      },
+                                      {
+                                        "key": "re-encode",
+                                        "inputs": {
+                                          "required": {
+                                            "crf": [
+                                              "FLOAT",
+                                              {
+                                                "min": 0,
+                                                "max": 51,
+                                                "step": 1
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          },
+                          {
+                            "key": "av1",
+                            "inputs": {
+                              "required": {},
+                              "optional": {
+                                "encoding": [
+                                  "COMFY_DYNAMICCOMBO_V3",
+                                  {
+                                    "options": [
+                                      {
+                                        "key": "auto",
+                                        "inputs": {
+                                          "required": {}
+                                        }
+                                      },
+                                      {
+                                        "key": "re-encode",
+                                        "inputs": {
+                                          "required": {
+                                            "crf": [
+                                              "FLOAT",
+                                              {
+                                                "min": 0,
+                                                "max": 63,
+                                                "step": 1
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "mkv",
+                "inputs": {
+                  "required": {
+                    "codec": [
+                      "COMFY_DYNAMICCOMBO_V3",
+                      {
+                        "options": [
+                          {
+                            "key": "auto",
+                            "inputs": {
+                              "required": {}
+                            }
+                          },
+                          {
+                            "key": "h264",
+                            "inputs": {
+                              "required": {},
+                              "optional": {
+                                "encoding": [
+                                  "COMFY_DYNAMICCOMBO_V3",
+                                  {
+                                    "options": [
+                                      {
+                                        "key": "auto",
+                                        "inputs": {
+                                          "required": {}
+                                        }
+                                      },
+                                      {
+                                        "key": "re-encode",
+                                        "inputs": {
+                                          "required": {
+                                            "crf": [
+                                              "FLOAT",
+                                              {
+                                                "min": 0,
+                                                "max": 51,
+                                                "step": 1
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          },
+                          {
+                            "key": "av1",
+                            "inputs": {
+                              "required": {},
+                              "optional": {
+                                "encoding": [
+                                  "COMFY_DYNAMICCOMBO_V3",
+                                  {
+                                    "options": [
+                                      {
+                                        "key": "auto",
+                                        "inputs": {
+                                          "required": {}
+                                        }
+                                      },
+                                      {
+                                        "key": "re-encode",
+                                        "inputs": {
+                                          "required": {
+                                            "crf": [
+                                              "FLOAT",
+                                              {
+                                                "min": 0,
+                                                "max": 63,
+                                                "step": 1
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "webm",
+                "inputs": {
+                  "required": {
+                    "codec": [
+                      "COMFY_DYNAMICCOMBO_V3",
+                      {
+                        "options": [
+                          {
+                            "key": "auto",
+                            "inputs": {
+                              "required": {}
+                            }
+                          },
+                          {
+                            "key": "av1",
+                            "inputs": {
+                              "required": {},
+                              "optional": {
+                                "encoding": [
+                                  "COMFY_DYNAMICCOMBO_V3",
+                                  {
+                                    "options": [
+                                      {
+                                        "key": "auto",
+                                        "inputs": {
+                                          "required": {}
+                                        }
+                                      },
+                                      {
+                                        "key": "re-encode",
+                                        "inputs": {
+                                          "required": {
+                                            "crf": [
+                                              "FLOAT",
+                                              {
+                                                "min": 0,
+                                                "max": 63,
+                                                "step": 1
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "optional": {
+        "codec": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "hidden": true,
+            "options": [
+              {
+                "key": "auto",
+                "inputs": {
+                  "required": {}
+                }
+              },
+              {
+                "key": "h264",
+                "inputs": {
+                  "required": {},
+                  "optional": {
+                    "encoding": [
+                      "COMFY_DYNAMICCOMBO_V3",
+                      {
+                        "options": [
+                          {
+                            "key": "auto",
+                            "inputs": {
+                              "required": {}
+                            }
+                          },
+                          {
+                            "key": "re-encode",
+                            "inputs": {
+                              "required": {
+                                "crf": [
+                                  "FLOAT",
+                                  {
+                                    "min": 0,
+                                    "max": 51,
+                                    "step": 1
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "av1",
+                "inputs": {
+                  "required": {},
+                  "optional": {
+                    "encoding": [
+                      "COMFY_DYNAMICCOMBO_V3",
+                      {
+                        "options": [
+                          {
+                            "key": "auto",
+                            "inputs": {
+                              "required": {}
+                            }
+                          },
+                          {
+                            "key": "re-encode",
+                            "inputs": {
+                              "required": {
+                                "crf": [
+                                  "FLOAT",
+                                  {
+                                    "min": 0,
+                                    "max": 63,
+                                    "step": 1
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "hidden": {
+        "prompt": [
+          "PROMPT"
+        ],
+        "extra_pnginfo": [
+          "EXTRA_PNGINFO"
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "video",
+        "filename_prefix",
+        "format"
+      ],
+      "optional": [
+        "codec"
+      ],
+      "hidden": [
+        "prompt",
+        "extra_pnginfo"
+      ]
+    },
+    "output": [
+      "VIDEO"
+    ],
+    "output_node": true
+  },
+  "GetVideoComponents": {
+    "input": {
+      "required": {
+        "video": [
+          "VIDEO",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "video"
+      ]
+    },
+    "output": [
+      "IMAGE",
+      "AUDIO",
+      "FLOAT",
+      "COMBO",
+      "COMBO"
+    ],
+    "output_node": false
+  },
+  "PrimitiveBoolean": {
+    "input": {
+      "required": {
+        "value": [
+          "BOOLEAN",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "value"
+      ]
+    },
+    "output": [
+      "BOOLEAN"
+    ],
+    "output_node": false
+  },
+  "PrimitiveFloat": {
+    "input": {
+      "required": {
+        "value": [
+          "FLOAT",
+          {
+            "min": -9223372036854776000,
+            "max": 9223372036854776000,
+            "step": 0.1
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "value"
+      ]
+    },
+    "output": [
+      "FLOAT"
+    ],
+    "output_node": false
+  },
+  "easy float": {
+    "input": {
+      "required": {
+        "value": [
+          "FLOAT",
+          {
+            "step": 0.01,
+            "min": -18446744073709552000,
+            "max": 18446744073709552000
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "value"
+      ]
+    },
+    "output": [
+      "FLOAT"
+    ],
+    "output_node": false
+  },
+  "LoadVideo": {
+    "input": {
+      "required": {
+        "file": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "#甜点舞_#甜妹.mp4",
+              "20260605_120230_Wanimate_00001-audio.mp4",
+              "20260605_153112_Wanimate_00001-audio.mp4",
+              "20260605_190402_Wanimate_00001-audio.mp4",
+              "20260605_203445_fps_00001-audio.mp4",
+              "20260606_091503_Wanimate_00001-audio.mp4",
+              "20260606_104042_fps_00001-audio.mp4",
+              "20260607_091530_Wanimate_00001-audio.mp4",
+              "20260607_131326_Wanimate_00001-audio.mp4",
+              "20260607_135759_Wanimate_00001-audio.mp4",
+              "20260607_143902_fps_00001-audio.mp4",
+              "20260609_231634_Wanimate_00001-audio.mp4",
+              "20260610_144113_Wanimate_00001-audio.mp4",
+              "20260610_151228_fps_00001-audio.mp4",
+              "20260611_121253_fps_00001.mp4",
+              "20260611_152137_fps_00001-audio.mp4",
+              "20260611_183504_fps_00001-audio.mp4",
+              "20260611_203629_fps_00001-audio.mp4",
+              "20260614_133642_Wanimate_00001-audio.mp4",
+              "20260614_140831_fps_00001-audio.mp4",
+              "20260614_172737_Wanimate_00001-audio.mp4",
+              "20260614_174851_fps_00001-audio.mp4",
+              "20260614_210111_Wanimate_00001-audio.mp4",
+              "20260614_211653_fps_00001-audio.mp4",
+              "20260615_100641_Wanimate_00001-audio.mp4",
+              "20260615_140706_Wanimate_00001-audio.mp4",
+              "20260615_221246_Wanimate_00001-audio.mp4",
+              "20260616_114246_Wanimate_00001-audio.mp4",
+              "20260616_154324_Wanimate_00001-audio.mp4",
+              "20260617_182633_Wanimate_00001-audio.mp4",
+              "20260619_160204_Wanimate_00001-audio.mp4",
+              "20260620_092938_Wanimate_00001-audio.mp4",
+              "20260620_094715_Wanimate_00001-audio.mp4",
+              "20260620_125051_Wanimate_00001-audio.mp4",
+              "20260620_150808_Wanimate_00001-audio.mp4",
+              "20260620_192324_Wanimate_00001-audio.mp4",
+              "20260621_091031_Wanimate_00001-audio.mp4",
+              "20260622_165753_Wanimate_00001-audio.mp4",
+              "20260622_202555_Wanimate_00001-audio.mp4",
+              "20260623_102619_Wanimate_00001-audio.mp4",
+              "20260623_113947_Wanimate_00001-audio.mp4",
+              "20260623_135800_Wanimate_00001-audio.mp4",
+              "20260623_211259_Wanimate_00001-audio.mp4",
+              "20260623_213814_upscale_00001-audio.mp4",
+              "20260624_100720_Wanimate_00001-audio.mp4",
+              "20260624_174203_Wanimate_00001-audio.mp4",
+              "20260625_094811_Wanimate_00001-audio.mp4",
+              "20260625_130758_Wan2.2_00001-audio.mp4",
+              "20260626_091120_Wanimate_00001-audio.mp4",
+              "20260626_113133_Wan2.2_00001-audio.mp4",
+              "20260627_114511_Wanimate_00001-audio.mp4",
+              "20260627_131422_Wanimate_00001-audio.mp4",
+              "20260628_093602_Wanimate_00001-audio.mp4",
+              "20260628_110124_Wanimate_00001-audio.mp4",
+              "20260628_114223_upscale_00001-audio.mp4",
+              "20260710_180053_Wan2.2_00001-audio.mp4",
+              "@张先生_1m49301bnwj28_#猫咪_#猫咪跳舞表情包_#狸花猫可爱视频_听说抖音人都很喜欢猫咪很火🐱！跳舞表情包.mp4",
+              "ALPHADRIVEONE_1lv8k013fupo3_#ald1_#贺鑫隆_#周安信_#怪奇物语舞蹈_⚡︎👽⚡︎ _ALD1.mp4",
+              "BerniniDirector_4steps_00003-audio.mp4",
+              "Cici牛🐮_1m3gh3954rctm_#摇一摇_你列表第三喜欢.mp4",
+              "Ciiat_1m36hlnj0jvfm_#我真的特别爱你_#手势舞_为什么推我.mp4",
+              "Keke🥤_1m5wxks1ouovl_#猫星族未来的明星_#小猫出道_#喵界大明星_#猫咪舞台风_#喵星人_忘不掉的它！它！.mp4",
+              "L佳诺__1lzpgf74b5jp7_#香菜摇5_我去了    怎么还有个库存.mp4",
+              "S1_tail22.mp4",
+              "S1_tail22_v4.mp4",
+              "S1_tail22_v4b.mp4",
+              "S1_tail22_v5.mp4",
+              "S1_tail22_v6.mp4",
+              "S1_tail22_v7.mp4",
+              "S1_tail22_v7b.mp4",
+              "S2_tail22.mp4",
+              "S2_tail22_v4.mp4",
+              "S2_tail22_v4b.mp4",
+              "S2_tail22_v5.mp4",
+              "S2_tail22_v6.mp4",
+              "S2_tail22_v7.mp4",
+              "S2_tail22_v7b.mp4",
+              "S3_tail22.mp4",
+              "S3_tail22_v4.mp4",
+              "S3_tail22_v4b.mp4",
+              "S3_tail22_v5.mp4",
+              "S3_tail22_v6.mp4",
+              "S3_tail22_v7.mp4",
+              "S3_tail22_v7b.mp4",
+              "Wan21_SCAIL2_00014.mp4",
+              "Wan21_SCAIL2_00021-audio.mp4",
+              "Wan21_SCAIL2_00029-audio.mp4",
+              "Wan21_SCAIL2_00032-audio.mp4",
+              "aiwa_1m5q0szpu7t8v_#猫咪反应_#日常猫咪_#aiwa睡不着_怪不得回来那么饿.mp4",
+              "cat_3seg_clean_5s.mp4",
+              "cat_3seg_clean_5s_1280.mp4",
+              "comfy_00089-audio.mp4",
+              "comfy_00098-audio.mp4",
+              "comfy_00101-audio.mp4",
+              "comfy_00102-audio.mp4",
+              "comfy_00104-audio.mp4",
+              "comfy_00112-audio.mp4",
+              "comfy_00113-audio.mp4",
+              "comfy_00116-audio.mp4",
+              "comfy_00119-audio.mp4",
+              "comfy_00122-audio.mp4",
+              "comfy_00125-audio.mp4",
+              "comfy_00129-audio.mp4",
+              "comfy_00133-audio.mp4",
+              "drive_cici_v1_fullmask.mp4",
+              "drive_dandan_v1_fullmask.mp4",
+              "drive_diandian_v1_fullmask.mp4",
+              "drive_ningning_1m6vu78c8p19q.mp4",
+              "drive_ningning_h3.mp4",
+              "drive_peppa2_v1_fullmask_5s.mp4",
+              "drive_peppa2_v1_fullmask_frontal.mp4",
+              "drive_peppa2_v1_fullmask_full.mp4",
+              "drive_peppa2_v1_t2v_5s.mp4",
+              "drive_peppa2_v1_twophase_5s.mp4",
+              "drive_type33_red_kadian_v1_30.mp4",
+              "drive_type33_red_kadian_v1_720_30.mp4",
+              "drive_type33_red_tianmengmeng_v1_720_30.mp4",
+              "drive_xiaochen_jumpstyle.mp4",
+              "drive_xiaochen_v1_fullmask.mp4",
+              "drive_xiaoxijiang_v1_fullmask.mp4",
+              "drive_yufanfan_v1_fullmask.mp4",
+              "fiverr_dual5_v2_A_tail22.mp4",
+              "fiverr_dual5_v2_B_tail22.mp4",
+              "fiverr_intro_S1v10_tail22.mp4",
+              "fiverr_intro_S1v8_tail22.mp4",
+              "fiverr_intro_S1v9_tail22.mp4",
+              "fiverr_intro_S2v10_tail22.mp4",
+              "fiverr_intro_S2v8_tail22.mp4",
+              "fiverr_intro_S2v9_tail22.mp4",
+              "fiverr_intro_S3v10_tail22.mp4",
+              "fiverr_intro_S3v8_tail22.mp4",
+              "fiverr_intro_S3v9_tail22.mp4",
+              "fiverr_intro_v4_1mp_S1_tail22.mp4",
+              "fiverr_intro_v4_1mp_S2_tail22.mp4",
+              "fiverr_intro_v4_1mp_S3_tail22.mp4",
+              "fiverr_intro_v4_S1_tail22.mp4",
+              "fiverr_intro_v4_S2_tail22.mp4",
+              "fiverr_intro_v4_S3_tail22.mp4",
+              "fiverr_intro_v4_nolora_S1_tail22.mp4",
+              "fiverr_intro_v7_S1_tail22.mp4",
+              "fiverr_v3_probe2_A_tail22.mp4",
+              "fiverr_v3_probe3_A_tail22.mp4",
+              "fiverr_v3_probe3_B_tail22.mp4",
+              "gigcover_s1_segA_v3.mp4",
+              "guofeng_5s_768p_v17_00001_.mp4",
+              "h3_i2v_gufeng_white_15s_00001_.mp4",
+              "happy;_1m3v16adt8m2h_#旗袍摇_#性感旗袍_#紫色穿搭太有韵味了_#让人着迷的东方之美_#浅跳一下_.mp4",
+              "orbit360_synth_ref_10s.mp4",
+              "phone_case_ad_reference.mp4",
+              "ref_dance.mp4",
+              "refvideo_3764000310587163118.mp4",
+              "refvideo_3764_cut15s.mp4",
+              "relightvid_type32_short.mp4",
+              "saas_1m2bqs4407ibf_#3蓝摇_#卡点舞_#浅跳一下_你也同样为我着迷吧👻.mp4",
+              "scail2_angel_pose_seg01.mp4",
+              "scail2_angel_pose_seg02.mp4",
+              "scail2_angel_pose_seg03.mp4",
+              "scail2_angel_pose_seg04.mp4",
+              "scail2_angel_pose_seg05.mp4",
+              "scail2_angel_pose_seg06.mp4",
+              "scail2_drive_angel_baby.mp4",
+              "scail2_drive_jiatong_koi.mp4",
+              "scail2_drive_meishijiang_wcxnm.mp4",
+              "scail2_drive_nailengeniu_sport.mp4",
+              "scail2_drive_peppa.mp4",
+              "scail2_drive_peppa2.mp4",
+              "scail2_drive_peppa2_relight.mp4",
+              "scail2_drive_type33_red_kadian.mp4",
+              "scail2_drive_wuzhuti_latest.mp4",
+              "scail2_drive_yukuaiyao.mp4",
+              "scail2_jiatong_pose_seg01.mp4",
+              "scail2_jiatong_pose_seg02.mp4",
+              "scail2_jiatong_pose_seg03.mp4",
+              "scail2_jiatong_pose_seg04.mp4",
+              "scail2_meishi_pose_seg01.mp4",
+              "scail2_meishi_pose_seg02.mp4",
+              "scail2_meishi_pose_seg03.mp4",
+              "scail2_meishi_pose_seg04.mp4",
+              "scail2_nailiu_pose_seg01.mp4",
+              "scail2_nailiu_pose_seg02.mp4",
+              "scail2_nailiu_pose_seg03.mp4",
+              "scail2_peppa2_pose_seg01.mp4",
+              "scail2_peppa2_pose_seg02.mp4",
+              "scail2_peppa2_pose_seg03.mp4",
+              "scail2_peppa2_pose_seg04.mp4",
+              "scail2_peppa2r_pose_seg01.mp4",
+              "scail2_peppa2r_pose_seg02.mp4",
+              "scail2_peppa2r_pose_seg03.mp4",
+              "scail2_peppa2r_pose_seg04.mp4",
+              "scail2_peppa_pose_seg01.mp4",
+              "scail2_peppa_pose_seg02.mp4",
+              "scail2_peppa_pose_seg03.mp4",
+              "scail2_peppa_pose_seg04.mp4",
+              "scail2_peppa_pose_seg05.mp4",
+              "scail2_pose_seg01.mp4",
+              "scail2_pose_seg02.mp4",
+              "scail2_pose_seg03.mp4",
+              "scail2_pose_seg04.mp4",
+              "scail2_pose_seg05.mp4",
+              "scail2_post_src_i2v1.mp4",
+              "scail2_previous_frames.mp4",
+              "scail2_type33_red_kadian_pose_seg01.mp4",
+              "scail2_type33_red_kadian_pose_seg02.mp4",
+              "scail2_wuzhuti_pose_seg01.mp4",
+              "scail2_wuzhuti_pose_seg02.mp4",
+              "seg_ningning_1.mp4",
+              "seg_ningning_2.mp4",
+              "spatial_orbit_ref_10s.mp4",
+              "sqr_trans_20260720_211545_500_seg1.mp4",
+              "sqr_trans_20260720_211545_500_seg2.mp4",
+              "sqr_trans_20260720_211545_500_seg3.mp4",
+              "sqr_trans_20260720_211545_500_seg4.mp4",
+              "test_tail22_sel.mp4",
+              "test_tail22_sseof.mp4",
+              "test_tail24.mp4",
+              "tiangong_20step_720.mp4",
+              "tiangong_576_720.mp4",
+              "trialA_colormatch_src.mp4",
+              "trialB_unilumos_antighost_bg.mp4",
+              "trialB_unilumos_antighost_src.mp4",
+              "unilumos_frontfill_motionfix_bg.mp4",
+              "unilumos_frontfill_motionfix_src.mp4",
+              "unilumos_frontfill_short_bg.mp4",
+              "unilumos_frontfill_short_src.mp4",
+              "upscale_00001-audio.mp4",
+              "user_spatial_orbit_ref.mp4",
+              "user_spatial_orbit_ref_10s_960.mp4",
+              "uu_1m3chdzetzakg_#后裔摇_#抖音热门舞蹈_.mp4",
+              "vE_s0.mp4",
+              "xrep_reference_video.mp4",
+              "一凡__1lq2p538xcyai_#怪奇物语_#怪奇物语舞蹈挑战_#双人舞_#不知道反正我的舞姿很曼妙_#抖音热门舞蹈计划_真.mp4",
+              "一可。_1m577lgxifuua_#抖音创意玩法大赛_#特效拍摄_.mp4",
+              "一琪_1m362vouzeciz__不知道 反正我的身材很曼妙御姐身材运镜.mp4",
+              "主理咪🐈_1m4adgsoddof9__小咪跳舞.mp4",
+              "亿梦妍_1m36golcr3bze_#甜美女孩_#辣妹穿搭_#小性感_#好身材好气质_#夏季_.mp4",
+              "再吃一口_1m1n2vms7ccc4_#嘉桐摇_如果20号外卖柜里全是鲜花和蛋糕的话 我的拼好饭该放哪里.mp4",
+              "再吃一口_1m21oggu51iua_#yu季摇_不好意思呀换了一个音频 这个音频好可爱 解决我想拍又不想拍的问题.mp4",
+              "半分甜_1m5pgf8imvwwy_#御姐ootd穿搭_#我懵懵的_我的话轻浮，但我的心永远真诚.mp4",
+              "发财滢宝_1lyryn1uq536x__谁要我的语音.mp4",
+              "吨吨喵_1lzhjj8tj9bnt_#猫咪的迷惑行为_#小猫跳舞_#鲨鱼猫_#吨吨喵_吨吨要过周末了.mp4",
+              "咩咩不咩咩_1m2ys1odtf6gp_#嘉桐摇_真和你谈了又嫌我胖.mp4",
+              "咻咻崽汁_1loqr3f47xiep_#萌宠_#猫猫_#ai_一批小猫将开始跳舞 AI.mp4",
+              "喵喵要听话🐱_1m5pk58f2oxoa_#这样的身材有人喜欢吗_#微胖yyds_#秀身材穿搭_#这样的身材你们打几分_性感小.mp4",
+              "团团_1m65be6hagi9i_#丰满型身材的活力穿搭_#165身高微胖女生_#夏日穿搭白色连衣裙_#纯欲穿搭_#丰满身材穿搭.mp4",
+              "壹加壹_1m462vtlo1zu9_#宋雨琦进行曲_#hotissue_能不能再爱我一遍.mp4",
+              "复仇摇.mp4",
+              "奶了个牛～_1m14irc0etqi9_#纯欲风穿搭_#辣妹粉色连衣裙_.mp4",
+              "奶了个牛～_1m7tig5xdpj8x_#运动风小短裙_.mp4",
+              "妮妮Chen__1m58z1le4xdyd_#御姐_#建模身材_.mp4",
+              "婷_1m56b8qvkm3s5_#萌得没边了_这骚猫.mp4",
+              "孔雪儿_1lv5m5wxbpe97_#星动营业中_#星动音乐电台_#复仇摇_复仇💥.mp4",
+              "安波儿_1m4lla3p4n5wo_#会举重的小猫_#宠物搞笑瞬间_#猫咪日常_#猫咪的迷惑行为_.mp4",
+              "小凛oO_1m2q7nghfti1f_#慢摇_#体操服_每天心中一股无名火以此来维持体温.mp4",
+              "小凛oO_1m3fh11e38vir_#后裔摇_#制服穿搭_@小琳Oᴗoಣ 视奸完毕，没发现什么异常，但是感觉你有点受欢迎了，你.mp4",
+              "小凛oO_1m3j5mvonz4yb_#纯欲风旗袍_#鸭子摇_@小琳Oᴗoಣ 像我这么冲动的人 就应该被人好好打一笔钱冷静一下.mp4",
+              "小凛oO_1m4s33te16tix_#萌系女仆_#梨形身材_@小琳Oᴗoಣ 我号被盗了 等会问你恋不恋爱你同意就是了.mp4",
+              "小天使宝宝💃_1m4n24qqvpt9y_#鱼块摇_.mp4",
+              "小曲同学_1lxoovce6o52j_#辣妹_#小黑裙_一天有点劲全使这上了.mp4",
+              "小猫猪猪_1m60cto77negq_#温柔风_一格格.mp4",
+              "小猫饼ouo_1m3xtp9mdjmeb_#性感迷人_#夏天和小个子是绝配_#甜美_.mp4",
+              "小白兔奶糖_1m222oflykfeb_#扭一扭_#皮裙_#感觉至上_#真实生活分享计划_祝所有人的家人身体健康完美身材.mp4",
+              "小羊肖恩_1m4h861w3n5dl_#内马尔胜利之舞_#卡点舞_又是一年世界杯.mp4",
+              "小美_1m0p74xzolozd_#真实生活分享计划_#卡点舞蹈练习_#高尔夫舞蹈_高尔夫舞上瘾.mp4",
+              "小雨ovo_1m1cylrs1ah2z_#御姐_#极品身材_.mp4",
+              "小颐🪷_1m14w63vv8l33_#慢摇_别想了 是我.mp4",
+              "尹小露娜_1m43i83zf227z_#瑜伽服穿出好身材_#抖音舞蹈挑战_.mp4",
+              "弭金_1lrgthr0afvnd_#怪奇物语舞蹈挑战_😎.mp4",
+              "我是大迪_1m3jjadxcn545_#世界杯_#巴西_#内马尔胜利之舞_#内马尔_#足球女孩_世界杯倒计时🇧🇷内马尔胜利之.mp4",
+              "我还有猫要养_1m2uwomloc49x_#女孩_#手势舞_#温柔欧尼_偶尔淑女.mp4",
+              "抖音2026527-365305.mp4",
+              "抖音2026528-189090.mp4",
+              "无限猴子Lyon_1m75fnfjcdtcq_#最强的猫咪_#帅就完事了_#运镜_田园五虎，小区恶霸！.mp4",
+              "无限猴子Lyon兰老师_1m75fnfjcdtcq_#最强的猫咪_#帅就完事了_#运镜_田园五虎，小区恶霸！.mp4",
+              "暴躁琴妹^_1m6m76h40d60w_#六点一摇_#大天蓬dj_#旗袍yyds_看着我的眼睛 我不信你不动情.mp4",
+              "曼波漫剪_1lxv4ihudr5np_#哈基米_#怪奇物语舞蹈_#骚猫_耄儿神圣的舞蹈 耄耋.mp4",
+              "柔柔的呀_1m1pwgb7hr8hl__.mp4",
+              "桃桃oni_1m63rck7ctt5w_#夏天的风手势舞_好久不见 我猜你应该想我了.mp4",
+              "橘柚甜心_1m20oxingaqd7_#瑜伽健身服穿搭_#运动穿搭_#穿搭分享_#ootd穿搭_#瑜伽服_没有文案 就是最好的文.mp4",
+              "橘气治愈_1m3mr7p2ofj37_#胖橘猫搞笑_#橘猫_#节奏猫咪_#也太可爱了吧_#治愈系动画_这只橘猫跳舞太魔性了！15.mp4",
+              "没事酱_1m3obxhumn0ft__呦呦呦.mp4",
+              "淡然_1m5bf6xpbn2w5_#猫咪表现力_.mp4",
+              "灿宝✨_1m2jiemup19iz_#凯东摇_#浅跳一下_#小妈_谁懂这种感觉.mp4",
+              "灿宝✨_1m5nsq4xdlse1_#宋雨琦进行曲_#甜妹_#浅跳一下_能不能再爱我一遍.mp4",
+              "爱上Mia_1m1jpr3vkue9l__.mp4",
+              "猪猪3_1m5d77bxgteba__再跳一次.mp4",
+              "猫三狗四_1m5x3x3ewrg83_#哈基米_#哈基米哈基米_哈基咪 哈基米.mp4",
+              "猫姨_1m2uwt0ht86i1_#崩坏星穹铁道_摇一摇.mp4",
+              "疯子_1m3zr28ru95rc__.mp4",
+              "疯狂星cheese_1m4jocgsrj6of_#卡点_早起好困.mp4",
+              "百事小仙_1m2w4bdncdbi1_#国宝机甲归位_#内向社恐腼腆文静小女生_刚下机 活动一下筋骨.mp4",
+              "矮脚女王喵_1m5mgvlj7opxv__.mp4",
+              "禾苗专营店-娱悦生活_1m74f6qqbi31e__顶胯舞.mp4",
+              "竹野野_1m4lwn43vuj6r__.mp4",
+              "索_1m2gvyfc3gj1t_#国宝机甲归位_#果宝机甲舞蹈挑战_#抖音玩法合伙人计划_#抖舞玩法模范生_果宝机甲归位！@小索.mp4",
+              "肉肉米_1m2r77ddlwz1h_#sakuya进行曲_#手势舞_#多巴胺_#韩系_咕羊伊 汪～.mp4",
+              "臭叮叮啊_1m4d07rc06dlx_#猫咪验车_#懂车的猫_#猫咪出道练习生_#猫咪的迷惑行为_你一句ai就否定了孩子的所有努.mp4",
+              "舒星星_1m42bpoj0z5a8__.mp4",
+              "芫伯伯_1m2vbpyo1huk1_#手势舞_#甜妹_#短发_我真的特别爱你🙈.mp4",
+              "苏满满🌸_1lxyxicgablta_#古典舞_#鸳鸯戏_找亮点.mp4",
+              "苗苗_G🖤_1m3o52ayg8055_#我的职业服_拜拜坐.mp4",
+              "蛋挞小屁孩_1m3vmy24opvx6_#殷紫萍_嘻嘻 看我怎么揍你队友的.mp4",
+              "褚美慧holly_1m1uj7bd3ausm_#白羊摇_长达18秒的爽摇.mp4",
+              "赛博刀鱼🎣_1m32kp4jhygkx__我不相信 你两眼空空.mp4",
+              "辣椒虾_1m634smdxqnj9__哇.mp4",
+              "陈笑笑_1m1rh6nsrwkyb_#520被爱看见_H I !.mp4",
+              "陶姨姨_1m1njza8wu375_#遮肉显瘦穿搭_#斜肩上衣_#显瘦穿搭_遮肉显瘦T恤.mp4",
+              "青颜一梦_1m3ygvgyiu5p7_#蕾塞_#发光呼啦圈_.mp4",
+              "鱼饭饭_1m2n74eea7ldd__哒哒.mp4",
+              "鱼饭饭_1m2r05dexx3i2__摇一摇.mp4",
+              "鱼饭饭_1m5asbi1dirax_#紧身连衣裙_#嘉桐摇_你说你为什么喜欢她而不喜欢他.mp4",
+              "鱼鱼酒_1lypf8d4umzja_#谁能拒绝甜妹_#手势舞_真的很春天了～.mp4",
+              "鱼鱼酒_1m5ba3wjdzvyh_#嘉桐摇_简单摇一下.mp4",
+              "麦麦脆汁鸡Mai_1m69m400kyju9_#喵星人舞团_#宗主_#猫咪_#阿比西尼亚猫_#不齐舞团_《五猫共舞》@Jim @.mp4",
+              "ꐚꉜ一ꌅꃓꌺ 杨付发_1m32gt93kpbiz_#舞蹈_#目瑙纵歌_#目瑙纵歌节_#民族舞蹈舞出民族特色_#零基础学舞蹈_这一.mp4"
+            ]
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "file"
+      ]
+    },
+    "output": [
+      "VIDEO"
+    ],
+    "output_node": false
+  },
+  "ColorTransfer": {
+    "input": {
+      "required": {
+        "image_target": [
+          "IMAGE",
+          {}
+        ],
+        "image_ref": [
+          "IMAGE",
+          {}
+        ],
+        "method": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "reinhard_lab",
+              "mkl_lab",
+              "histogram"
+            ]
+          }
+        ],
+        "source_stats": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "options": [
+              {
+                "key": "per_frame",
+                "inputs": {
+                  "required": {}
+                }
+              },
+              {
+                "key": "uniform",
+                "inputs": {
+                  "required": {}
+                }
+              },
+              {
+                "key": "target_frame",
+                "inputs": {
+                  "required": {
+                    "target_index": [
+                      "INT",
+                      {
+                        "min": 0,
+                        "max": 10000
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "strength": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 10,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "image_target",
+        "image_ref",
+        "method",
+        "source_stats",
+        "strength"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_node": false
+  },
+  "MiniMaxH3ReferenceToVideo": {
+    "input": {
+      "required": {
+        "clip": [
+          "CLIP",
+          {}
+        ],
+        "prompt": [
+          "STRING",
+          {}
+        ],
+        "width": [
+          "INT",
+          {
+            "min": 32,
+            "max": 16384,
+            "step": 32
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "min": 32,
+            "max": 16384,
+            "step": 32
+          }
+        ],
+        "length": [
+          "INT",
+          {
+            "min": 5,
+            "max": 3600,
+            "step": 17
+          }
+        ],
+        "ref_image_size": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "match",
+              "max"
+            ]
+          }
+        ]
+      },
+      "optional": {
+        "vae": [
+          "VAE",
+          {}
+        ],
+        "audio_vae": [
+          "VAE",
+          {}
+        ],
+        "ref_images": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "input": {
+                "required": {
+                  "ref_image": [
+                    "IMAGE",
+                    {}
+                  ]
+                }
+              },
+              "prefix": "ref_image_",
+              "min": 0,
+              "max": 9
+            }
+          }
+        ],
+        "ref_videos": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "input": {
+                "required": {
+                  "ref_video": [
+                    "IMAGE",
+                    {}
+                  ]
+                }
+              },
+              "prefix": "ref_video_",
+              "min": 0,
+              "max": 3
+            }
+          }
+        ],
+        "ref_video_audios": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "input": {
+                "required": {
+                  "ref_video_audio": [
+                    "AUDIO",
+                    {}
+                  ]
+                }
+              },
+              "prefix": "ref_video_audio_",
+              "min": 0,
+              "max": 3
+            }
+          }
+        ],
+        "ref_audios": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "input": {
+                "required": {
+                  "ref_audio": [
+                    "AUDIO",
+                    {}
+                  ]
+                }
+              },
+              "prefix": "ref_audio_",
+              "min": 0,
+              "max": 3
+            }
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "clip",
+        "prompt",
+        "width",
+        "height",
+        "length",
+        "ref_image_size"
+      ],
+      "optional": [
+        "vae",
+        "audio_vae",
+        "ref_images",
+        "ref_videos",
+        "ref_video_audios",
+        "ref_audios"
+      ]
+    },
+    "output": [
+      "CONDITIONING",
+      "LATENT"
+    ],
+    "output_node": false
+  },
+  "ImageAddNoise": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "seed": [
+          "INT",
+          {
+            "min": 0,
+            "max": 18446744073709552000
+          }
+        ],
+        "strength": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 1,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "image",
+        "seed",
+        "strength"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_node": false
+  },
+  "GetImageRangeFromBatch": {
+    "input": {
+      "required": {
+        "start_index": [
+          "INT",
+          {
+            "min": -1,
+            "max": 4096,
+            "step": 1
+          }
+        ],
+        "num_frames": [
+          "INT",
+          {
+            "min": 1,
+            "max": 4096,
+            "step": 1
+          }
+        ]
+      },
+      "optional": {
+        "images": [
+          "IMAGE"
+        ],
+        "masks": [
+          "MASK"
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "start_index",
+        "num_frames"
+      ],
+      "optional": [
+        "images",
+        "masks"
+      ]
+    },
+    "output": [
+      "IMAGE",
+      "MASK"
+    ],
+    "output_node": false
+  },
+  "MiniMaxH3AddGuide": {
+    "input": {
+      "required": {
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "latent": [
+          "LATENT",
+          {}
+        ],
+        "frame_idx": [
+          "INT",
+          {
+            "min": -9999,
+            "max": 9999
+          }
+        ]
+      },
+      "optional": {
+        "vae": [
+          "VAE",
+          {}
+        ],
+        "audio_vae": [
+          "VAE",
+          {}
+        ],
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "audio": [
+          "AUDIO",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "positive",
+        "latent",
+        "frame_idx"
+      ],
+      "optional": [
+        "vae",
+        "audio_vae",
+        "image",
+        "audio"
+      ]
+    },
+    "output": [
+      "CONDITIONING"
+    ],
+    "output_node": false
+  },
+  "VideoFrameSample": {
+    "input": {
+      "required": {
+        "video": [
+          "VIDEO",
+          {}
+        ],
+        "num_frames": [
+          "INT",
+          {
+            "min": 1,
+            "max": 9999
+          }
+        ],
+        "strategy": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "uniform",
+              "head",
+              "tail",
+              "random"
+            ]
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "min": 0,
+            "max": 18446744073709552000
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "video",
+        "num_frames",
+        "strategy",
+        "seed"
+      ]
+    },
+    "output": [
+      "VIDEO"
+    ],
+    "output_node": false
+  },
+  "ImageBatchMulti": {
+    "input": {
+      "required": {
+        "inputcount": [
+          "INT",
+          {
+            "min": 2,
+            "max": 1000,
+            "step": 1
+          }
+        ],
+        "image_1": [
+          "IMAGE"
+        ]
+      },
+      "optional": {
+        "image_2": [
+          "IMAGE"
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "inputcount",
+        "image_1"
+      ],
+      "optional": [
+        "image_2"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_node": false
+  },
+  "MiniMaxH3AudioGuideFeather": {
+    "input": {
+      "required": {
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "audio_feather_ticks": [
+          "INT",
+          {
+            "min": 0,
+            "max": 256
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "positive",
+        "audio_feather_ticks"
+      ]
+    },
+    "output": [
+      "CONDITIONING"
+    ],
+    "output_node": false
+  },
+  "SelfLiftH3Sampler": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "positive": [
+          "CONDITIONING"
+        ],
+        "negative": [
+          "CONDITIONING"
+        ],
+        "vae": [
+          "VAE",
+          {}
+        ],
+        "latent_image": [
+          "LATENT",
+          {}
+        ],
+        "sampler": [
+          "SAMPLER",
+          {}
+        ],
+        "sigmas": [
+          "SIGMAS"
+        ],
+        "seed": [
+          "INT",
+          {
+            "min": 0,
+            "max": 18446744073709552000
+          }
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 100,
+            "step": 0.1,
+            "round": 0.01
+          }
+        ],
+        "transition_step": [
+          "INT",
+          {
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "lowres_scale": [
+          "FLOAT",
+          {
+            "min": 0.25,
+            "max": 1,
+            "step": 0.05
+          }
+        ],
+        "rho": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+          }
+        ],
+        "w_min": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+          }
+        ],
+        "w_max": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+          }
+        ],
+        "upscaler_model": [
+          [
+            "__fixture_choice__"
+          ],
+          {}
+        ]
+      },
+      "optional": {
+        "highres_tiling": [
+          "BOOLEAN",
+          {
+            "label_on": "高分辨率分块：开启",
+            "label_off": "高分辨率分块：关闭"
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "positive",
+        "negative",
+        "vae",
+        "latent_image",
+        "sampler",
+        "sigmas",
+        "seed",
+        "cfg",
+        "transition_step",
+        "lowres_scale",
+        "rho",
+        "w_min",
+        "w_max",
+        "upscaler_model"
+      ],
+      "optional": [
+        "highres_tiling"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_node": false
+  },
+  "PrimitiveStringMultiline": {
+    "input": {
+      "required": {
+        "value": [
+          "STRING",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "value"
+      ]
+    },
+    "output": [
+      "STRING"
+    ],
+    "output_node": false
+  },
+  "VedaSparseAttention": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "predictor": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
+            ]
+          }
+        ],
+        "generated_sparsity": [
+          "STRING",
+          {}
+        ],
+        "reference_sparsity": [
+          "STRING",
+          {}
+        ],
+        "full_attention_layers": [
+          "STRING",
+          {}
+        ],
+        "full_attention_steps": [
+          "STRING",
+          {}
+        ],
+        "verbose": [
+          "BOOLEAN",
+          {}
+        ]
+      },
+      "hidden": {
+        "unique_id": [
+          "UNIQUE_ID"
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model",
+        "predictor",
+        "generated_sparsity",
+        "reference_sparsity",
+        "full_attention_layers",
+        "full_attention_steps",
+        "verbose"
+      ],
+      "hidden": [
+        "unique_id"
+      ]
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_node": false
+  },
+  "SelfLiftAvatarH3Sampler": {
+    "input": {
+      "required": {
+        "low_res_model": [
+          "MODEL",
+          {}
+        ],
+        "positive": [
+          "CONDITIONING"
+        ],
+        "negative": [
+          "CONDITIONING"
+        ],
+        "vae": [
+          "VAE",
+          {}
+        ],
+        "latent_image": [
+          "LATENT",
+          {}
+        ],
+        "sampler": [
+          "SAMPLER",
+          {}
+        ],
+        "sigmas": [
+          "SIGMAS"
+        ],
+        "seed": [
+          "INT",
+          {
+            "min": 0,
+            "max": 18446744073709552000
+          }
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 100,
+            "step": 0.1,
+            "round": 0.01
+          }
+        ],
+        "transition_step": [
+          "INT",
+          {
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "lowres_scale": [
+          "FLOAT",
+          {
+            "min": 0.25,
+            "max": 1,
+            "step": 0.05
+          }
+        ],
+        "rho": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+          }
+        ],
+        "w_min": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+          }
+        ],
+        "w_max": [
+          "FLOAT",
+          {
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+          }
+        ],
+        "upscaler_model": [
+          [
+            "__fixture_choice__"
+          ],
+          {}
+        ]
+      },
+      "optional": {
+        "high_res_model": [
+          "MODEL",
+          {}
+        ],
+        "highres_tiling": [
+          "BOOLEAN",
+          {
+            "label_on": "高分辨率分块：开启",
+            "label_off": "高分辨率分块：关闭"
+          }
+        ],
+        "tiling_mode": [
+          [
+            "__fixture_choice__"
+          ],
+          {}
+        ],
+        "tiling_tiles": [
+          [
+            "__fixture_choice__"
+          ],
+          {}
+        ],
+        "tiling_axis": [
+          [
+            "__fixture_choice__"
+          ],
+          {}
+        ]
+      },
+      "hidden": {
+        "unique_id": "UNIQUE_ID"
+      }
+    },
+    "input_order": {
+      "required": [
+        "low_res_model",
+        "positive",
+        "negative",
+        "vae",
+        "latent_image",
+        "sampler",
+        "sigmas",
+        "seed",
+        "cfg",
+        "transition_step",
+        "lowres_scale",
+        "rho",
+        "w_min",
+        "w_max",
+        "upscaler_model"
+      ],
+      "optional": [
+        "high_res_model",
+        "highres_tiling",
+        "tiling_mode",
+        "tiling_tiles",
+        "tiling_axis"
+      ],
+      "hidden": [
+        "unique_id"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_node": false
+  }
+}

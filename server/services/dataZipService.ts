@@ -43,6 +43,7 @@ export function zipDataLists(configValue: unknown, inputs: Record<string, unknow
       const result = schema.safeParse(item);
       if (!result.success) throw new Error("列表对齐第" + (index + 1) + "项不符合itemSchema：" + result.error.issues.map(issue => issue.path.join(".") + " " + issue.message).join("；"));
     }
+    if (config.ordinalField && asRecord(item)?.[config.ordinalField] !== index + 1) throw new Error("列表对齐序号必须按输入顺序从1连续递增：" + config.ordinalField + "，第" + (index + 1) + "项无效");
     if (config.identityField) {
       const id = asRecord(item)?.[config.identityField];
       if (typeof id !== "string" || !id.trim() || id.length > 128 || ids.has(id)) throw new Error("列表对齐标识必须是非空唯一字符串：" + config.identityField);

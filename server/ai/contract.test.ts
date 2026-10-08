@@ -187,3 +187,31 @@ test("AI草稿媒体引用类型字段显式可操作，拒绝未声明类型与
     assert.equal(operation.schema.safeParse(invalid).success, false);
   }
 });
+
+test("AI机器契约公开静态开关、命名动态标量与连续序号配置", () => {
+  const api = createAiOpenApi() as Record<string, any>;
+  assert.equal(api["x-comfy-static-switch"].version, 1);
+  assert.equal(api["x-comfy-static-switch"].nodeType, "ComfySwitchNode");
+  assert.match(api["x-comfy-static-switch"].emptyOptionalVideo, /clears/);
+  assert.match(aiOperations.find(operation => operation.name === "submit_scene")!.description, /x-comfy-static-switch/);
+  assert.match(aiOperations.find(operation => operation.name === "update_scene_draft")!.description, /ordinalField/);
+  assert.ok(api.components.schemas.DataZipConfig.properties.ordinalField);
+  assert.match(AI_OPERATOR_GUIDE, /Writer一次输出制作级storyboard\/shots（不含prompt）/);
+  assert.match(AI_OPERATOR_GUIDE, /AIXG一次批量/);
+  assert.match(AI_OPERATOR_GUIDE, /共7步、两次AI调用/);
+});
+
+
+test("固定音色上传契约经既有HTTP/MCP入口发现，预检无生成", () => {
+  const api = createAiOpenApi();
+  const audio = api["x-asset-media-execution"].audioConsumers;
+  assert.equal(audio.uploadLimitBytes, 100_000_000);
+  assert.equal(audio.previewFallback, false);
+  assert.equal(audio.uploadRoute, "/upload/image");
+  assert.equal(audio.uploadFormField, "image");
+  assert.equal(audio.failure, "fail_before_prompt_submission_no_automatic_retry");
+  assert.deepEqual(api.components.schemas.MediaExecutionAccess.const, api["x-asset-media-execution"]);
+  assert.match(aiOperations.find(operation => operation.name === "submit_scene")!.description, /audioConsumers/);
+  assert.match(AI_OPERATOR_GUIDE, /固定音色的基础ComfyUI上传/);
+  assert.ok(AI_FOUNDATION_FEATURES.find(feature => feature.id === "asset-execution-access")!.description.includes("audio_list"));
+});

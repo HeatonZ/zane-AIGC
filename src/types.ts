@@ -302,6 +302,8 @@ export interface WorkflowRunStepResult {
   message?: string;
   inputs?: Record<string, JsonValue>;
   inputLabels?: Record<string, string>;
+  agentPrompt?: string;
+  agentResponse?: string;
   outputs?: Record<string, JsonValue>;
   outputLabels?: Record<string, string>;
   outputTypes?: Record<string, string>;
@@ -317,6 +319,8 @@ export interface WorkflowRunStepItemResult {
   value: JsonValue;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
   inputs?: Record<string, JsonValue>;
+  agentPrompt?: string;
+  agentResponse?: string;
   outputs?: Record<string, JsonValue>;
   error?: string;
 }

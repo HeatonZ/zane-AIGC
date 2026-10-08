@@ -53,3 +53,20 @@ test("步骤和逐项提示词警告用⚠展示，不改变已完成状态", ()
   assert.equal(source.status, "completed");
   assert.equal(source.steps[0].items[0].status, "completed");
 });
+
+test("Hermes运行输入展示实际发送的提示词；逐项执行按项展示提示词", () => {
+  const source = run();
+  source.steps[0].agentPrompt = "写故事\\n步骤输入：商品设定\\n\\n输出要求：JSON";
+  const single = renderToStaticMarkup(createElement(WorkflowRunPanel, { result: source }));
+  assert.match(single, /提示词/);
+  assert.match(single, /实际发送/);
+  assert.match(single, /步骤输入：商品设定/);
+
+  source.steps[0].items = [
+    { index: 0, value: "镜头一", status: "completed", agentPrompt: "只写镜头一", outputs: { text: "结果一" } },
+    { index: 1, value: "镜头二", status: "failed", agentPrompt: "只写镜头二", error: "模拟失败" },
+  ];
+  const batch = renderToStaticMarkup(createElement(WorkflowRunPanel, { result: source }));
+  assert.match(batch, /只写镜头一/);
+  assert.match(batch, /只写镜头二/);
+});

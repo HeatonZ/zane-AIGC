@@ -32,7 +32,7 @@ export const recordShapeSchema: z.ZodType<RecordShape> = z.lazy(() => z.object({
   if (shape.enum?.some(value => shape.type === "null" ? value !== null : shape.type === "integer" ? !Number.isInteger(value) : shape.type === "object" || shape.type === "array" || typeof value !== shape.type)) fail("enum与type不一致");
 }));
 export const dataZipConfigSchema = z.object({
-  itemKey: key.default("item"), identityField: key.optional(), itemSchema: recordShapeSchema.optional(),
+  itemKey: key.default("item"), identityField: key.optional(), ordinalField: key.optional().describe("可选：主项该整数属性必须等于按输入顺序从1开始的序号；拒绝重复、跳号或重排，不自动排序"), itemSchema: recordShapeSchema.optional(),
   minItems: z.int().min(1).max(1000).default(1), maxItems: z.int().min(1).max(1000).default(200),
 }).strict();
 export const expectedCountSchema = z.union([z.int().min(1).max(1000), z.string().regex(/^[1-9][0-9]{0,2}$|^1000$/)]);

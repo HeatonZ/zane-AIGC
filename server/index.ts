@@ -5,6 +5,7 @@ import { createRunMediaExportRouter } from "./api/runMediaExportRoutes.js";
 import { RunMediaExportService } from "./services/runMediaExportService.js";
 import { createWorkbenchUpdateRouter } from "./api/workbenchUpdateRoutes.js";
 import { readHermesImageSource } from "./execution/hermesImageSource.js";
+import { readComfyAudioSource } from "./execution/comfyAudioSource.js";
 import { ProductionLifecycle } from "./runtime/productionLifecycle.js";
 import { localBackendUrl, publishMcpGeneration } from "./runtime/mcpReload.js";
 import { AI_CONTRACT_VERSION } from "./ai/operations.js";
@@ -17,6 +18,8 @@ import { createAiRouter } from "./api/aiRoutes.js";
 import { AiSceneService } from "./services/aiSceneService.js";
 import { resolveComfyInputBindingTarget } from "./comfyuiBindingTarget.js";
 import { resolveComfyUIReroutes } from "./comfyuiReroutes.js";
+import { specializeComfyStaticSwitches } from "./comfyuiStaticSwitches.js";
+import { comfyNodeInputSchema, comfyNamedAutogrowSchemas } from "./comfyuiInputSchema.js";
 import { ClipSelectionService } from "./services/clipSelectionService.js";
 import { createClipSelectionRouter } from "./api/clipSelectionRoutes.js";
 import { AssetService } from "./services/assetService.js";
@@ -58,11 +61,13 @@ import {
 import { createPublicUserApp, publicEntryGuard, validatePublicListener } from "./security/publicEntry.js";
 import { createErrorHandler, redactErrorText } from "./security/errorHandler.js";
 import { LoginLimiter } from "./security/loginLimiter.js";
-import { publicUserPort, publicUserHost, loginLimitOptions } from "./config.js";
+import { publicUserPort, publicUserHost, loginLimitOptions, trustProxySetting } from "./config.js";
 
 validatePublicListener(host, port, publicUserPort);
 const app = express();
 app.disable("x-powered-by");
+// Only a configured, same-host reverse proxy may set X-Forwarded-*; unset keeps headers untrusted.
+if (trustProxySetting !== undefined) app.set("trust proxy", trustProxySetting);
 const comfyuiQueues = new ResourceQueues();
 const metadataStore = new SqliteStore(databaseFile);
 const workspaceService = new WorkspaceService(metadataStore, workspaceFile);
@@ -73,7 +78,7 @@ const executors = await loadCapabilityPackages({
     const results = control.rules.map((rule) => evaluateCondition(rule, inputValues, stepValues, types));
     return { result: control.match === "all" ? results.every(Boolean) : results.some(Boolean) };
   },
-  hermes: ({ step, inputValues, stepValues, types, settings, signal, feedback }) => runHermesStep(step, inputValues, stepValues, types, settings, signal, feedback),
+  hermes: ({ step, inputValues, stepValues, types, settings, signal, feedback, captureAgentPrompt, captureAgentResponse }) => runHermesStep(step, inputValues, stepValues, types, settings, signal, feedback, captureAgentPrompt, captureAgentResponse),
   comfyui: (context, transform) => comfyuiQueues.run(context.settings.comfyuiBaseUrl, () => runComfyUIStep(context.step, context.inputValues, context.stepValues, context.settings.comfyuiBaseUrl, context.signal, context.inputFields, context.types, workflowTimeoutMs(context.settings.workflowTimeoutMinutes), context, transform), context.signal, context.step.execution?.mode === "for_each" ? context.step.execution.maxConcurrency ?? 1 : 1),
 });
 const assetService: AssetService = new AssetService(metadataStore, readSettings, (project, id) => runService.getRun(project, id), () => {
@@ -358,17 +363,6 @@ function comfyAutogrowImageInputNames(rawSchema: unknown) {
   return comfyAutogrowInputNames(rawSchema, "image");
 }
 
-function comfyNodeInputSchema(payload: unknown, nodeType: string, property: string) {
-  const root = asRecord(payload);
-  const definition = asRecord(root?.[nodeType]) ?? root;
-  const inputSchema = asRecord(definition?.input);
-  for (const section of ["required", "optional"]) {
-    const entries = asRecord(inputSchema?.[section]);
-    if (entries && property in entries) return entries[property];
-  }
-  return undefined;
-}
-
 function summarizeComfyUINodeInfo(payload: unknown, nodeType: string): ComfyUINodeInfo {
   const root = asRecord(payload);
   const definition = asRecord(root?.[nodeType]) ?? root;
@@ -384,7 +378,8 @@ function summarizeComfyUINodeInfo(payload: unknown, nodeType: string): ComfyUINo
       const typeToken = options.length ? "COMBO" : rawType;
       const type = comfyAutogrowImageInputNames(rawSchema).length ? "image_list"
         : comfyAutogrowInputNames(rawSchema, "audio").length ? "audio_list" : comfyPropertyType(typeToken);
-      return [{ name, type, required: section === "required", ...(options.length ? { options } : {}) }];
+      const namedInputs = Object.entries(comfyNamedAutogrowSchemas(rawSchema, name)).map(([childName, childSchema]) => ({ name: childName, type: comfyPropertyType(Array.isArray(childSchema) ? childSchema[0] : childSchema), required: false }));
+      return [{ name, type, required: section === "required", ...(options.length ? { options } : {}) }, ...namedInputs];
     });
   });
   const outputTypes = Array.isArray(definition?.output) ? definition.output : [];
@@ -1327,6 +1322,42 @@ function comfyInputAudioPath(value: unknown, stepName: string, required: boolean
   return [subfolder.replace(/[\\/]+$/, "").replace(/[\\/]/g, "/"), filename].filter(Boolean).join("/");
 }
 
+async function uploadComfyAudioSource(value: unknown, baseUrl: string, stepName: string, signal?: AbortSignal) {
+  const maxBytes = 100_000_000;
+  const source = await readComfyAudioSource(value, {
+    stepName, limitBytes: maxBytes, signal, mimeTypeForPath: mimeTypeForMediaPath,
+    readRemote: url => fetchMediaResponse(url, signal, maxBytes, `${stepName} 的音频超过 100 MB 限制`),
+    readComfy: media => fetchMediaResponse(`${baseUrl}/view?${new URLSearchParams({
+      filename: String(media.filename), subfolder: typeof media.subfolder === "string" ? media.subfolder : "",
+      type: media.type === "input" ? "input" : "output",
+    })}`, signal, maxBytes, `${stepName} 的音频超过 100 MB 限制`),
+  });
+  if (source.kind === "attachment") return source.value;
+  const form = new FormData();
+  form.set("image", new Blob([new Uint8Array(source.bytes)], { type: source.contentType }), source.filename);
+  form.set("type", "input"); form.set("subfolder", "zane-studio"); form.set("overwrite", "false");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  const abortFromParent = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener("abort", abortFromParent, { once: true });
+  try {
+    const response = await fetch(`${baseUrl}/upload/image`, { method: "POST", body: form, signal: controller.signal });
+    const uploaded = asRecord(await response.json().catch(() => null));
+    if (!response.ok || typeof uploaded?.name !== "string") {
+      throw new Error(`上传音频到 ComfyUI 失败：${typeof uploaded?.error === "string" ? uploaded.error : `ComfyUI 返回 ${response.status}`}`);
+    }
+    const subfolder = typeof uploaded.subfolder === "string" ? uploaded.subfolder : "";
+    return { id: randomUUID(), filename: uploaded.name, subfolder, type: "input",
+      url: `/api/comfyui/view?${new URLSearchParams({ filename: uploaded.name, subfolder, type: "input" })}` };
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw cancellationError();
+    throw error;
+  } finally {
+    clearTimeout(timeout); signal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
 function nextComfyGraphNodeId(graph: Record<string, Record<string, unknown>>) {
   const numericIds = Object.keys(graph).map(Number).filter((id) => Number.isSafeInteger(id) && id >= 0);
   let nextId = (numericIds.length ? Math.max(...numericIds) : 0) + 1;
@@ -1464,6 +1495,8 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
       const videos = normalizeMediaList(externalizeRuntimeValue(value));
       if (!videos.length) {
         if (required) throw new Error(`${step.name} 的视频输入不能为空`);
+        // An explicit empty binding must not inherit the author's sample file.
+        delete nodeInputs[binding.property];
         continue;
       }
       if (videos.length !== 1) {
@@ -1500,11 +1533,14 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
         }
         inputSchema = comfyNodeInputSchema(await infoRequest, nodeType, binding.property);
       }
-      const paths = audios.map((audio) => comfyInputAudioPath(audio, step.name, true)!);
+      // Keep reference order; selected/zip JSON may still contain fixed asset private paths.
+      const attachments = [];
+      for (const audio of audios) attachments.push(await uploadComfyAudioSource(audio, baseUrl, step.name, signal));
+      const paths = attachments.map((audio) => comfyInputAudioPath(audio, step.name, true)!);
       bindComfyAudioPaths(graph, nodeInputs, nodeType, binding.property, inputSchema, paths, step.name);
       continue;
     }
-    if (!(binding.property in nodeInputs)) {
+    if (!(binding.property in nodeInputs) && !directPropertyDeclared) {
       const nodeType = typeof node.class_type === "string" ? `（${node.class_type}）` : "";
       const availableProperties = Object.keys(nodeInputs);
       throw new Error(`${step.name} 的 ComfyUI 工作流「${workflowFile}」节点 ${binding.nodeId}${nodeType} 没有输入属性 ${binding.property}（可用属性：${availableProperties.join("、") || "无"}）。工作流可能已更换，请重新绑定节点和属性。`);
@@ -1518,6 +1554,8 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
     if (transformed.outputs) return transformed.outputs;
     if (transformed.graph) graph = transformed.graph;
   }
+  // Runtime bindings (including carry.hasPrevious) are authoritative, not saved widget defaults.
+  graph = specializeComfyStaticSwitches(graph);
   let promptId: string | undefined;
   let promptSubmitted = false;
   let interruptPromise: Promise<void> | undefined;
@@ -1952,7 +1990,7 @@ async function requestHermesCompletion(profile: string, connection: HermesApiCon
   }
 }
 
-async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, settings: SavedSettings, signal?: AbortSignal, feedback?: HermesFeedbackContext) {
+async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, settings: SavedSettings, signal?: AbortSignal, feedback?: HermesFeedbackContext, captureAgentPrompt?: (prompt: string) => Promise<void>, captureAgentResponse?: (response: string) => Promise<void>) {
   throwIfAborted(signal);
   const profile = step.hermesProfile;
   if (!profile || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(profile)) throw new Error(`${step.name} 的 Hermes Profile 无效`);
@@ -1984,16 +2022,27 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
     return `${index + 1}. ${item.key}（${item.label ?? item.key}，类型：${item.type}）${description ? `；说明：${description}` : ""}`;
   }).join("\n");
   const executionPrompt = `${appendHermesFeedback(prompt, feedback)}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n字符串内的换行、回车、制表符、双引号和反斜杠必须按 JSON 语法转义，不能直接写入原始控制字符。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
+  await captureAgentPrompt?.(executionPrompt);
   const content = await hermesMessageContent(step, inputs, stepValues, types, executionPrompt, settings, signal);
-  const output = (await requestHermesCompletion(profile, connection, content, workflowTimeoutMs(settings.workflowTimeoutMinutes), signal)).trim();
-  const parsed = parseHermesOutput(output, outputKeys);
-  if (parsed.repair) log("warn", "hermes.output_json_repaired", { stepId: step.id, profile, ...parsed.repair });
-  const result = parsed.value;
-  return Object.fromEntries(outputs.map((item) => {
-    const value = result[item.key];
-    if (value === undefined) throw new Error(`Hermes 输出缺少字段：${item.key}`);
-    return [item.key, coerceHermesOutput(value, item.type)];
-  }));
+  const rawResponse = await requestHermesCompletion(profile, connection, content, workflowTimeoutMs(settings.workflowTimeoutMinutes), signal);
+  try {
+    const parsed = parseHermesOutput(rawResponse, outputKeys);
+    if (parsed.repair) log("warn", "hermes.output_json_repaired", { stepId: step.id, profile, ...parsed.repair });
+    const result = parsed.value;
+    return Object.fromEntries(outputs.map((item) => {
+      const value = result[item.key];
+      if (value === undefined) throw new Error(`Hermes 输出缺少字段：${item.key}`);
+      return [item.key, coerceHermesOutput(value, item.type)];
+    }));
+  } catch (error) {
+    try {
+      await captureAgentResponse?.(rawResponse);
+    } catch (captureError) {
+      // Never let a persistence failure replace the original Hermes parsing error or log response content.
+      log("warn", "hermes.response_capture_failed", { stepId: step.id, profile, errorName: captureError instanceof Error ? captureError.name : typeof captureError });
+    }
+    throw error;
+  }
 }
 
 app.get("/api/ready", (_request, response) => {

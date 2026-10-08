@@ -1,3 +1,10 @@
+## 固定音色的基础ComfyUI上传（1.5.23）
+基础audio_list绑定支持已由权威素材服务授权并归档的固定音色私有路径，含media.select_references.bundle/data.zip/for_each中间JSON。提交器读取同一版本原始音频字节，按引用顺序经ComfyUI /upload/image的image表单上传为input附件，再连接LoadAudio及普通/命名autogrow AUDIO端口；每文件最多100MB。私有path优先，不回退到previewUrl或未经授权的显示元数据，不向上游转发工作台token/cookie；普通用户仍只可提交本人固定引用。已有合法ComfyUI input附件不重复上传；读取、超限、上传失败在提交prompt前停止，不自动重试、不重新调用已完成Writer/AIXG。旧失败快照不改写；上线修复后仍须按原runId核对，再经用户明确确认用新runId断点续跑，可能计费。机器契约x-asset-media-execution.audioConsumers与固定发布inputRequirements.mediaExecution；配置、预检、读取不上传或生成。
+
+## 单工作流静态上下文开关（1.5.22）
+同一ComfyUI工作流可在for_each.carry省略initialSourceRef时，首项以iteration.hasPrevious=false关闭上下文，后续以true打开并用iteration.previous传入紧邻上一项视频。不要复制首段工作流或塞示例视频。运行绑定后共享提交器只断开已证明静态选择值的内置ComfySwitchNode未选中输入；不执行节点/表达式、不移除其他消费者或改输出ID；未知/循环/自定义选择器保持原样。显式空可选video绑定清除原图样例；被实际选中的必需输入仍按ComfyUI真实校验失败，不吞错。API与UI格式提交均适用，读取检查不改图；原文件、草稿、固定发布/历史不变。声明但未连线的标量端口按object_info绑定，非法端口拒绝。机器契约OpenAPI x-comfy-static-switch v1。
+长文精简配置示例examples/scenes/long-text-context-video.json：Writer一次输出制作级storyboard/shots（不含prompt）→AIXG一次批量将确定的分镜转换为prompts，不重写剧情/台词/seconds/selection→data.zip原始分镜与提示词等长对齐→素材选择和标签映射→data.zip执行记录对齐→单工作流串行carry生成→本地音视频合成，共7步、两次AI调用，data.zip.ordinalField=index在生成前拒绝乱序/重复/跳号，省略不改旧快照行为。逐项来源的嵌套媒体与上游输出用同一归档缓存保存，新链失败续跑可复用已完成前缀，不按媒体文件名猜测相等。减少AI回合与冗余节点，不用AI代替媒体归属/固定版本/确定性映射或状态管理。修改用revision，先校验再显式发布；新配置未经真实视听验收，隔离测试不会调用真实模型。
+
 ## ComfyUI前端中继兼容（1.5.21）
 UI格式工作流在共享转换器中解析Reroute链及扇出，提交真实源节点/出口，不向ComfyUI提交前端虚拟中继；原工作流文件、场景、发布及API格式图不变。循环、缺失源、多源和非零中继出口为400 INVALID_COMFY_REROUTE，details含nodeId/reason；外部生成前拒绝，不自动改图或重试。按原runId核对失败结果后明确resume_run/rerun，可能计费；配置/校验/发布不等于模型生成，首段视频依赖与模型插件端口仍要另行核验。机器契约见OpenAPI x-comfy-ui-routing v1。
 
@@ -13,7 +20,7 @@ ZANE_PUBLIC_USER_PORT留空不开启；显式开启第二监听入口时管理AP
 
 # AI 工作台操作手册
 
-契约版本：1.5.21。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
+契约版本：1.5.25。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
 本手册与 MCP 的 zane://guide、HTTP /api/v1/ai/guide 同源。
 
 ## 系统任务并发（1.5.15）
@@ -72,6 +79,7 @@ admin 保留下文管理工具；user 只调用 self 操作。get_workbench 返�
 save_own_draft 只保存输入，revision:0新建；更新必须读当前revision。草稿列表省略inputValues时用get_own_draft读，不是空值。所有已保存状态必须等服务端回执，客户端乐观显示不等于落库。
 submit_own_scene先保存runId；响应丢失get_own_run查询同一ID，RUN_PREPARING稍后再查，禁止换ID重建。get_own_outputs/get_own_step_result按输出/逐项分页，valueOmitted和valuePage明确值是否完整。本人媒体地址支持HEAD/Range；未归属历史任务仅管理员可见。
 管理员list_runs分页摘要、get_run详情和wait_run观察包含服务端绑定的ownerUserId及submitter身份快照(userId、username、displayName)。身份从已验证会话/凭证取得，不接受请求体伪造；新任务固定提交时的显示名与登录名。历史已有ownerUserId但无身份快照时仅在管理读取时按当前用户档案补齐，不改写历史；不存在的账号仍显示稳定ownerUserId，未归属历史明确保持未归属。普通用户任务投影不暴露其他人的身份信息。
+get_run运行快照会在agentPrompt记录每个已执行Hermes步骤实际发送的提示词（含模板展开、已解析步骤输入、反馈与JSON输出要求）；for_each步骤按各items[].agentPrompt分别保存。解析或输出校验失败时，同一记录在agentResponse保存Hermes返回的完整未trim原文（含首尾空白），仅失败响应写入，旧历史没有此字段时不推测补写。运行记录UI显示失败步骤/逐项的原始返回；管理员get_step_result可用textOffset/textLimit按Unicode码点分页读取agentResponse，先读第一页并按valuePage继续。普通用户工具仍不返回原始回复。
 运行详情get_own_run提供revision、固定版本、progress与全部快照步骤(含pending未执行)、逐项计数、结果数和首次真实startedAt；没有持久化开始事件时省略开始/排队计时，不使用queued占位时间。progress只表示步骤，不代表实际时间比例；totalDurationMs包含排队和人工确认。
 get_own_run_inputs按需读取原始运行输入，标签和类型不随当前场景变动。limit/cursor分页字段；inputKey+valueOffset/valueLimit分段字符串(Unicode码点)、数组(项)、对象(键)，valuePage说明完整度。present:false不同于null；valueOmitted不是空值。metadata_only要includeValues:true；value_byte_limit先缩小valueLimit或单字段提高maxValueBytes(最大262144)。游标不兼容查询变更；409 RESULT_PAGE_CHANGED重读第一页。
 get_own_outputs/get_own_step_result(以及管理员get_run_outputs/get_step_result)可显式设置textLimit和textOffset分段长文本(Unicode码点，最多32768)，valuePage.kind:string、offset/count/total/nextValueOffset说明片段；未设置textLimit保持原scalar行为。数组仍使用valueOffset/valueLimit，媒体不会按字符切碎。HTTP/UI/MCP复用同一结果服务。复制本段不代表复制整篇。
@@ -316,6 +324,7 @@ outcome:unknown 明确表示变更可能已发生。即使AI没有收到 runId �
 单场景读取get_scene_draft，返回scene/workflow、它引用的预设、内容revision、contentHash和保留版本目录；不会搬整工作区。
 创建使用create_scene，先保存scene.id；空工作区原子初始化。响应丢失先读同一sceneId，SCENE_ALREADY_EXISTS不是同请求自动成功，不换ID重建。
 update_scene_draft必须带当前内容revision，提供的scene/workflow是完整部分替换（不是深层patch），省略部分保持不变。可随场景添加引用的新预设，不能暗中改已有共享预设。
+流程输入可设置workflow.inputs[].defaultValue；按字段类型填写，select默认值须在options中。validate_scene_draft会校验默认值；发布后固定版本的inputDefaults/inputSchema和prepare使用它预填输入，提交人明确填写的值优先。默认值修改仍需用当前revision保存并显式发布，不会自动执行。
 双采视频是现有ComfyUI配置，不新增场景执行器：AI文生视频、AI参考生视频、文生无设计版用Zane/video_双采.json；长文用Zane/video_双采_json.json。改workflowFile必须同步核对bindings；不能只换文件名。
 文本入口192.prompt、秒数155.value、分辨率115、视频92.video；参考图仍接192.ref_images。长文shot_json把完整iteration.item序列化为text写201.String；196现在是SelfLiftAvatarH3Sampler，不可写String；197是H3SigmaRefiner。长文保留逐项执行、192.length=iteration.item.frames、152.fps=24、素材ref_images/音色ref_audios、原生对白和无音乐策略以及原有拼接。
 只迁移已确认场景的草稿，保留其他配置与旧发布/运行快照；核对已有未发布编辑后，用revision校验并显式publish_scene。配置迁移不submit_scene；需要外部客户端安装双采节点/工作流，草稿结构校验不会探测其安装。

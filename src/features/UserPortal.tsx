@@ -1,7 +1,9 @@
 import SystemFeedback from "./SystemFeedback";
 import { sortOwnDrafts } from "../lib/drafts";
 import { getOwnDraft, setOwnDraftFavorite } from "../lib/taskDraftApi";
+import { OwnDraftSaveQueue, sameDraftInputs, type OwnDraftSaveSession } from "../lib/userDraftAutosave";
 import { Star } from "lucide-react";
+import UserMediaInput, { type UserMediaKind } from "../components/UserMediaInput";
 import { DraftFavoriteUnconfirmedError, writeDraftFavorite } from "../lib/draftFavoriteWrite";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -26,7 +28,14 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   const [sceneCursor, setSceneCursor] = useState<string>();
   const [scene, setScene] = useState<UserScene>();
   const [values, setValues] = useState<Record<string, unknown>>({});
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
   const [busy, setBusy] = useState(false);
+  const [uploadingKey, setUploadingKey] = useState("");
+  const [draftSaving, setDraftSaving] = useState(false);
+  const [draftAutoSaveStatus, setDraftAutoSaveStatus] = useState<"idle" | "pending" | "saving" | "saved" | "error" | "reconcile" | "review">("idle");
+  const [autoSaveAttempt, setAutoSaveAttempt] = useState(0);
+  const draftSaveCountRef = useRef(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [drafts, setDrafts] = useState<OwnDraft[]>([]);
@@ -38,6 +47,12 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   const [draftId, setDraftId] = useState<string>(() => crypto.randomUUID());
   const [draftRevision, setDraftRevision] = useState(0);
   const [draftUnknown, setDraftUnknown] = useState(false);
+  const draftSessionRef = useRef<OwnDraftSaveSession | null>(null);
+  const draftAutoSaveTimerRef = useRef<number | undefined>(undefined);
+  const draftSaveQueueRef = useRef<OwnDraftSaveQueue | null>(null);
+  if (!draftSaveQueueRef.current) {
+    draftSaveQueueRef.current = new OwnDraftSaveQueue(request => api<{ draft: OwnDraft }>("/api/v1/self/drafts", jsonBody(request)));
+  }
   const [runs, setRuns] = useState<OwnRun[]>([]);
   const [runCursor, setRunCursor] = useState<string>();
   const [run, setRun] = useState<OwnRun>();
@@ -102,6 +117,53 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     if (page === "runs") void attempt(() => loadRuns());
   }, [page]);
   useEffect(() => {
+    const session = draftSessionRef.current;
+    if (page !== "scenes" || !scene || !session || draftUnknown || session.reconcileRequired || session.reviewRequired
+      || session.editVersion <= session.savedEditVersion) return;
+    const timer = window.setTimeout(() => {
+      draftAutoSaveTimerRef.current = undefined;
+      let inputValues: Record<string, unknown>;
+      try { inputValues = inputs(values, scene); }
+      catch (reason) {
+        setDraftAutoSaveStatus("error");
+        setError(reason instanceof Error ? reason.message : "草稿输入暂时无法自动保存");
+        return;
+      }
+      void saveDraftSnapshot(session, inputValues, session.editVersion).catch(reason => {
+        if (draftSessionRef.current !== session) return;
+        if (session.reconcileRequired) setDraftUnknown(true);
+        setDraftAutoSaveStatus(session.reconcileRequired ? "reconcile" : "error");
+        setError((reason as Error).message + " 草稿ID：" + session.id);
+      });
+    }, 700);
+    draftAutoSaveTimerRef.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (draftAutoSaveTimerRef.current === timer) draftAutoSaveTimerRef.current = undefined;
+    };
+  }, [page, scene, values, draftId, draftUnknown, autoSaveAttempt]);
+  useEffect(() => {
+    const flushWhenHidden = () => {
+      if (document.visibilityState === "hidden") void flushDraftAutosave().catch(reason => setError((reason as Error).message));
+    };
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    window.addEventListener("pagehide", flushWhenHidden);
+    return () => {
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+      window.removeEventListener("pagehide", flushWhenHidden);
+    };
+  }, [page, scene, values, draftId]);
+  useEffect(() => {
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      const session = draftSessionRef.current;
+      if (!session || session.editVersion <= session.savedEditVersion) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [scene, values, draftId]);
+  useEffect(() => {
     if (!run || busy || !["queued", "running", "cancelling", "waiting"].includes(run.status)) return;
     let stopped = false;
     const id = run.runId;
@@ -118,21 +180,43 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   }, [run?.runId, run?.status, busy]);
 
   async function openScene(id: string, draft?: OwnDraft) {
+    const previous = draftSessionRef.current;
+    if (previous?.reviewRequired && previous.editVersion > previous.savedEditVersion
+      && !window.confirm("本页输入与服务端草稿不同。继续打开另一份草稿会放弃本页输入，确定继续吗？")) return;
+    await flushDraftAutosave();
     const selected = await api<UserScene>("/api/v1/self/scenes/" + encodeURIComponent(id));
     if (draft && draft.versionId !== selected.versionId) {
       setError("草稿绑定的发布版已变化。原草稿仍在服务端，请核对新表单后再修改和保存。");
     }
+    const nextDraftId = draft?.id ?? crypto.randomUUID();
+    const nextValues = draft?.inputValues ?? selected.inputDefaults;
+    draftSessionRef.current = {
+      id: nextDraftId, revision: draft?.revision ?? 0, sceneId: selected.sceneId, versionId: selected.versionId, title: selected.title, hasServerDraft: Boolean(draft),
+      editVersion: 0, savedEditVersion: 0, enqueuedEditVersion: 0, reconcileRequired: false, reviewRequired: false,
+    };
     setScene(selected);
-    setValues(draft?.inputValues ?? selected.inputDefaults);
-    setDraftId(draft?.id ?? crypto.randomUUID());
+    valuesRef.current = nextValues;
+    setValues(nextValues);
+    setDraftId(nextDraftId);
     setDraftRevision(draft?.revision ?? 0);
     setDraftUnknown(false);
+    setDraftAutoSaveStatus(draft ? "saved" : "idle");
     setNotice("");
     setPage("scenes");
   }
-  function inputs() {
-    const result = { ...values };
-    for (const field of scene?.fields ?? []) {
+  function updateValues(update: (current: Record<string, unknown>) => Record<string, unknown>) {
+    const session = draftSessionRef.current;
+    if (session) { session.editVersion += 1; session.reviewRequired = false; }
+    setDraftAutoSaveStatus(session ? "pending" : "idle");
+    setError("");
+    setNotice("");
+    const next = update(valuesRef.current);
+    valuesRef.current = next;
+    setValues(next);
+  }
+  function inputs(sourceValues = values, sourceScene = scene) {
+    const result = { ...sourceValues };
+    for (const field of sourceScene?.fields ?? []) {
       const value = result[field.key];
       if (field.type === "number" && typeof value === "string" && value.trim()) {
         const number = Number(value);
@@ -145,26 +229,111 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     }
     return result;
   }
+  async function saveDraftSnapshot(session: OwnDraftSaveSession, inputValues: Record<string, unknown>, editVersion: number, force = false) {
+    if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
+    try {
+      if (session.pendingWrite && session.enqueuedEditVersion >= editVersion) {
+        if (draftSessionRef.current === session) setDraftAutoSaveStatus("saving");
+        await session.pendingWrite;
+      } else if (session.savedEditVersion < editVersion || (force && !session.hasServerDraft)) {
+        draftSaveCountRef.current += 1;
+        if (draftSessionRef.current === session) setDraftAutoSaveStatus("saving");
+        setDraftSaving(true);
+        try {
+          await draftSaveQueueRef.current!.save(session, inputValues, editVersion);
+        } finally {
+          draftSaveCountRef.current = Math.max(0, draftSaveCountRef.current - 1);
+          setDraftSaving(draftSaveCountRef.current > 0);
+        }
+      }
+    } catch (error) {
+      if (draftSessionRef.current === session) {
+        if (session.reconcileRequired) setDraftUnknown(true);
+        setDraftAutoSaveStatus(session.reconcileRequired ? "reconcile" : "error");
+        setError((error as Error).message + " 草稿ID：" + session.id);
+      }
+      throw error;
+    }
+    if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
+    if (draftSessionRef.current === session) {
+      setDraftRevision(session.revision);
+      setDraftUnknown(false);
+      setDraftAutoSaveStatus(session.reviewRequired ? "review" : session.editVersion > session.savedEditVersion ? "pending" : "saved");
+    }
+    return session.revision;
+  }
+  async function flushDraftAutosave() {
+    const session = draftSessionRef.current;
+    if (!session) return;
+    const timer = draftAutoSaveTimerRef.current;
+    if (timer !== undefined) { window.clearTimeout(timer); draftAutoSaveTimerRef.current = undefined; }
+    if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
+    if (session.reviewRequired) return;
+    if (session.pendingWrite) await session.pendingWrite;
+    if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
+    if (session.editVersion <= session.savedEditVersion) return;
+    if (!scene) throw new Error("当前草稿表单尚未就绪，未自动保存");
+    const inputValues = inputs(valuesRef.current, scene);
+    await saveDraftSnapshot(session, inputValues, session.editVersion);
+  }
+  async function navigateToPage(nextPage: typeof page) {
+    if (page === "scenes" && scene && nextPage !== "scenes") await flushDraftAutosave();
+    setPage(nextPage);
+    setError("");
+  }
   async function save() {
     if (!scene) return;
+    const session = draftSessionRef.current;
+    if (!session) { setError("当前草稿表单尚未就绪"); return; }
+    if (session.reviewRequired && !window.confirm("服务端草稿与本页输入不同。确定用本页内容覆盖服务端当前版本吗？")) return;
+    session.reviewRequired = false;
+    const timer = draftAutoSaveTimerRef.current;
+    if (timer !== undefined) { window.clearTimeout(timer); draftAutoSaveTimerRef.current = undefined; }
     setBusy(true); setError(""); setNotice("");
     try {
-      const data = await api<{ draft: OwnDraft }>("/api/v1/self/drafts", jsonBody({
-        draftId, revision: draftRevision, sceneId: scene.sceneId, versionId: scene.versionId,
-        title: scene.title, inputValues: inputs(),
-      }));
-      setDraftRevision(data.draft.revision);
-      setNotice("服务端已保存 · r" + data.draft.revision);
+      const revision = await saveDraftSnapshot(session, inputs(), session.editVersion, true);
+      setNotice("服务端已保存 · r" + revision);
     } catch (e) {
-      if (e instanceof AccessApiError && e.status === 0) setDraftUnknown(true);
-      setError((e as Error).message + " 草稿ID：" + draftId);
+      if (session.reconcileRequired) setDraftUnknown(true);
+      setDraftAutoSaveStatus(session.reconcileRequired ? "reconcile" : "error");
+      setError((e as Error).message + " 草稿ID：" + session.id);
     } finally { setBusy(false); }
   }
   async function reconcileDraft() {
-    const data = await api<{ draft: OwnDraft }>("/api/v1/self/drafts/" + draftId);
-    setDraftRevision(data.draft.revision); setDraftUnknown(false);
-    setNotice("已读取服务端草稿 r" + data.draft.revision + "，请核对内容后再保存");
-    setValues(data.draft.inputValues);
+    const session = draftSessionRef.current;
+    if (!session) throw new Error("当前草稿表单尚未就绪");
+    const data = await api<{ draft: OwnDraft }>("/api/v1/self/drafts/" + encodeURIComponent(session.id));
+    const failed = session.failedWrite;
+    const matchesFailed = Boolean(failed && sameDraftInputs(data.draft.inputValues, failed.inputValues));
+    const matchesLastSaved = Boolean(session.lastSaved && sameDraftInputs(data.draft.inputValues, session.lastSaved.inputValues));
+    session.revision = data.draft.revision;
+    session.reconcileRequired = false;
+    session.enqueuedEditVersion = session.savedEditVersion;
+    setDraftRevision(data.draft.revision);
+    setDraftUnknown(false);
+    if (matchesFailed && failed) {
+      session.savedEditVersion = Math.max(session.savedEditVersion, failed.editVersion);
+      session.enqueuedEditVersion = session.savedEditVersion;
+      session.lastSaved = failed;
+      session.failedWrite = undefined;
+      session.reviewRequired = false;
+      setNotice("已确认原草稿ID的保存回执 · r" + data.draft.revision);
+      setDraftAutoSaveStatus(session.editVersion > session.savedEditVersion ? "pending" : "saved");
+      if (session.editVersion > session.savedEditVersion) setAutoSaveAttempt(value => value + 1);
+    } else if (matchesLastSaved && session.lastSaved) {
+      session.savedEditVersion = Math.max(session.savedEditVersion, session.lastSaved.editVersion);
+      session.enqueuedEditVersion = session.savedEditVersion;
+      session.failedWrite = undefined;
+      session.reviewRequired = false;
+      setNotice("已读取原草稿ID并确认服务端基线 · r" + data.draft.revision);
+      setDraftAutoSaveStatus(session.editVersion > session.savedEditVersion ? "pending" : "saved");
+      if (session.editVersion > session.savedEditVersion) setAutoSaveAttempt(value => value + 1);
+    } else {
+      session.failedWrite = undefined;
+      session.reviewRequired = true;
+      setNotice("服务端草稿内容已变化；本页输入已保留。核对后可手动保存，或重新打开服务端草稿。");
+      setDraftAutoSaveStatus("review");
+    }
   }
   function retainRunId(id: string) {
     // Save before the request. If browser storage is unavailable, do not submit.
@@ -180,6 +349,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     setBusy(true); setError(""); setNotice("");
     let id = "";
     try {
+      await flushDraftAutosave();
       const inputValues = inputs();
       await api("/api/v1/self/scenes/" + scene.sceneId + "/prepare", jsonBody({ versionId: scene.versionId, inputValues }));
       if (!window.confirm("确认提交？此场景可能调用外部模型并产生费用，后续审核也可能继续生成。")) return;
@@ -231,42 +401,65 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   }
   async function upload(key: string, type: string, file: File) {
     if (!scene) return;
-    setBusy(true); setError("");
+    setBusy(true); setUploadingKey(key); setError("");
     const id = crypto.randomUUID();
     try {
       const kind = /audio/.test(type) ? "audio" : /video/.test(type) ? "video" : "image";
       const data = await api<{ reference: unknown }>("/api/v1/self/assets/upload?" + new URLSearchParams({ assetId: id, name: file.name, kind }), {
         method: "POST", body: file, headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
       });
-      setValues(current => ({ ...current, [key]: uploadedInput(current[key], type, data.reference) }));
+      updateValues(current => ({ ...current, [key]: uploadedInput(current[key], type, data.reference) }));
       setNotice("媒体已上传，固定版本引用已填入");
     } catch (e) {
       if (e instanceof AccessApiError && e.status === 0) setUploadUnknown({ id, key, type, sceneId: scene.sceneId });
       setError((e as Error).message + " 素材ID：" + id);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setUploadingKey(""); }
   }
   async function reconcileUpload() {
     if (!uploadUnknown) return;
     const data = await api<{ reference: unknown }>("/api/v1/self/assets/" + uploadUnknown.id);
     if (scene?.sceneId === uploadUnknown.sceneId) {
-      setValues(current => ({ ...current, [uploadUnknown.key]: uploadedInput(current[uploadUnknown.key], uploadUnknown.type, data.reference) }));
+      updateValues(current => ({ ...current, [uploadUnknown.key]: uploadedInput(current[uploadUnknown.key], uploadUnknown.type, data.reference) }));
     }
     setUploadUnknown(undefined); setNotice("已核验原素材ID，未重复上传");
   }
-  const lockedForm = busy || draftUnknown || !!uploadUnknown;
+  async function backToSceneList() {
+    const session = draftSessionRef.current;
+    if (session?.reviewRequired && session.editVersion > session.savedEditVersion
+      && !window.confirm("服务端草稿与本页输入不同。返回场景列表会放弃本页输入，确定继续吗？")) return;
+    await flushDraftAutosave();
+    draftSessionRef.current = null;
+    setScene(undefined);
+    setDraftAutoSaveStatus("idle");
+  }
+  async function logout() {
+    const session = draftSessionRef.current;
+    if (session?.reviewRequired && session.editVersion > session.savedEditVersion
+      && !window.confirm("服务端草稿与本页输入不同。退出会放弃本页输入，确定继续吗？")) return;
+    await flushDraftAutosave();
+    onLogout();
+  }
+  async function returnToAdmin() {
+    const session = draftSessionRef.current;
+    if (session?.reviewRequired && session.editVersion > session.savedEditVersion
+      && !window.confirm("服务端草稿与本页输入不同。返回管理端会放弃本页输入，确定继续吗？")) return;
+    await flushDraftAutosave();
+    onAdmin?.();
+  }
+  const lockedForm = busy || draftSaving || draftUnknown || !!uploadUnknown;
 
   return <div className="access-shell">
     <aside className="access-sidebar">
       <h2>Zane Studio</h2><p>创作中心</p><strong>{user.displayName}</strong>
       {([['scenes', '可用场景'], ['drafts', '我的草稿'], ['runs', '我的任务'], ['feedback', '系统反馈'], ['account', '账户与AI接入']] as const).map(([id, label]) =>
-        <button key={id} disabled={busy} className={page === id ? "active" : ""} onClick={() => { setPage(id); setError(""); }}>{label}</button>)}
-      {onAdmin && <button onClick={onAdmin}>返回管理后台</button>}
-      <button onClick={onLogout}>退出登录</button>
+        <button key={id} disabled={busy || draftSaving || draftUnknown} className={page === id ? "active" : ""} onClick={() => void attempt(() => navigateToPage(id))}>{label}</button>)}
+      {onAdmin && <button disabled={busy || draftSaving || draftUnknown} onClick={() => void attempt(returnToAdmin)}>返回管理后台</button>}
+      <button disabled={busy || draftSaving || draftUnknown} onClick={() => void attempt(logout)}>退出登录</button>
     </aside>
     <main className="access-main">
       <header className="access-heading"><div>
         <h1>{page === "scenes" ? "可用场景" : page === "drafts" ? "我的草稿" : page === "runs" ? "我的任务" : page === "feedback" ? "系统反馈" : "账户与AI接入"}</h1>
-        <p>{page === "feedback" ? "提交使用问题或改进建议，由管理员处理；不会自动影响 Agent。" : page === "runs" ? "跟踪任务进度、核对原始输入、查看结果；历史与详情以服务端运行快照为准。" : page === "drafts" ? "收藏常用输入草稿并置顶，快速继续填写和复用；所有确认保存的数据都在服务端。" : page === "account" ? "查看账户信息，为 AI 配置本人接入凭证。" : "只展示你可以使用的已发布场景；所有已保存数据以服务端为准。"}</p>
+        <p>{page === "feedback" ? "提交使用问题或改进建议，由管理员处理；不会自动影响 Agent。" : page === "runs" ? "跟踪任务进度、核对原始输入、查看结果；历史与详情以服务端运行快照为准。" : page === "drafts" ? "收藏常用输入草稿并置顶，快速继续填写和复用；所有确认保存的数据都在服务端。" : page === "account" ? "查看账户信息，为 AI 配置本人接入凭证。" : scene ? "输入停止后会自动保存到服务端，离开表单前也会先保存。" : "只展示你可以使用的已发布场景；所有已保存数据以服务端为准。"}</p>
       </div></header>
       {error && <p className="access-error" role="alert">{error}</p>}
       {notice && <p className="access-success" role="status">{notice}</p>}
@@ -281,7 +474,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
       {page === "scenes" && <>
         <div className="access-inline">
           <button className="button button-outline" onClick={() => void attempt(() => loadScenes())}>刷新可用场景</button>
-          {scene && <button className="button button-outline" disabled={lockedForm} onClick={() => setScene(undefined)}>返回场景列表</button>}
+          {scene && <button className="button button-outline" disabled={lockedForm} onClick={() => void attempt(backToSceneList)}>返回场景列表</button>}
         </div>
         {!scene && <div className="access-grid">
           {scenes.map(item => <button className="access-card access-scene" key={item.sceneId} disabled={lockedForm} onClick={() => void attempt(() => openScene(item.sceneId))}>
@@ -293,24 +486,37 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
         {scene && <section className="access-card">
           <h2>{scene.title}</h2><p>{scene.description || scene.summary}</p><small>固定发布版：{scene.version} · {scene.versionId}</small>
           <form onSubmit={e => { e.preventDefault(); void save(); }}>
-            {scene.fields.map(field => <label key={field.key}>{field.label}{field.required && <span> *</span>}
-              {/image|video|audio/.test(field.type) ? <>
-                <input type="file" accept={/audio/.test(field.type) ? "audio/*" : /video/.test(field.type) ? "video/*" : "image/*"} disabled={lockedForm} onChange={e => {
-                  const file = e.target.files?.[0]; if (file) void upload(field.key, field.type, file); e.target.value = "";
-                }} />
-                <pre>{JSON.stringify(values[field.key] ?? "", null, 2)}</pre>
-                {!!values[field.key] && <button type="button" disabled={lockedForm} className="button button-outline" onClick={() => setValues(current => ({ ...current, [field.key]: "" }))}>清除媒体输入</button>}
-              </> : field.type === "boolean" ? <input type="checkbox" disabled={lockedForm} checked={values[field.key] === true} onChange={e => setValues(current => ({ ...current, [field.key]: e.target.checked }))} />
-                : field.type === "select" ? <select className="text-input" disabled={lockedForm} value={String(values[field.key] ?? "")} onChange={e => setValues(current => ({ ...current, [field.key]: e.target.value }))}>
+            {scene.fields.map(field => /image|video|audio/.test(field.type) ? <div className="access-media-field" key={field.key}>
+              <div className="access-media-field-label">{field.label}{field.required && <span> *</span>}</div>
+              <UserMediaInput
+                label={field.label}
+                kind={(/audio/.test(field.type) ? "audio" : /video/.test(field.type) ? "video" : "image") as UserMediaKind}
+                multiple={/\[\]|_list|images|videos|audios/.test(field.type)}
+                value={values[field.key]}
+                userId={user.id}
+                disabled={lockedForm}
+                uploading={uploadingKey === field.key}
+                onUpload={file => void upload(field.key, field.type, file)}
+                onRemove={index => updateValues(current => {
+                  const currentValue = current[field.key];
+                  const items = Array.isArray(currentValue) ? currentValue : currentValue === undefined || currentValue === null || currentValue === "" ? [] : [currentValue];
+                  return { ...current, [field.key]: /\[\]|_list|images|videos|audios/.test(field.type) ? items.filter((_item, itemIndex) => itemIndex !== index) : "" };
+                })}
+                onClear={() => updateValues(current => ({ ...current, [field.key]: "" }))}
+              />
+            </div> : <label key={field.key}>{field.label}{field.required && <span> *</span>}
+              {field.type === "boolean" ? <input type="checkbox" disabled={lockedForm} checked={values[field.key] === true} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.checked }))} />
+                : field.type === "select" ? <select className="text-input" disabled={lockedForm} value={String(values[field.key] ?? "")} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))}>
                   <option value="">请选择</option>{field.options?.map(option => <option key={option}>{option}</option>)}
-                </select> : <textarea className="text-input" disabled={lockedForm} value={typeof values[field.key] === "string" ? values[field.key] as string
+                </select> : <textarea className="text-input" rows={3} disabled={lockedForm} value={typeof values[field.key] === "string" ? values[field.key] as string
                   : values[field.key] === undefined || values[field.key] === null ? "" : field.type === "json" ? JSON.stringify(values[field.key], null, 2) : String(values[field.key])}
-                  placeholder={field.placeholder} onChange={e => setValues(current => ({ ...current, [field.key]: e.target.value }))} />}
+                  placeholder={field.placeholder} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))} />}
             </label>)}
             <div className="access-inline">
               <button className="button button-outline" type="submit" disabled={lockedForm}>保存我的草稿</button>
               <button className="button button-dark" type="button" disabled={lockedForm || !!pendingRun} onClick={() => void submit()}>{busy ? "处理中…" : "提交任务"}</button>
               <small>草稿 {draftId} · r{draftRevision}</small>
+              <small className="access-muted" role="status" aria-live="polite">{draftAutoSaveStatus === "pending" ? "输入已修改，等待自动保存" : draftAutoSaveStatus === "saving" ? "正在自动保存到服务端…" : draftAutoSaveStatus === "saved" ? "已自动保存到服务端" : draftAutoSaveStatus === "error" ? "自动保存未完成；修正输入后会重试" : draftAutoSaveStatus === "reconcile" ? "保存回执待核对" : draftAutoSaveStatus === "review" ? "服务端内容已变化，请核对后手动保存" : ""}</small>
             </div>
             {draftUnknown && <button type="button" className="button button-outline" onClick={() => void attempt(reconcileDraft)}>读取原草稿ID对账</button>}
             <p className="access-muted">配置、保存草稿和预检不会调用模型。提交及后续审核可能产生费用。</p>

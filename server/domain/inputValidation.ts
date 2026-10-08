@@ -1,6 +1,6 @@
 import { HttpError } from "../errors.js";
 import type { JsonValue, RunInputField, RunWorkflowDefinition } from "./types.js";
-import { asRecord, isMediaWorkflowType, isReadableMediaItem, normalizeMediaList } from "./workflowValues.js";
+import { isMediaWorkflowType, isReadableMediaItem, normalizeMediaList } from "./workflowValues.js";
 
 export function isEmptyWorkflowInput(field: RunInputField, value: unknown) {
   return value === undefined || value === null || value === "" || (isMediaWorkflowType(field.type) && normalizeMediaList(value).length === 0);
@@ -15,7 +15,7 @@ export function workflowInputIssue(field: RunInputField, value: unknown) {
   return undefined;
 }
 export function workflowInputDefaults(workflow: RunWorkflowDefinition): Record<string, JsonValue> {
-  return Object.fromEntries(workflow.inputs.flatMap(field => { const value = asRecord(field)?.defaultValue; return value !== undefined ? [[field.key, value]] : []; })) as Record<string, JsonValue>;
+  return Object.fromEntries(workflow.inputs.flatMap(field => field.defaultValue !== undefined ? [[field.key, field.defaultValue]] : []));
 }
 export function validateWorkflowInputs(workflow: RunWorkflowDefinition, inputValues: Record<string, JsonValue>) {
   for (const field of workflow.inputs) {

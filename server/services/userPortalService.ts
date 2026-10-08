@@ -138,8 +138,8 @@ export class UserPortalService {
       isMediaWorkflowType(types?.[key] ?? run.workflow.steps.find(step => step.id === id)?.outputs?.find(field => field.key === key)?.type ?? "json") ? value : scrub(value) as JsonValue]));
     const safeRun: RunRecord = { ...run,
       outputs: run.outputs.map(output => isMediaWorkflowType(output.type) ? output : { ...output, value: scrub(output.value) as JsonValue }),
-      steps: run.steps.map(step => ({ ...step, outputs: safeValues(step.outputs, step.stepId, step.outputTypes),
-        ...(step.items ? { items: step.items.map(item => ({ ...item, outputs: safeValues(item.outputs, step.stepId, step.outputTypes) })) } : {}) })),
+      steps: run.steps.map(step => { const publicStep = { ...step }; delete publicStep.agentResponse; return { ...publicStep, outputs: safeValues(step.outputs, step.stepId, step.outputTypes),
+        ...(step.items ? { items: step.items.map(item => { const publicItem = { ...item }; delete publicItem.agentResponse; return { ...publicItem, outputs: safeValues(item.outputs, step.stepId, step.outputTypes) }; }) } : {}) }; }),
     };
     const page = stepId ? stepResult(safeRun, stepId, query) : runOutputs(safeRun, query);
     // Media values are locators, not display data. Keep the authorized output URLs and pagination metadata.

@@ -70,3 +70,15 @@ test("data.zip草稿校验拒绝类型不适用或互相冲突的Schema约束", 
     { type: "object", required: ["id", "id"] }, { type: "number", enum: ["not a number"] },
   ]) assert.throws(() => prepareDataZip({ itemSchema }), /配置无效/);
 });
+
+test("ordinalField仅校验严格1-based输入顺序，不排序且省略兼容旧列表", () => {
+  const items = [{ index: 1, text: "a" }, { index: 2, text: "b" }];
+  const before = structuredClone(items);
+  assert.deepEqual(zipDataLists({ ordinalField: "index" }, { items }).rows.map(row => (row as { item: unknown }).item), items);
+  assert.deepEqual(items, before);
+  for (const bad of [[{ index: 2 }], [{ index: 1 }, { index: 1 }], [{ index: 1 }, { index: 3 }], [{ index: "1" }], [{ index: 1.5 }], [{}]]) {
+    assert.throws(() => zipDataLists({ ordinalField: "index" }, { items: bad }), /序号必须/);
+    assert.doesNotThrow(() => zipDataLists({}, { items: bad }));
+  }
+  for (const ordinalField of ["", "a.b", "__proto__", 1]) assert.throws(() => prepareDataZip({ ordinalField }), /配置无效/);
+});

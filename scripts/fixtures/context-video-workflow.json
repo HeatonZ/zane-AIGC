@@ -1,0 +1,2501 @@
+{
+  "nodes": [
+    {
+      "id": 131,
+      "type": "ComfyMathExpression",
+      "inputs": [
+        {
+          "name": "values.a",
+          "link": 261
+        },
+        {
+          "name": "values.b",
+          "link": null
+        },
+        {
+          "name": "expression",
+          "link": null,
+          "widget": {
+            "name": "expression"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT"
+        },
+        {
+          "name": "INT"
+        },
+        {
+          "name": "BOOL"
+        }
+      ],
+      "widgets_values_named": {
+        "expression": "max(5, round(a * 30)) + (5 - (max(5, round(a * 30)) % 17)) % 17"
+      }
+    },
+    {
+      "id": 128,
+      "type": "CLIPLoader",
+      "inputs": [
+        {
+          "name": "clip_name",
+          "link": null,
+          "widget": {
+            "name": "clip_name"
+          }
+        },
+        {
+          "name": "type",
+          "link": null,
+          "widget": {
+            "name": "type"
+          }
+        },
+        {
+          "name": "device",
+          "link": null,
+          "widget": {
+            "name": "device"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP"
+        }
+      ],
+      "widgets_values_named": {
+        "clip_name": "fixture-model.safetensors",
+        "type": "minimax",
+        "device": "default"
+      }
+    },
+    {
+      "id": 228,
+      "type": "ModelAttentionBackend",
+      "inputs": [
+        {
+          "name": "model",
+          "link": 650
+        },
+        {
+          "name": "attention",
+          "link": null,
+          "widget": {
+            "name": "attention"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model"
+        }
+      ],
+      "widgets_values_named": {
+        "attention": "comfy kitchen attention"
+      }
+    },
+    {
+      "id": 150,
+      "type": "LoraLoaderModelOnly",
+      "inputs": [
+        {
+          "name": "model",
+          "link": 647
+        },
+        {
+          "name": "lora_name",
+          "link": null,
+          "widget": {
+            "name": "lora_name"
+          }
+        },
+        {
+          "name": "strength_model",
+          "link": null,
+          "widget": {
+            "name": "strength_model"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL"
+        }
+      ],
+      "widgets_values_named": {
+        "lora_name": "fixture-model.safetensors",
+        "strength_model": 0.7500000000000001
+      }
+    },
+    {
+      "id": 177,
+      "type": "VAEDecode",
+      "inputs": [
+        {
+          "name": "samples",
+          "link": 661
+        },
+        {
+          "name": "vae",
+          "link": 352
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE"
+        }
+      ]
+    },
+    {
+      "id": 178,
+      "type": "VAEDecodeAudio",
+      "inputs": [
+        {
+          "name": "samples",
+          "link": 662
+        },
+        {
+          "name": "vae",
+          "link": 353
+        }
+      ],
+      "outputs": [
+        {
+          "name": "AUDIO"
+        }
+      ]
+    },
+    {
+      "id": 236,
+      "type": "UNETLoader",
+      "inputs": [
+        {
+          "name": "unet_name",
+          "link": null,
+          "widget": {
+            "name": "unet_name"
+          }
+        },
+        {
+          "name": "weight_dtype",
+          "link": null,
+          "widget": {
+            "name": "weight_dtype"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL"
+        }
+      ],
+      "widgets_values_named": {
+        "unet_name": "fixture-model.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    {
+      "id": 251,
+      "type": "ConditioningZeroOut",
+      "inputs": [
+        {
+          "name": "conditioning",
+          "link": 496
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING"
+        }
+      ]
+    },
+    {
+      "id": 119,
+      "type": "VAELoader",
+      "inputs": [
+        {
+          "name": "vae_name",
+          "link": null,
+          "widget": {
+            "name": "vae_name"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VAE"
+        }
+      ],
+      "widgets_values_named": {
+        "vae_name": "fixture-model.safetensors"
+      }
+    },
+    {
+      "id": 120,
+      "type": "VAELoader",
+      "inputs": [
+        {
+          "name": "vae_name",
+          "link": null,
+          "widget": {
+            "name": "vae_name"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VAE"
+        }
+      ],
+      "widgets_values_named": {
+        "vae_name": "fixture-model.safetensors"
+      }
+    },
+    {
+      "id": 255,
+      "type": "Reroute",
+      "inputs": [
+        {
+          "name": "",
+          "link": 504
+        }
+      ],
+      "outputs": [
+        {
+          "name": ""
+        }
+      ]
+    },
+    {
+      "id": 265,
+      "type": "Reroute",
+      "inputs": [
+        {
+          "name": "",
+          "link": 518
+        }
+      ],
+      "outputs": [
+        {
+          "name": ""
+        }
+      ]
+    },
+    {
+      "id": 123,
+      "type": "KSamplerSelect",
+      "inputs": [
+        {
+          "name": "sampler_name",
+          "link": null,
+          "widget": {
+            "name": "sampler_name"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SAMPLER"
+        }
+      ],
+      "widgets_values_named": {
+        "sampler_name": "euler"
+      }
+    },
+    {
+      "id": 179,
+      "type": "CreateVideo",
+      "inputs": [
+        {
+          "name": "images",
+          "link": 581
+        },
+        {
+          "name": "audio",
+          "link": 348
+        },
+        {
+          "name": "fps",
+          "link": null,
+          "widget": {
+            "name": "fps"
+          }
+        },
+        {
+          "name": "bit_depth",
+          "link": null,
+          "widget": {
+            "name": "bit_depth"
+          }
+        },
+        {
+          "name": "color_space",
+          "link": null,
+          "widget": {
+            "name": "color_space"
+          }
+        },
+        {
+          "name": "codec",
+          "link": null,
+          "widget": {
+            "name": "codec"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO"
+        }
+      ],
+      "widgets_values_named": {
+        "fps": 30,
+        "bit_depth": 8,
+        "color_space": "sRGB",
+        "codec": "none"
+      }
+    },
+    {
+      "id": 266,
+      "type": "ComfySwitchNode",
+      "inputs": [
+        {
+          "name": "on_false",
+          "link": 521
+        },
+        {
+          "name": "on_true",
+          "link": 522
+        },
+        {
+          "name": "switch",
+          "link": 520,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output"
+        }
+      ],
+      "widgets_values_named": {
+        "switch": false
+      }
+    },
+    {
+      "id": 273,
+      "type": "PrimitiveInt",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT"
+        }
+      ],
+      "widgets_values_named": {
+        "value": 1,
+        "fixed": "fixed"
+      }
+    },
+    {
+      "id": 295,
+      "type": "Reroute",
+      "inputs": [
+        {
+          "name": "",
+          "link": 574,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": ""
+        }
+      ]
+    },
+    {
+      "id": 233,
+      "type": "LoraLoaderModelOnly",
+      "inputs": [
+        {
+          "name": "model",
+          "link": 648
+        },
+        {
+          "name": "lora_name",
+          "link": null,
+          "widget": {
+            "name": "lora_name"
+          }
+        },
+        {
+          "name": "strength_model",
+          "link": null,
+          "widget": {
+            "name": "strength_model"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL"
+        }
+      ],
+      "widgets_values_named": {
+        "lora_name": "fixture-model.safetensors",
+        "strength_model": 0.7000000000000002
+      }
+    },
+    {
+      "id": 124,
+      "type": "BasicScheduler",
+      "inputs": [
+        {
+          "name": "model",
+          "link": 562
+        },
+        {
+          "name": "scheduler",
+          "link": null,
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "name": "steps",
+          "link": null,
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "name": "denoise",
+          "link": null,
+          "widget": {
+            "name": "denoise"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SIGMAS"
+        }
+      ],
+      "widgets_values_named": {
+        "scheduler": "beta",
+        "steps": 8,
+        "denoise": 1
+      }
+    },
+    {
+      "id": 115,
+      "type": "ResolutionSelector",
+      "inputs": [
+        {
+          "name": "aspect_ratio",
+          "link": null,
+          "widget": {
+            "name": "aspect_ratio"
+          }
+        },
+        {
+          "name": "megapixels",
+          "link": null,
+          "widget": {
+            "name": "megapixels"
+          }
+        },
+        {
+          "name": "multiple",
+          "link": null,
+          "widget": {
+            "name": "multiple"
+          }
+        },
+        {
+          "name": "preview",
+          "link": null,
+          "widget": {
+            "name": "preview"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "width"
+        },
+        {
+          "name": "height"
+        }
+      ],
+      "widgets_values_named": {
+        "aspect_ratio": "9:16 (Portrait Widescreen)",
+        "megapixels": 1,
+        "multiple": 32
+      }
+    },
+    {
+      "id": 268,
+      "type": "VideoTemporalCrop",
+      "inputs": [
+        {
+          "name": "video",
+          "link": 524
+        },
+        {
+          "name": "start_frame",
+          "link": 575,
+          "widget": {
+            "name": "start_frame"
+          }
+        },
+        {
+          "name": "length",
+          "link": null,
+          "widget": {
+            "name": "length"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video"
+        }
+      ],
+      "widgets_values_named": {
+        "start_frame": 0,
+        "length": 99999
+      }
+    },
+    {
+      "id": 301,
+      "type": "ComfySwitchNode",
+      "inputs": [
+        {
+          "name": "on_false",
+          "link": 601
+        },
+        {
+          "name": "on_true",
+          "link": 599
+        },
+        {
+          "name": "switch",
+          "link": 598,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output"
+        }
+      ],
+      "widgets_values_named": {
+        "switch": false
+      }
+    },
+    {
+      "id": 298,
+      "type": "SaveVideo",
+      "inputs": [
+        {
+          "name": "video",
+          "link": 600
+        },
+        {
+          "name": "filename_prefix",
+          "link": null,
+          "widget": {
+            "name": "filename_prefix"
+          }
+        },
+        {
+          "name": "format",
+          "link": null,
+          "widget": {
+            "name": "format"
+          }
+        },
+        {
+          "name": "format.codec",
+          "link": null,
+          "widget": {
+            "name": "format.codec"
+          }
+        },
+        {
+          "name": "codec",
+          "link": null,
+          "widget": {
+            "name": "codec"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video"
+        },
+        {
+          "name": "video"
+        }
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "video/MiniMax_H3",
+        "format": "auto",
+        "format.codec": "auto",
+        "codec": "auto"
+      }
+    },
+    {
+      "id": 296,
+      "type": "GetVideoComponents",
+      "inputs": [
+        {
+          "name": "video",
+          "link": 577
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images"
+        },
+        {
+          "name": "audio"
+        },
+        {
+          "name": "fps"
+        },
+        {
+          "name": "bit_depth"
+        },
+        {
+          "name": "color_space"
+        }
+      ]
+    },
+    {
+      "id": 297,
+      "type": "CreateVideo",
+      "inputs": [
+        {
+          "name": "images",
+          "link": 580
+        },
+        {
+          "name": "audio",
+          "link": 582
+        },
+        {
+          "name": "fps",
+          "link": null,
+          "widget": {
+            "name": "fps"
+          }
+        },
+        {
+          "name": "bit_depth",
+          "link": null,
+          "widget": {
+            "name": "bit_depth"
+          }
+        },
+        {
+          "name": "color_space",
+          "link": null,
+          "widget": {
+            "name": "color_space"
+          }
+        },
+        {
+          "name": "codec",
+          "link": null,
+          "widget": {
+            "name": "codec"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO"
+        }
+      ],
+      "widgets_values_named": {
+        "fps": 30,
+        "bit_depth": 8,
+        "color_space": "sRGB",
+        "codec": "none"
+      }
+    },
+    {
+      "id": 267,
+      "type": "PrimitiveBoolean",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "BOOLEAN"
+        }
+      ],
+      "widgets_values_named": {
+        "value": false
+      }
+    },
+    {
+      "id": 132,
+      "type": "PrimitiveFloat",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT"
+        }
+      ],
+      "widgets_values_named": {
+        "value": 5
+      }
+    },
+    {
+      "id": 304,
+      "type": "PrimitiveInt",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT"
+        }
+      ],
+      "widgets_values_named": {
+        "value": 6,
+        "fixed": "fixed"
+      }
+    },
+    {
+      "id": 305,
+      "type": "PrimitiveInt",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT"
+        }
+      ],
+      "widgets_values_named": {
+        "value": 4,
+        "fixed": "fixed"
+      }
+    },
+    {
+      "id": 308,
+      "type": "easy float",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "float"
+        }
+      ],
+      "widgets_values_named": {
+        "value": 0.6500000000000001
+      }
+    },
+    {
+      "id": 309,
+      "type": "easy float",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "float"
+        }
+      ],
+      "widgets_values_named": {
+        "value": 0.5000000000000001
+      }
+    },
+    {
+      "id": 302,
+      "type": "ComfySwitchNode",
+      "inputs": [
+        {
+          "name": "on_false",
+          "link": 610
+        },
+        {
+          "name": "on_true",
+          "link": 609
+        },
+        {
+          "name": "switch",
+          "link": 616,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output"
+        }
+      ],
+      "widgets_values_named": {
+        "switch": false
+      }
+    },
+    {
+      "id": 306,
+      "type": "ComfySwitchNode",
+      "inputs": [
+        {
+          "name": "on_false",
+          "link": 613
+        },
+        {
+          "name": "on_true",
+          "link": 612
+        },
+        {
+          "name": "switch",
+          "link": 617,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output"
+        }
+      ],
+      "widgets_values_named": {
+        "switch": false
+      }
+    },
+    {
+      "id": 310,
+      "type": "Reroute",
+      "inputs": [
+        {
+          "name": "",
+          "link": 615,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": ""
+        }
+      ]
+    },
+    {
+      "id": 271,
+      "type": "PrimitiveInt",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT"
+        }
+      ],
+      "widgets_values_named": {
+        "value": 0,
+        "fixed": "fixed"
+      }
+    },
+    {
+      "id": 269,
+      "type": "ComfySwitchNode",
+      "inputs": [
+        {
+          "name": "on_false",
+          "link": 527
+        },
+        {
+          "name": "on_true",
+          "link": 531
+        },
+        {
+          "name": "switch",
+          "link": 528,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output"
+        }
+      ],
+      "widgets_values_named": {
+        "switch": false
+      }
+    },
+    {
+      "id": 256,
+      "type": "LoadVideo",
+      "inputs": [
+        {
+          "name": "file",
+          "link": null,
+          "widget": {
+            "name": "file"
+          }
+        },
+        {
+          "name": "upload",
+          "link": null,
+          "widget": {
+            "name": "upload"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO"
+        }
+      ],
+      "widgets_values_named": {
+        "file": "__missing_author_sample__.mp4"
+      }
+    },
+    {
+      "id": 288,
+      "type": "ColorTransfer",
+      "inputs": [
+        {
+          "name": "image_target",
+          "link": 579
+        },
+        {
+          "name": "image_ref",
+          "link": 568
+        },
+        {
+          "name": "method",
+          "link": null,
+          "widget": {
+            "name": "method"
+          }
+        },
+        {
+          "name": "source_stats",
+          "link": null,
+          "widget": {
+            "name": "source_stats"
+          }
+        },
+        {
+          "name": "source_stats.target_index",
+          "link": null,
+          "widget": {
+            "name": "source_stats.target_index"
+          }
+        },
+        {
+          "name": "strength",
+          "link": null,
+          "widget": {
+            "name": "strength"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image"
+        }
+      ],
+      "widgets_values_named": {
+        "method": "mkl_lab",
+        "source_stats": "target_frame",
+        "source_stats.target_index": 0,
+        "strength": 0.7500000000000001
+      }
+    },
+    {
+      "id": 136,
+      "type": "MiniMaxH3ReferenceToVideo",
+      "inputs": [
+        {
+          "name": "clip",
+          "link": 272
+        },
+        {
+          "name": "vae",
+          "link": 273
+        },
+        {
+          "name": "audio_vae",
+          "link": 274
+        },
+        {
+          "name": "ref_images.ref_image_0",
+          "link": null
+        },
+        {
+          "name": "ref_videos.ref_video_0",
+          "link": null
+        },
+        {
+          "name": "ref_video_audios.ref_video_audio_0",
+          "link": null
+        },
+        {
+          "name": "ref_audios.ref_audio_0",
+          "link": null
+        },
+        {
+          "name": "prompt",
+          "link": 279,
+          "widget": {
+            "name": "prompt"
+          }
+        },
+        {
+          "name": "width",
+          "link": 392,
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "name": "height",
+          "link": 393,
+          "widget": {
+            "name": "height"
+          }
+        },
+        {
+          "name": "length",
+          "link": 275,
+          "widget": {
+            "name": "length"
+          }
+        },
+        {
+          "name": "ref_image_size",
+          "link": null,
+          "widget": {
+            "name": "ref_image_size"
+          }
+        },
+        {
+          "name": "ref_audios.ref_audio_1",
+          "link": null
+        },
+        {
+          "name": "ref_audios.ref_audio_2",
+          "link": null
+        },
+        {
+          "name": "ref_video_audios.ref_video_audio_1",
+          "link": null
+        },
+        {
+          "name": "ref_video_audios.ref_video_audio_2",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive"
+        },
+        {
+          "name": "LATENT"
+        }
+      ],
+      "widgets_values_named": {
+        "prompt": "",
+        "width": 576,
+        "height": 576,
+        "length": 124,
+        "ref_image_size": "match"
+      }
+    },
+    {
+      "id": 329,
+      "type": "ImageAddNoise",
+      "inputs": [
+        {
+          "name": "image",
+          "link": 631
+        },
+        {
+          "name": "seed",
+          "link": null,
+          "widget": {
+            "name": "seed"
+          }
+        },
+        {
+          "name": "strength",
+          "link": null,
+          "widget": {
+            "name": "strength"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE"
+        }
+      ],
+      "widgets_values_named": {
+        "seed": 0,
+        "control_after_generate": "fixed",
+        "strength": 0.10000000000000002
+      }
+    },
+    {
+      "id": 327,
+      "type": "GetImageRangeFromBatch",
+      "inputs": [
+        {
+          "name": "images",
+          "link": 635
+        },
+        {
+          "name": "masks",
+          "link": null
+        },
+        {
+          "name": "start_index",
+          "link": null,
+          "widget": {
+            "name": "start_index"
+          }
+        },
+        {
+          "name": "num_frames",
+          "link": 639,
+          "widget": {
+            "name": "num_frames"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE"
+        },
+        {
+          "name": "MASK"
+        }
+      ],
+      "widgets_values_named": {
+        "start_index": 0,
+        "num_frames": 21
+      }
+    },
+    {
+      "id": 274,
+      "type": "ComfyMathExpression",
+      "inputs": [
+        {
+          "name": "values.a",
+          "link": 530
+        },
+        {
+          "name": "values.b",
+          "link": null
+        },
+        {
+          "name": "expression",
+          "link": null,
+          "widget": {
+            "name": "expression"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT"
+        },
+        {
+          "name": "INT"
+        },
+        {
+          "name": "BOOL"
+        }
+      ],
+      "widgets_values_named": {
+        "expression": "a*17+5"
+      }
+    },
+    {
+      "id": 253,
+      "type": "MiniMaxH3AddGuide",
+      "inputs": [
+        {
+          "name": "positive",
+          "link": 503
+        },
+        {
+          "name": "latent",
+          "link": 505
+        },
+        {
+          "name": "vae",
+          "link": 506
+        },
+        {
+          "name": "audio_vae",
+          "link": 507
+        },
+        {
+          "name": "image",
+          "link": 637
+        },
+        {
+          "name": "audio",
+          "link": 517
+        },
+        {
+          "name": "frame_idx",
+          "link": null,
+          "widget": {
+            "name": "frame_idx"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive"
+        }
+      ],
+      "widgets_values_named": {
+        "frame_idx": 0
+      }
+    },
+    {
+      "id": 332,
+      "type": "ComfyMathExpression",
+      "inputs": [
+        {
+          "name": "values.a",
+          "link": 638
+        },
+        {
+          "name": "values.b",
+          "link": null
+        },
+        {
+          "name": "expression",
+          "link": null,
+          "widget": {
+            "name": "expression"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT"
+        },
+        {
+          "name": "INT"
+        },
+        {
+          "name": "BOOL"
+        }
+      ],
+      "widgets_values_named": {
+        "expression": "a -1"
+      }
+    },
+    {
+      "id": 263,
+      "type": "GetVideoComponents",
+      "inputs": [
+        {
+          "name": "video",
+          "link": 514
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images"
+        },
+        {
+          "name": "audio"
+        },
+        {
+          "name": "fps"
+        },
+        {
+          "name": "bit_depth"
+        },
+        {
+          "name": "color_space"
+        }
+      ]
+    },
+    {
+      "id": 262,
+      "type": "VideoFrameSample",
+      "inputs": [
+        {
+          "name": "video",
+          "link": 515
+        },
+        {
+          "name": "num_frames",
+          "link": 533,
+          "widget": {
+            "name": "num_frames"
+          }
+        },
+        {
+          "name": "strategy",
+          "link": null,
+          "widget": {
+            "name": "strategy"
+          }
+        },
+        {
+          "name": "seed",
+          "link": null,
+          "widget": {
+            "name": "seed"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video"
+        }
+      ],
+      "widgets_values_named": {
+        "num_frames": 22,
+        "strategy": "tail",
+        "seed": 0,
+        "control_after_generate": "fixed"
+      }
+    },
+    {
+      "id": 290,
+      "type": "VideoFrameSample",
+      "inputs": [
+        {
+          "name": "video",
+          "link": 566
+        },
+        {
+          "name": "num_frames",
+          "link": null,
+          "widget": {
+            "name": "num_frames"
+          }
+        },
+        {
+          "name": "strategy",
+          "link": null,
+          "widget": {
+            "name": "strategy"
+          }
+        },
+        {
+          "name": "seed",
+          "link": null,
+          "widget": {
+            "name": "seed"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video"
+        }
+      ],
+      "widgets_values_named": {
+        "num_frames": 1,
+        "strategy": "tail",
+        "seed": 0,
+        "control_after_generate": "fixed"
+      }
+    },
+    {
+      "id": 330,
+      "type": "ImageAddNoise",
+      "inputs": [
+        {
+          "name": "image",
+          "link": 632
+        },
+        {
+          "name": "seed",
+          "link": null,
+          "widget": {
+            "name": "seed"
+          }
+        },
+        {
+          "name": "strength",
+          "link": null,
+          "widget": {
+            "name": "strength"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE"
+        }
+      ],
+      "widgets_values_named": {
+        "seed": 0,
+        "control_after_generate": "fixed",
+        "strength": 0
+      }
+    },
+    {
+      "id": 328,
+      "type": "GetImageRangeFromBatch",
+      "inputs": [
+        {
+          "name": "images",
+          "link": 636
+        },
+        {
+          "name": "masks",
+          "link": null
+        },
+        {
+          "name": "start_index",
+          "link": 640,
+          "widget": {
+            "name": "start_index"
+          }
+        },
+        {
+          "name": "num_frames",
+          "link": null,
+          "widget": {
+            "name": "num_frames"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE"
+        },
+        {
+          "name": "MASK"
+        }
+      ],
+      "widgets_values_named": {
+        "start_index": 21,
+        "num_frames": 1
+      }
+    },
+    {
+      "id": 331,
+      "type": "ImageBatchMulti",
+      "inputs": [
+        {
+          "name": "image_1",
+          "link": 633
+        },
+        {
+          "name": "image_2",
+          "link": 634
+        },
+        {
+          "name": "inputcount",
+          "link": null,
+          "widget": {
+            "name": "inputcount"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images"
+        }
+      ],
+      "widgets_values_named": {
+        "inputcount": 2,
+        "Update inputs": null
+      }
+    },
+    {
+      "id": 254,
+      "type": "MiniMaxH3AudioGuideFeather",
+      "inputs": [
+        {
+          "name": "positive",
+          "link": 502
+        },
+        {
+          "name": "audio_feather_ticks",
+          "link": null,
+          "widget": {
+            "name": "audio_feather_ticks"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive"
+        }
+      ],
+      "widgets_values_named": {
+        "audio_feather_ticks": 12
+      }
+    },
+    {
+      "id": 291,
+      "type": "GetVideoComponents",
+      "inputs": [
+        {
+          "name": "video",
+          "link": 567
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images"
+        },
+        {
+          "name": "audio"
+        },
+        {
+          "name": "fps"
+        },
+        {
+          "name": "bit_depth"
+        },
+        {
+          "name": "color_space"
+        }
+      ]
+    },
+    {
+      "id": 138,
+      "type": "PrimitiveStringMultiline",
+      "inputs": [
+        {
+          "name": "value",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING"
+        }
+      ],
+      "widgets_values_named": {
+        "value": "__runtime_prompt__"
+      }
+    },
+    {
+      "id": 338,
+      "type": "VedaSparseAttention",
+      "inputs": [
+        {
+          "name": "model",
+          "link": 649
+        },
+        {
+          "name": "predictor",
+          "link": null,
+          "widget": {
+            "name": "predictor"
+          }
+        },
+        {
+          "name": "generated_sparsity",
+          "link": null,
+          "widget": {
+            "name": "generated_sparsity"
+          }
+        },
+        {
+          "name": "reference_sparsity",
+          "link": null,
+          "widget": {
+            "name": "reference_sparsity"
+          }
+        },
+        {
+          "name": "full_attention_layers",
+          "link": null,
+          "widget": {
+            "name": "full_attention_layers"
+          }
+        },
+        {
+          "name": "full_attention_steps",
+          "link": null,
+          "widget": {
+            "name": "full_attention_steps"
+          }
+        },
+        {
+          "name": "verbose",
+          "link": null,
+          "widget": {
+            "name": "verbose"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model"
+        }
+      ],
+      "widgets_values_named": {
+        "predictor": "fixture-model.safetensors",
+        "generated_sparsity": "90%",
+        "reference_sparsity": "90%",
+        "full_attention_layers": "0-4,45-49",
+        "full_attention_steps": "",
+        "verbose": false
+      }
+    },
+    {
+      "id": 339,
+      "type": "SelfLiftAvatarH3Sampler",
+      "inputs": [
+        {
+          "name": "low_res_model",
+          "link": 651
+        },
+        {
+          "name": "high_res_model",
+          "link": 652
+        },
+        {
+          "name": "positive",
+          "link": 653
+        },
+        {
+          "name": "negative",
+          "link": 654
+        },
+        {
+          "name": "vae",
+          "link": 655
+        },
+        {
+          "name": "latent_image",
+          "link": 656
+        },
+        {
+          "name": "sampler",
+          "link": 657
+        },
+        {
+          "name": "sigmas",
+          "link": 658
+        },
+        {
+          "name": "seed",
+          "link": null,
+          "widget": {
+            "name": "seed"
+          }
+        },
+        {
+          "name": "cfg",
+          "link": null,
+          "widget": {
+            "name": "cfg"
+          }
+        },
+        {
+          "name": "transition_step",
+          "link": 659,
+          "widget": {
+            "name": "transition_step"
+          }
+        },
+        {
+          "name": "lowres_scale",
+          "link": 660,
+          "widget": {
+            "name": "lowres_scale"
+          }
+        },
+        {
+          "name": "rho",
+          "link": null,
+          "widget": {
+            "name": "rho"
+          }
+        },
+        {
+          "name": "w_min",
+          "link": null,
+          "widget": {
+            "name": "w_min"
+          }
+        },
+        {
+          "name": "w_max",
+          "link": null,
+          "widget": {
+            "name": "w_max"
+          }
+        },
+        {
+          "name": "upscaler_model",
+          "link": null,
+          "widget": {
+            "name": "upscaler_model"
+          }
+        },
+        {
+          "name": "highres_tiling",
+          "link": null,
+          "widget": {
+            "name": "highres_tiling"
+          }
+        },
+        {
+          "name": "tiling_mode",
+          "link": null,
+          "widget": {
+            "name": "tiling_mode"
+          }
+        },
+        {
+          "name": "tiling_tiles",
+          "link": null,
+          "widget": {
+            "name": "tiling_tiles"
+          }
+        },
+        {
+          "name": "tiling_axis",
+          "link": null,
+          "widget": {
+            "name": "tiling_axis"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT"
+        }
+      ],
+      "widgets_values_named": {
+        "seed": 42,
+        "control_after_generate": "fixed",
+        "cfg": 1,
+        "transition_step": 6,
+        "lowres_scale": 0.5,
+        "rho": 0,
+        "w_min": 0.5,
+        "w_max": 1,
+        "upscaler_model": "fixture-model.safetensors",
+        "highres_tiling": false,
+        "tiling_mode": "auto",
+        "tiling_tiles": 4,
+        "tiling_axis": "auto",
+        "selflift_tiling_plan": ""
+      }
+    }
+  ],
+  "links": [
+    [
+      348,
+      178,
+      0,
+      179,
+      1,
+      "AUDIO"
+    ],
+    [
+      352,
+      119,
+      0,
+      177,
+      1,
+      "VAE"
+    ],
+    [
+      353,
+      120,
+      0,
+      178,
+      1,
+      "VAE"
+    ],
+    [
+      496,
+      136,
+      0,
+      251,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      502,
+      253,
+      0,
+      254,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      503,
+      136,
+      0,
+      253,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      504,
+      254,
+      0,
+      255,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      505,
+      136,
+      1,
+      253,
+      1,
+      "LATENT"
+    ],
+    [
+      506,
+      119,
+      0,
+      253,
+      2,
+      "VAE"
+    ],
+    [
+      507,
+      120,
+      0,
+      253,
+      3,
+      "VAE"
+    ],
+    [
+      514,
+      262,
+      0,
+      263,
+      0,
+      "VIDEO"
+    ],
+    [
+      515,
+      256,
+      0,
+      262,
+      0,
+      "VIDEO"
+    ],
+    [
+      517,
+      263,
+      1,
+      253,
+      5,
+      "AUDIO"
+    ],
+    [
+      518,
+      136,
+      0,
+      265,
+      0,
+      "*"
+    ],
+    [
+      520,
+      267,
+      0,
+      266,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      521,
+      265,
+      0,
+      266,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      522,
+      255,
+      0,
+      266,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      524,
+      179,
+      0,
+      268,
+      0,
+      "VIDEO"
+    ],
+    [
+      527,
+      271,
+      0,
+      269,
+      0,
+      "INT"
+    ],
+    [
+      528,
+      267,
+      0,
+      269,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      531,
+      274,
+      1,
+      269,
+      1,
+      "INT"
+    ],
+    [
+      533,
+      274,
+      1,
+      262,
+      1,
+      "INT"
+    ],
+    [
+      562,
+      150,
+      0,
+      124,
+      0,
+      "MODEL"
+    ],
+    [
+      566,
+      256,
+      0,
+      290,
+      0,
+      "VIDEO"
+    ],
+    [
+      567,
+      290,
+      0,
+      291,
+      0,
+      "VIDEO"
+    ],
+    [
+      574,
+      269,
+      0,
+      295,
+      0,
+      "INT"
+    ],
+    [
+      575,
+      295,
+      0,
+      268,
+      1,
+      "INT"
+    ],
+    [
+      577,
+      268,
+      0,
+      296,
+      0,
+      "VIDEO"
+    ],
+    [
+      580,
+      288,
+      0,
+      297,
+      0,
+      "IMAGE"
+    ],
+    [
+      581,
+      177,
+      0,
+      179,
+      0,
+      "IMAGE"
+    ],
+    [
+      582,
+      296,
+      1,
+      297,
+      1,
+      "AUDIO"
+    ],
+    [
+      598,
+      267,
+      0,
+      301,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      599,
+      297,
+      0,
+      301,
+      1,
+      "VIDEO"
+    ],
+    [
+      601,
+      268,
+      0,
+      301,
+      0,
+      "VIDEO"
+    ],
+    [
+      609,
+      305,
+      0,
+      302,
+      1,
+      "INT"
+    ],
+    [
+      610,
+      304,
+      0,
+      302,
+      0,
+      "INT"
+    ],
+    [
+      612,
+      308,
+      0,
+      306,
+      1,
+      "FLOAT"
+    ],
+    [
+      613,
+      309,
+      0,
+      306,
+      0,
+      "FLOAT"
+    ],
+    [
+      615,
+      267,
+      0,
+      310,
+      0,
+      "*"
+    ],
+    [
+      616,
+      310,
+      0,
+      302,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      617,
+      310,
+      0,
+      306,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      631,
+      327,
+      0,
+      329,
+      0,
+      "IMAGE"
+    ],
+    [
+      632,
+      328,
+      0,
+      330,
+      0,
+      "IMAGE"
+    ],
+    [
+      633,
+      329,
+      0,
+      331,
+      0,
+      "IMAGE"
+    ],
+    [
+      634,
+      330,
+      0,
+      331,
+      1,
+      "IMAGE"
+    ],
+    [
+      635,
+      263,
+      0,
+      327,
+      0,
+      "IMAGE"
+    ],
+    [
+      636,
+      263,
+      0,
+      328,
+      0,
+      "IMAGE"
+    ],
+    [
+      637,
+      331,
+      0,
+      253,
+      4,
+      "IMAGE"
+    ],
+    [
+      639,
+      332,
+      1,
+      327,
+      3,
+      "INT"
+    ],
+    [
+      640,
+      332,
+      1,
+      328,
+      2,
+      "INT"
+    ],
+    [
+      647,
+      338,
+      0,
+      150,
+      0,
+      "MODEL"
+    ],
+    [
+      648,
+      338,
+      0,
+      233,
+      0,
+      "MODEL"
+    ],
+    [
+      649,
+      228,
+      0,
+      338,
+      0,
+      "MODEL"
+    ],
+    [
+      272,
+      128,
+      0,
+      136,
+      0,
+      "CLIP"
+    ],
+    [
+      273,
+      119,
+      0,
+      136,
+      1,
+      "VAE"
+    ],
+    [
+      274,
+      120,
+      0,
+      136,
+      2,
+      "VAE"
+    ],
+    [
+      279,
+      138,
+      0,
+      136,
+      7,
+      "STRING"
+    ],
+    [
+      392,
+      115,
+      0,
+      136,
+      8,
+      "INT"
+    ],
+    [
+      393,
+      115,
+      1,
+      136,
+      9,
+      "INT"
+    ],
+    [
+      275,
+      131,
+      1,
+      136,
+      10,
+      "INT"
+    ],
+    [
+      650,
+      236,
+      0,
+      228,
+      0,
+      "MODEL"
+    ],
+    [
+      651,
+      233,
+      0,
+      339,
+      0,
+      "MODEL"
+    ],
+    [
+      652,
+      150,
+      0,
+      339,
+      1,
+      "MODEL"
+    ],
+    [
+      653,
+      266,
+      0,
+      339,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      654,
+      251,
+      0,
+      339,
+      3,
+      "CONDITIONING"
+    ],
+    [
+      655,
+      119,
+      0,
+      339,
+      4,
+      "VAE"
+    ],
+    [
+      656,
+      136,
+      1,
+      339,
+      5,
+      "LATENT"
+    ],
+    [
+      657,
+      123,
+      0,
+      339,
+      6,
+      "SAMPLER"
+    ],
+    [
+      658,
+      124,
+      0,
+      339,
+      7,
+      "SIGMAS"
+    ],
+    [
+      659,
+      302,
+      0,
+      339,
+      10,
+      "INT"
+    ],
+    [
+      660,
+      306,
+      0,
+      339,
+      11,
+      "FLOAT"
+    ],
+    [
+      661,
+      339,
+      0,
+      177,
+      0,
+      "LATENT"
+    ],
+    [
+      662,
+      339,
+      0,
+      178,
+      0,
+      "LATENT"
+    ],
+    [
+      261,
+      132,
+      0,
+      131,
+      0,
+      "FLOAT"
+    ],
+    [
+      600,
+      301,
+      0,
+      298,
+      0,
+      "VIDEO"
+    ],
+    [
+      579,
+      296,
+      0,
+      288,
+      0,
+      "IMAGE"
+    ],
+    [
+      568,
+      291,
+      0,
+      288,
+      1,
+      "IMAGE"
+    ],
+    [
+      530,
+      273,
+      0,
+      274,
+      0,
+      "FLOAT,INT,BOOLEAN"
+    ],
+    [
+      638,
+      274,
+      1,
+      332,
+      0,
+      "FLOAT,INT,BOOLEAN"
+    ]
+  ]
+}

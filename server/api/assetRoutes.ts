@@ -4,6 +4,7 @@ import { AssetService } from "../services/assetService.js";
 import { assetEnvelope, assetSummary, parseAssetInput } from "../services/assetCatalog.js";
 import { saveAssetSchema, uploadAssetSchema } from "../domain/assetLibraryContracts.js";
 import { HttpError } from "../errors.js";
+import { enablePrivateMediaRevalidation } from "./privateMediaCache.js";
 
 function query(req: Request) {
   const result: Record<string, unknown> = {};
@@ -67,12 +68,14 @@ export function createAssetRouter(service: AssetService) {
     // Recheck even for HEAD/Range after asynchronous settings reads.
     if (res.locals.identity?.role === "admin") authorize(res);
     else res.locals.authorizeAssetMedia?.(projectDirectory, req.params.assetId);
-    res.sendFile(service.file(projectDirectory, req.params.assetId, version), { dotfiles: "allow", headers: { "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox" } }, error => { if (error) next(error); });
+    enablePrivateMediaRevalidation(res);
+    res.sendFile(service.file(projectDirectory, req.params.assetId, version), { dotfiles: "allow", cacheControl: false, etag: true, lastModified: true, headers: { "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox" } }, error => { if (error) next(error); });
   });
   router.get("/api/v1/runs/:runId/output-media", async (req,res,next) => {
     const { projectDirectory } = await service.loadSettings();
     const selected = await service.source(projectDirectory, { runId:req.params.runId, stepId:req.query.stepId, itemIndex:req.query.itemIndex === undefined ? undefined : Number(req.query.itemIndex), outputKey:req.query.outputKey, mediaIndex:Number(req.query.mediaIndex ?? 0) });
-    res.sendFile(service.localMediaFile(projectDirectory, selected.value), { dotfiles:"allow" }, error => { if (error) next(error); });
+    enablePrivateMediaRevalidation(res);
+    res.sendFile(service.localMediaFile(projectDirectory, selected.value), { dotfiles:"allow", cacheControl:false, etag:true, lastModified:true }, error => { if (error) next(error); });
   });
   return router;
 }

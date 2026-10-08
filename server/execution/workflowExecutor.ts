@@ -33,6 +33,10 @@ export interface StepExecutionContext {
   /** Stable step-level iteration index for local artifacts; absent for a single execution. */
   itemIndex?: number;
   feedback?: HermesFeedbackContext;
+  /** Persist the exact outgoing Hermes text before the external request starts. */
+  captureAgentPrompt?: (prompt: string) => Promise<void>;
+  /** Persist the exact untrimmed Hermes response when parsing or output validation fails. */
+  captureAgentResponse?: (response: string) => Promise<void>;
   runId: string;
   artifacts: RunArtifactPaths;
   step: RunStep;
@@ -90,7 +94,8 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
       const items = step.items
         ? await Promise.all(step.items.map(async (item) => ({
           ...item,
-          value: externalizeRuntimeValue(item.value),
+          // Archive nested source media with the same cache as upstream outputs, so carry prefix matching remains stable after persistence.
+          value: await archiveOutputMedia(externalizeRuntimeValue(item.value), runId, artifacts!, settings.comfyuiBaseUrl, mediaCache, archiveWarnings, runController.signal),
           ...(item.inputs ? { inputs: externalizeRuntimeValue(item.inputs) as Record<string, JsonValue> } : {}),
           ...(item.outputs ? {
             outputs: Object.fromEntries(await Promise.all(Object.entries(item.outputs).map(async ([key, value]) => [
@@ -172,11 +177,17 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
     return { inputs: { ...baseInputs, "iteration.item": mediaKind ? sourceItem : itemValue }, values };
   }
 
-  async function executeStep(step: RunStep, stepInputValues: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, iterationItems?: readonly JsonValue[], itemIndex?: number, warningTarget?: Pick<RunStepRecord, "warnings">) {
+  async function executeStep(step: RunStep, stepInputValues: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, iterationItems?: readonly JsonValue[], itemIndex?: number, warningTarget?: Pick<RunStepRecord, "warnings" | "agentPrompt" | "agentResponse">) {
     const feedback = feedbackForStep(prepared.feedbackHistory ?? [], step.id, itemIndex, itemIndex === undefined ? undefined : iterationItems?.[itemIndex], prepared.feedbackSourceAliases);
     return context.executeStep({ warn: warningTarget ? async message => {
       const warnings = warningTarget.warnings ?? (warningTarget.warnings = []);
       if (!warnings.includes(message)) { warnings.push(message); await persistRuntime("running"); }
+    } : undefined, captureAgentPrompt: warningTarget ? async prompt => {
+      warningTarget.agentPrompt = prompt;
+      await persistRuntime("running");
+    } : undefined, captureAgentResponse: warningTarget ? async response => {
+      warningTarget.agentResponse = response;
+      await persistRuntime("running");
     } : undefined, runId, artifacts, runInputValues: inputValues, iterationItems, itemIndex, feedback, step, inputValues: stepInputValues, stepValues, types, settings, inputFields: executionWorkflow.inputs, signal: runController.signal });
   }
 

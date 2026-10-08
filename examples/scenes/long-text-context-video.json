@@ -1,0 +1,921 @@
+{
+  "scene": {
+    "shortTitle": "长文出视频",
+    "summary": "提供剧情与资产，一键生成原生有声剧情成片",
+    "description": "长文与参考素材 → Writer一次编写制作级视频分镜脚本 → AIXG一次批量转换H3提示词（不重新编剧） → 确定性分镜对齐与素材映射 → 同一个ComfyUI工作流串行自动关闭/开启上下文并传递上一段视频 → 原声音轨合成；共7步、两次AI调用，原生24fps，禁止音乐。",
+    "cover": "/long-text-video.svg",
+    "accent": "green",
+    "stages": [
+      "剧情与素材",
+      "Writer制作级分镜",
+      "AIXG提示词转换",
+      "素材映射与数据对齐",
+      "单工作流自动续接",
+      "原生声音合成"
+    ],
+    "id": "scene_long_text_to_video",
+    "title": "长文出视频",
+    "coverPosition": "center"
+  },
+  "workflow": {
+    "name": "长文出视频 · Writer分镜与AIXG提示词 · 单工作流续接",
+    "sceneId": "scene_long_text_to_video",
+    "inputs": [
+      {
+        "label": "长文 / 剧情",
+        "required": true,
+        "key": "content",
+        "type": "textarea",
+        "placeholder": "粘贴完整长文、故事或剧情，Writer直接改编为制作级视频分镜"
+      },
+      {
+        "label": "人物资产（按说明顺序上传；项目总参考图最多12张）",
+        "required": true,
+        "mediaRole": "character",
+        "key": "character_assets",
+        "type": "image_list"
+      },
+      {
+        "label": "场景资产（按说明顺序上传）",
+        "required": false,
+        "mediaRole": "scene",
+        "key": "scene_assets",
+        "type": "image_list"
+      },
+      {
+        "label": "道具资产（没有关键道具可不传）",
+        "required": false,
+        "mediaRole": "prop",
+        "key": "prop_assets",
+        "type": "image_list"
+      },
+      {
+        "label": "参考音色（清晰纯人声样本；每片段最多3个）",
+        "required": false,
+        "mediaRole": "voice_reference",
+        "key": "voice_reference_audio",
+        "type": "audio_list"
+      },
+      {
+        "label": "资产与音色对应说明",
+        "required": false,
+        "key": "asset_notes",
+        "type": "textarea",
+        "placeholder": "人物第1张=林舟、人物第2张=苏晴；场景第1张=办公室；道具第1张=红色信封；音频第1条=林舟音色、音频第2条=苏晴音色。各类别独立编号，从1开始。请使用已获授权的素材。"
+      },
+      {
+        "label": "画面风格 / 改编要求",
+        "required": false,
+        "key": "production_notes",
+        "type": "textarea",
+        "placeholder": "例如：写实短剧、克制表演、优先保留的情节与对白、是否需要旁白",
+        "defaultValue": "保留核心剧情、人物关系和结局；自然中文对白；画面风格跟随参考资产。禁止所有音乐，只保留对白和必要现场声音。"
+      },
+      {
+        "label": "目标成片时长（秒）",
+        "required": true,
+        "key": "target_seconds",
+        "type": "number",
+        "defaultValue": 60
+      },
+      {
+        "label": "画幅",
+        "required": true,
+        "key": "ratio",
+        "type": "select",
+        "options": [
+          "1:1 (Square)",
+          "2:3 (Portrait Photo)",
+          "3:2 (Photo)",
+          "3:4 (Portrait Standard)",
+          "4:3 (Standard)",
+          "9:16 (Portrait Widescreen)",
+          "16:9 (Widescreen)",
+          "21:9 (Ultrawide)"
+        ],
+        "defaultValue": "9:16 (Portrait Widescreen)"
+      },
+      {
+        "label": "生成像素（百万像素）",
+        "required": true,
+        "key": "mp",
+        "type": "number",
+        "defaultValue": 0.7
+      }
+    ],
+    "steps": [
+      {
+        "promptTemplate": "你是长文/剧情视频的制作导演、编剧和分镜师。把用户给定的长文/剧情直接改编为可执行、可生成的制作级视频分镜脚本；只负责镜头内容和制作分镜，模型提示词由后续 AIXG 转换。不要输出规划建议、分析过程或待完成事项。\n\n【项目】\n长文/剧情：\n{{input.content}}\n目标成片时长：{{input.target_seconds}} 秒；画幅：{{input.ratio}}；画面风格与改编要求：{{input.production_notes}}\n人物/场景/道具/音色对应说明：\n{{input.asset_notes}}\n参考音频文件信息（仅用于确定数量/对应关系，你不能据此假装听过音频）：{{input.voice_reference_audio}}\n人物、场景、道具图片作为分组附件提供。上传序号分别从1开始，不跨组编号；资产说明优先于你的视觉猜测。\n\n【制作边界】\n1. Writer 完成故事改编、镜头拆分、对白和连续性，输出可读 storyboard 与结构化 shots，不输出 H3 模型提示词。后续 AIXG 只把已确定的镜头转换为提示词，不重新编剧或拆镜头，不需要生成资产、关键帧、独立配音/TTS，也不设计质量检查节点。\n2. 保留核心剧情、因果、人物关系、关键事件和结局。按目标时长压缩重复表达，不随意增添支线或反转；用可见动作表达心理和信息。开头直接进入正在发生的事件，结尾完成情绪或事件回收。\n3. 每个片段5到15秒，优先6到10秒，一个明确的叙事任务和主要动作，通常一个场景、一个主镜头；复杂动作、场景切换、多人抢话、长对白必须拆分。所有 seconds 之和尽量接近目标时长。当前生成步骤使用原生24fps，并在17k+5帧网格上对齐，实际成片可有小幅时长偏差。\n4. 每段都写景别、机位/人物相对位置、视线与运动方向、具体动作及起止状态、光线/时间、必要道具持有位置；镜头运动用于叙事，不堆叠推拉摇移/形容词。避免不必要的字幕、水印、画面文字。\n5. 每段 visual_description 须独立可执行，不能只写“保持上一镜头”。同一人物的面容、服装、体型，场景布局/光线，道具颜色/位置/持有状态，须继承前镜的结束状态；在 continuity_in/continuity_out 明确记录。\n6. 对白逐字列出，标明说话人、音色资产、语气、停顿、相对时间范围。默认按中文对白每秒约2.5到3字安排可发声时段，先留出动作、反应、换气和停顿时间，不为压时长加速对白，不截断句子。对白在片段结束前完成，预留短收尾。以人物对白和现场动作为主，必要时才有少量旁白。\n7. 视频片段直接生成对白/旁白、对应口型和必要的现场声音。<Voice n> 仅是音色/发声风格参考，不是实际台词或背景音轨，不复制参考音频的文字、内容、时间轴及背景声。按说明把音色固定绑定到人物/旁白，跨镜头不得互换；没有参考的说话人可使用一致的自然音色，但不能虚构音频序号。没有台词的片段不得新增说话声。\n8. 所有片段都禁止音乐：无背景音乐、配乐、旋律、乐器声、歌曲、演唱、哼唱、片头片尾音乐，也不能复用参考样本的音乐。只允许明确写出的正常说话声和必要现场环境声/动作音效；如果原故事涉及音乐，用画面行为或正常对白承载信息，声音不得演奏或演唱。\n\n【资产绑定协议】\n- 每项只有一个selection对象，包含characters/scenes/props/voices四组1-based序号数组，空组填[]，组内升序且无重复；不要同时输出重复的顶层四组字段。每段人物最多4张、场景最多1张、道具最多4张，合计最多9张；参考音色最多3条。未上传的可选场景/道具/音色组必须填[]，不能虚构序号。\n- 本段至少选择一张人物图；仅选本段真实出场人物和必要素材，不把整个资产库塞进每段。selection中编号必须实际存在。\n- visual_description、dialogue和连续性说明使用全局<Character n>/<Scene n>/<Prop n>/<Voice n>标记，所用序号必须在selection对应数组中。媒体选择基础步骤按人物→场景→道具顺序映射为<Picture n>，音色映射为<Audio n>。不要自行写局部编号。\n- 参考图片只决定外观、场景和道具；参考音频只参考人物声线，不复制其台词、背景声或时间轴。固定每个人物与音色关系，不换脸、换装或串音色。\n\n【衔接与说话节奏（必须落实到现有字段）】\n1. 先计算每段真正可用于说话的时长，再确定台词字数。默认对白累计占段长不超过70%；至少留0.3秒起始动作/反应和0.6秒收尾，情绪重的句子留更长呼吸。不是要求每段开头统一静音，也不要用结尾定格补齐时长。\n2. 每条 dialogue 的 start/end 必须满足0<=start<end<=seconds-0.6；text按该时段和自然语速压缩，不把停顿也算成发声时间。超长台词先压缩冗余；仍装不下就重新分镜，禁止靠加速、吞字或截尾完成。数字、英文、专名按实际发音时长估算，不能只按字符数。\n3. 同一时刻默认只有一人说话，问答之间留约0.3到0.5秒的自然反应；一段以一名主说话人为主，必要回应保持短。delivery明确情绪、重音和停顿，不逐字机械匀速。不要把每句都安排为一开始就说、最后一帧才说完。\n4. 同场景连续片段：下一段continuity_in必须具体承接上一段continuity_out的机位/轴线、左右站位、视线、动作阶段、道具握持和光线；不要只写“接上一镜”。上一段完成的动作下一段不能从头再做。前一段尾部留可承接的动作或表情，而非黑场、淡出或结束姿势。\n5. 真正换场/时间跳跃/切换机位时，在continuity_in/out和visual_description明确写出切点及变化；不要把不同场景假写成无缝连续。台词必须在语义完整的句末或自然分句边界断开，不跨片段切断一个字、半句话或呼吸；跨段对话也要列出各段准确逐字文本，不重复上一段句尾。\n6. 输出前自行核对相邻片段起止状态、对白预算和总时长，仅修订storyboard/shots中的既有字段，不输出检查报告、额外顶层字段或模型提示词。\n\n【输出契约】\n只输出可解析JSON对象，顶层只有storyboard和shots，不返回代码围栏、正文或额外顶层字段。\n- storyboard为可读制作分镜脚本，包含改编摘要、素材与音色对应关系、总时长、逐镜动作/对白/连续性。\n- shots为按成片顺序的非空对象数组，index从1连续递增；每项包含index、seconds（5..15数字）、selection、purpose、visual_description、continuity_in、continuity_out、dialogue。selection含characters/scenes/props/voices四组数组；dialogue每条含speaker、voice（音色标记字符串或null）、text、delivery、start、end，时间相对本段新内容起点。无对白填[]。不输出prompt或模型六段标题。\n- 一个连续场景中的相邻段才设计无缝动作；新场景明确切点，不为了上下文参考强行把所有剧情放同一场景。\n结构示意：{\"storyboard\":\"完整分镜\",\"shots\":[{\"index\":1,\"seconds\":5,\"selection\":{\"characters\":[1],\"scenes\":[],\"props\":[],\"voices\":[]},\"purpose\":\"确认收到信\",\"visual_description\":\"0-5秒，人物看向桌上的信后抬眼\",\"continuity_in\":\"人物右手放在信封旁\",\"continuity_out\":\"人物抬眼，右手保持在桌上\",\"dialogue\":[{\"speaker\":\"人物名\",\"voice\":null,\"text\":\"信到了。\",\"delivery\":\"自然、克制，句后停顿\",\"start\":1,\"end\":3}]}]}\n\nWriter一次完成全部制作分镜，不调用工具或生成媒体。shots按成片顺序index=1,2,...，不跳号、重复或重排。顶层只有storyboard和shots；每项只有index、seconds、selection、purpose、visual_description、continuity_in、continuity_out、dialogue，禁止prompt或H3六段提示词。所有时间均是新段相对时间，模型上下文采样补偿交给AIXG，不在脚本中加0.9166667秒。",
+        "id": "writer",
+        "name": "Writer · 制作级视频分镜脚本",
+        "kind": "hermes",
+        "capabilityId": "core.hermes",
+        "capabilityVersion": "1",
+        "hermesProfile": "writer",
+        "inputs": [
+          {
+            "label": "人物资产（组内上传顺序从1开始）",
+            "sourceRef": "input.character_assets",
+            "key": "characters",
+            "valueSource": "reference"
+          },
+          {
+            "label": "场景资产（组内上传顺序从1开始）",
+            "sourceRef": "input.scene_assets",
+            "key": "scenes",
+            "valueSource": "reference"
+          },
+          {
+            "label": "道具资产（组内上传顺序从1开始）",
+            "sourceRef": "input.prop_assets",
+            "key": "props",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "label": "制作级分镜脚本",
+            "description": "可读的完整制作分镜，包含资产/音色对应关系和镜头执行内容",
+            "key": "storyboard",
+            "type": "text"
+          },
+          {
+            "label": "可执行有声分镜",
+            "description": "制作级原始分镜数组：叙事任务、画面调度、起止连续性、时长、素材选择与逐字对白/语气/新段时间；不含模型prompt",
+            "key": "shots",
+            "type": "json"
+          }
+        ]
+      },
+      {
+        "promptTemplate": "你是AIXG提示词转换师，不是编剧或分镜师。本次一次批量转换Writer的全部原始分镜，每个分镜对应一个完整H3提示词。\n已确定的制作级视频分镜脚本：{{step.writer.outputs.storyboard}}\n原始分镜数组（唯一内容依据，顺序固定）：{{step.writer.outputs.shots}}\n\n你是 AIXG 模型提示词转换师。只把 Writer 已确定的全部分镜依次转换成 MiniMax H3 原生有声参考生视频提示词，不重新改编、拆镜、改时长、改对白或改素材选择。\n【全部原始分镜】\n{{step.writer.outputs.shots}}\n【资产与音色对应说明】\n{{input.asset_notes}}\n【制作要求】\n{{input.production_notes}}\n【参考音色文件信息】\n{{input.voice_reference_audio}}\n人物/场景/道具图片作为分组附件提供，各组独立从1编号；你不能听到参考音频，不要假装已试听。\n必须原样承载 Writer 的 purpose、visual_description、continuity_in/out、逐字对白和新段相对时间；不新增/删减剧情、台词、人物或动作，不加速/截断台词，不修改 seconds 或引用编号。\n只使用对应镜头 selection.characters/scenes/props/voices 数组中已选的 <Character n>/<Scene n>/<Prop n>/<Voice n> 全局资产标记；不使用其他镜头的素材，不自行写 <Picture n>/<Audio n> 局部编号，局部映射由程序完成。每镜须自足，跨镜保持外观、布局、道具位置及声线一致。\n参考音频仅用于对应人物音色，不是驱动音轨，不复制文字、内容、时间轴或背景声音。禁止任何音乐、演唱和哼唱，仅生成脚本逐字对白与必要现场声；无台词不得新增说话声。non_diegetic_music 必须为 N/A。\n【上下文采样时间轴】\n对应镜头以index判断：index=1是无上下文首段，提示词时间从0开始；index>=2是续段，采样开头22帧（22/24=0.9166667秒）由上一段尾部音视频作为已发生的上下文，最终会裁掉。\n续段detailed_description和overall_soundscape把Writer所有新内容的start/end整体加0.9166667秒，描述采样时间；同时明确新段的原始相对时间，保持动作和逐字台词不变。0到0.9166667秒只延续已给定的上下文，不把新台词塞进去、不重复上一段句尾。最终裁掉后新段从0秒开始；不要让人物重新做上一段完成的动作。\n模型实际帧长会上对齐，最后少量余量保持自然动作和必要现场声，无新增说话、音乐、淡出或黑场。转换时不改Writer的seconds、对白内容或新段时间安排。\n\n【每段H3提示词】\n必须是字符串，按顺序包含以下六个英文标题（不要Markdown代码块）：\nsubject_definitions:\n定义当前出场人物、场景、道具及音色的对应关系，使用上述全局资产标记。\nsummary:\n简述这一镜头发生什么、叙事任务是什么。\nretention_analysis:\n说明各参考资产需要保留的外观、服装、布局和音色特征；不是观众留存分析。\ndetailed_description:\n用相对于片段起点的时间段，依次写画面、动作、机位/景别/运动、表情、说话人和逐字台词；首段采样时间不超过seconds；续段采样时间不超过seconds+22/24秒；音画互相对应。\noverall_soundscape:\n逐字对白/必要旁白及其说话人、参考音色、自然语速、语气与停顿，必要的现场环境声和动作音效。再次声明音频参考只用于音色，不复用样本内容，禁止任何音乐。无台词则只写必要的现场声。\nnon_diegetic_music:\nN/A\n\n\n【衔接与说话节奏执行】\n- detailed_description严格沿用本段continuity_in/out：从明确的起始动作阶段开始，结束于可承接状态；同场景不新增换装、重置道具、反转左右站位、突变色温或重复上一段已完成动作。Writer声明的换场/时间跳跃则准确呈现，不擅自改成连续动作。\n- overall_soundscape逐条保留dialogue的start/end、逐字text和delivery；标出句间反应、换气和重音。在安排好的时段内自然说完，不要求从0秒说到最后一帧，不自动加快语速或插入台词。画面动作按同一时间线执行，只有正在发言的人物有说话口型。\n- 无对白区间是连续动作/反应与必要现场声，不是强制停顿定格；前后段不得重复播放句尾或提前说下一段台词。保持已定义人物声线和录音空间，不增加旁白、音乐或结尾淡出。\n- 不调整Writer确定的seconds或台词来解决时间冲突，不重写分镜对象；只转换已确定内容，明确时间和声音执行方式。\n\n【输出契约】\n只输出可解析JSON对象 {\"prompts\":[\"镜头1的六段完整H3提示词\",\"镜头2的六段完整H3提示词\"]}。顶层只有prompts，每项为非空字符串，数量与Writer.shots完全相等，按index=1,2,...原顺序一一对应，禁止漏项、合并、重排或用摘要代替后续镜头。不返回shots/storyboard，不改Writer的剧情、镜头、seconds、selection、dialogue及连续性；不增加对白或动作。只做模型语言与采样时间轴转换，脚本时间不变；不调用工具或生成媒体。",
+        "id": "aixg",
+        "name": "AIXG · 一次批量转换H3提示词",
+        "kind": "hermes",
+        "capabilityId": "core.hermes",
+        "capabilityVersion": "1",
+        "hermesProfile": "aixg",
+        "inputs": [
+          {
+            "label": "Writer确定的全部分镜",
+            "sourceRef": "step.writer.outputs.shots",
+            "key": "shots",
+            "valueSource": "reference"
+          },
+          {
+            "label": "人物资产",
+            "sourceRef": "input.character_assets",
+            "key": "characters",
+            "valueSource": "reference"
+          },
+          {
+            "label": "场景资产",
+            "sourceRef": "input.scene_assets",
+            "key": "scenes",
+            "valueSource": "reference"
+          },
+          {
+            "label": "道具资产",
+            "sourceRef": "input.prop_assets",
+            "key": "props",
+            "valueSource": "reference"
+          },
+          {
+            "label": "全局资产与音色对应说明",
+            "sourceRef": "input.asset_notes",
+            "key": "asset_notes",
+            "valueSource": "reference"
+          },
+          {
+            "label": "制作要求",
+            "sourceRef": "input.production_notes",
+            "key": "production_notes",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "label": "逐镜H3提示词",
+            "description": "按Writer原始顺序的非空字符串数组；一次批量转换，含六段H3结构及续段采样时间补偿，不回写脚本",
+            "key": "prompts",
+            "type": "json"
+          }
+        ]
+      },
+      {
+        "id": "align",
+        "name": "数据 · 原始分镜与提示词对齐",
+        "kind": "capability",
+        "capabilityId": "data.zip",
+        "capabilityVersion": "1",
+        "promptTemplate": "",
+        "capabilityConfig": {
+          "itemKey": "shot",
+          "itemSchema": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 360
+              },
+              "seconds": {
+                "type": "number",
+                "minimum": 5,
+                "maximum": 15
+              },
+              "selection": {
+                "type": "object",
+                "properties": {
+                  "characters": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "minItems": 1,
+                    "maxItems": 4
+                  },
+                  "scenes": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "maxItems": 1
+                  },
+                  "props": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "maxItems": 4
+                  },
+                  "voices": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "maxItems": 3
+                  }
+                },
+                "required": [
+                  "characters",
+                  "scenes",
+                  "props",
+                  "voices"
+                ],
+                "additionalProperties": false
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1
+              },
+              "visual_description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "continuity_in": {
+                "type": "string",
+                "minLength": 1
+              },
+              "continuity_out": {
+                "type": "string",
+                "minLength": 1
+              },
+              "dialogue": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "speaker": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "delivery": {
+                      "type": "string"
+                    },
+                    "start": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 15
+                    },
+                    "end": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 15
+                    }
+                  },
+                  "required": [
+                    "speaker",
+                    "text",
+                    "delivery",
+                    "start",
+                    "end"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "index",
+              "seconds",
+              "selection",
+              "purpose",
+              "visual_description",
+              "continuity_in",
+              "continuity_out",
+              "dialogue"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 360,
+          "ordinalField": "index"
+        },
+        "inputs": [
+          {
+            "label": "Writer分镜清单",
+            "sourceRef": "step.writer.outputs.shots",
+            "key": "items",
+            "valueSource": "reference"
+          },
+          {
+            "label": "AIXG提示词列表",
+            "sourceRef": "step.aixg.outputs.prompts",
+            "key": "prompt",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "label": "分镜与提示词",
+            "description": "原始Writer分镜与AIXG提示词逐项等长对齐，拒绝跳号/重复/乱序，不改写脚本",
+            "key": "rows",
+            "type": "json"
+          }
+        ]
+      },
+      {
+        "promptTemplate": "",
+        "id": "references",
+        "name": "素材 · 选择与引用编号映射",
+        "kind": "capability",
+        "capabilityId": "media.select_references",
+        "capabilityVersion": "1",
+        "capabilityConfig": {
+          "groups": [
+            {
+              "key": "characters",
+              "kind": "image",
+              "tag": "Character"
+            },
+            {
+              "key": "scenes",
+              "kind": "image",
+              "tag": "Scene"
+            },
+            {
+              "key": "props",
+              "kind": "image",
+              "tag": "Prop"
+            },
+            {
+              "key": "voices",
+              "kind": "audio",
+              "tag": "Voice"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "label": "selection",
+            "sourceRef": "iteration.item.shot.selection",
+            "key": "selection",
+            "valueSource": "reference"
+          },
+          {
+            "label": "prompt",
+            "sourceRef": "iteration.item.prompt",
+            "key": "prompt",
+            "valueSource": "reference"
+          },
+          {
+            "label": "characters",
+            "sourceRef": "input.character_assets",
+            "key": "characters",
+            "valueSource": "reference"
+          },
+          {
+            "label": "scenes",
+            "sourceRef": "input.scene_assets",
+            "key": "scenes",
+            "valueSource": "reference"
+          },
+          {
+            "label": "props",
+            "sourceRef": "input.prop_assets",
+            "key": "props",
+            "valueSource": "reference"
+          },
+          {
+            "label": "voices",
+            "sourceRef": "input.voice_reference_audio",
+            "key": "voices",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "label": "selected",
+            "description": "",
+            "key": "selected",
+            "type": "json"
+          },
+          {
+            "label": "prompt",
+            "description": "",
+            "key": "prompt",
+            "type": "text"
+          },
+          {
+            "label": "reference_map",
+            "description": "",
+            "key": "reference_map",
+            "type": "json"
+          },
+          {
+            "label": "bundle",
+            "description": "",
+            "key": "bundle",
+            "type": "json"
+          }
+        ],
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "step.align.outputs.rows",
+          "onError": "stop",
+          "maxConcurrency": 1
+        }
+      },
+      {
+        "promptTemplate": "",
+        "id": "records",
+        "name": "数据 · 结构校验与执行记录对齐",
+        "kind": "capability",
+        "capabilityId": "data.zip",
+        "capabilityVersion": "1",
+        "capabilityConfig": {
+          "itemKey": "shot",
+          "itemSchema": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 360
+              },
+              "seconds": {
+                "type": "number",
+                "minimum": 5,
+                "maximum": 15
+              },
+              "selection": {
+                "type": "object",
+                "properties": {
+                  "characters": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "minItems": 1,
+                    "maxItems": 4
+                  },
+                  "scenes": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "maxItems": 1
+                  },
+                  "props": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "maxItems": 4
+                  },
+                  "voices": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "maxItems": 3
+                  }
+                },
+                "required": [
+                  "characters",
+                  "scenes",
+                  "props",
+                  "voices"
+                ],
+                "additionalProperties": false
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1
+              },
+              "visual_description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "continuity_in": {
+                "type": "string",
+                "minLength": 1
+              },
+              "continuity_out": {
+                "type": "string",
+                "minLength": 1
+              },
+              "dialogue": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "speaker": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "delivery": {
+                      "type": "string"
+                    },
+                    "start": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 15
+                    },
+                    "end": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 15
+                    }
+                  },
+                  "required": [
+                    "speaker",
+                    "text",
+                    "delivery",
+                    "start",
+                    "end"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "index",
+              "seconds",
+              "selection",
+              "purpose",
+              "visual_description",
+              "continuity_in",
+              "continuity_out",
+              "dialogue"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 360,
+          "ordinalField": "index"
+        },
+        "inputs": [
+          {
+            "label": "Writer分镜清单",
+            "sourceRef": "step.writer.outputs.shots",
+            "key": "items",
+            "valueSource": "reference"
+          },
+          {
+            "label": "prompt",
+            "sourceRef": "step.references.outputs.prompt",
+            "key": "prompt",
+            "valueSource": "reference"
+          },
+          {
+            "label": "references",
+            "sourceRef": "step.references.outputs.bundle",
+            "key": "references",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "label": "rows",
+            "description": "",
+            "key": "rows",
+            "type": "json"
+          }
+        ]
+      },
+      {
+        "promptTemplate": "",
+        "id": "generate",
+        "name": "H3 · 单工作流自动开关上下文与顺序续接",
+        "kind": "comfyui",
+        "capabilityId": "core.comfyui",
+        "capabilityVersion": "1",
+        "capabilityConfig": {
+          "outputMediaCounts": {
+            "result": 1
+          }
+        },
+        "inputs": [],
+        "outputs": [
+          {
+            "label": "本段视频（续段已去除上下文重复帧）",
+            "description": "",
+            "key": "result",
+            "type": "video_list"
+          }
+        ],
+        "execution": {
+          "mode": "for_each",
+          "sourceRef": "step.records.outputs.rows",
+          "onError": "stop",
+          "maxConcurrency": 1,
+          "carry": {
+            "outputKey": "result"
+          }
+        },
+        "comfyui": {
+          "workflowFile": "Zane/MiniMax+H3+真·上下文无缝无色差长视频，SelfLift双采(简易版)+.json",
+          "bindings": [
+            {
+              "key": "prompt",
+              "label": "prompt",
+              "direction": "input",
+              "nodeId": "138",
+              "property": "value",
+              "type": "text",
+              "required": true,
+              "sourceRef": "iteration.item.prompt",
+              "valueSource": "reference"
+            },
+            {
+              "key": "seconds",
+              "label": "seconds",
+              "direction": "input",
+              "nodeId": "132",
+              "property": "value",
+              "type": "number",
+              "required": true,
+              "sourceRef": "iteration.item.shot.seconds",
+              "valueSource": "reference"
+            },
+            {
+              "key": "ratio",
+              "label": "ratio",
+              "direction": "input",
+              "nodeId": "115",
+              "property": "aspect_ratio",
+              "type": "text",
+              "required": true,
+              "sourceRef": "input.ratio",
+              "valueSource": "reference"
+            },
+            {
+              "key": "mp",
+              "label": "mp",
+              "direction": "input",
+              "nodeId": "115",
+              "property": "megapixels",
+              "type": "number",
+              "required": true,
+              "sourceRef": "input.mp",
+              "valueSource": "reference"
+            },
+            {
+              "key": "reference_images",
+              "label": "reference_images",
+              "direction": "input",
+              "nodeId": "136",
+              "property": "ref_images",
+              "type": "image_list",
+              "required": true,
+              "sourceRef": "iteration.item.references.images",
+              "valueSource": "reference"
+            },
+            {
+              "key": "reference_audio",
+              "label": "reference_audio",
+              "direction": "input",
+              "nodeId": "136",
+              "property": "ref_audios",
+              "type": "audio_list",
+              "required": false,
+              "sourceRef": "iteration.item.references.audios",
+              "valueSource": "reference"
+            },
+            {
+              "key": "fps",
+              "label": "fps",
+              "direction": "input",
+              "nodeId": "179",
+              "property": "fps",
+              "type": "number",
+              "required": true,
+              "valueSource": "literal",
+              "literalValue": "24"
+            },
+            {
+              "key": "trim_compatible_codec",
+              "label": "裁切兼容编码（规避原生组件浮点空结果）",
+              "direction": "input",
+              "nodeId": "179",
+              "property": "codec",
+              "type": "text",
+              "required": true,
+              "valueSource": "literal",
+              "literalValue": "auto"
+            },
+            {
+              "key": "result",
+              "label": "本段新视频（原生声音）",
+              "direction": "output",
+              "nodeId": "298",
+              "property": "video",
+              "type": "video_list"
+            },
+            {
+              "key": "previous_video",
+              "label": "previous_video",
+              "direction": "input",
+              "nodeId": "256",
+              "property": "file",
+              "type": "video_list",
+              "required": false,
+              "sourceRef": "iteration.previous",
+              "valueSource": "reference"
+            },
+            {
+              "key": "use_context",
+              "label": "use_context",
+              "direction": "input",
+              "nodeId": "267",
+              "property": "value",
+              "type": "boolean",
+              "required": true,
+              "sourceRef": "iteration.hasPrevious",
+              "valueSource": "reference"
+            },
+            {
+              "key": "context_frame_groups",
+              "label": "context_frame_groups",
+              "direction": "input",
+              "nodeId": "273",
+              "property": "value",
+              "type": "number",
+              "required": true,
+              "valueSource": "literal",
+              "literalValue": "1"
+            },
+            {
+              "key": "context_length_expression",
+              "label": "context_length_expression",
+              "direction": "input",
+              "nodeId": "131",
+              "property": "expression",
+              "type": "text",
+              "required": true,
+              "valueSource": "literal",
+              "literalValue": "max(5, round(a * 24) + 22 * b) + (5 - (max(5, round(a * 24) + 22 * b) % 17)) % 17"
+            },
+            {
+              "key": "continuation_fps",
+              "label": "continuation_fps",
+              "direction": "input",
+              "nodeId": "297",
+              "property": "fps",
+              "type": "number",
+              "required": true,
+              "valueSource": "literal",
+              "literalValue": "24"
+            },
+            {
+              "key": "context_length_enabled",
+              "label": "上下文帧数补偿开关",
+              "direction": "input",
+              "nodeId": "131",
+              "property": "values.b",
+              "type": "boolean",
+              "required": true,
+              "sourceRef": "iteration.hasPrevious",
+              "valueSource": "reference"
+            }
+          ]
+        },
+        "review": {
+          "enabled": false
+        }
+      },
+      {
+        "promptTemplate": "",
+        "id": "assemble",
+        "name": "FFmpeg · 顺序拼接成片（保留原生声音）",
+        "kind": "comfyui",
+        "capabilityId": "media.video_concat",
+        "capabilityVersion": "1",
+        "inputs": [
+          {
+            "label": "按生成顺序的视频片段",
+            "sourceRef": "step.generate.outputs.result",
+            "key": "clips",
+            "valueSource": "reference"
+          },
+          {
+            "label": "完整制作分镜清单",
+            "sourceRef": "step.writer.outputs.shots",
+            "key": "shots",
+            "valueSource": "reference"
+          }
+        ],
+        "outputs": [
+          {
+            "label": "完整成片",
+            "description": "",
+            "key": "video",
+            "type": "video_list"
+          },
+          {
+            "label": "成片地址",
+            "description": "",
+            "key": "download",
+            "type": "text"
+          },
+          {
+            "label": "成片拼接记录",
+            "description": "",
+            "key": "manifest",
+            "type": "json"
+          }
+        ],
+        "comfyui": {
+          "workflowFile": "builtin:video_concat",
+          "bindings": [],
+          "adapter": "video_concat"
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "label": "完整成片",
+        "key": "video",
+        "type": "video_list",
+        "sourceRef": "step.assemble.outputs.video"
+      },
+      {
+        "label": "成片地址",
+        "key": "download",
+        "type": "text",
+        "sourceRef": "step.assemble.outputs.download"
+      },
+      {
+        "label": "制作级分镜脚本",
+        "key": "storyboard",
+        "type": "text",
+        "sourceRef": "step.writer.outputs.storyboard"
+      },
+      {
+        "label": "实际分镜、最终提示词与参考素材映射",
+        "key": "shots",
+        "type": "json",
+        "sourceRef": "step.records.outputs.rows"
+      },
+      {
+        "label": "有声视频片段",
+        "key": "clips",
+        "type": "video_list",
+        "sourceRef": "step.generate.outputs.result"
+      },
+      {
+        "label": "拼接记录",
+        "key": "manifest",
+        "type": "json",
+        "sourceRef": "step.assemble.outputs.manifest"
+      }
+    ]
+  }
+}

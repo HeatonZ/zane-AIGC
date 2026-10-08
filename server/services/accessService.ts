@@ -9,6 +9,7 @@ import { asRecord } from "../domain/workflowValues.js";
 
 import { LoginLimiter } from "../security/loginLimiter.js";
 import { PUBLIC_ENTRY_CONTRACT } from "../security/contracts.js";
+import { assertRequestOrigin } from "../security/requestOrigin.js";
 
 const scrypt = promisify(scryptCallback);
 const SYSTEM = "@zane-system";
@@ -145,7 +146,7 @@ export class AccessService {
         const identity = this.authenticate(bearer?.startsWith("Bearer ") ? bearer.slice(7) : cookie ?? "");
         if (res.locals.publicUserOnly && identity.role !== "user") throw new HttpError(403, "此入口不接受管理员凭证，请使用私有管理入口", "PUBLIC_USER_ONLY");
         if (!bearer && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
-          const origin = req.get("Origin"); if (origin && origin !== req.protocol + "://" + req.get("Host")) throw new HttpError(403, "请求来源不匹配", "INVALID_REQUEST_ORIGIN");
+          assertRequestOrigin(req);
         }
         if (req.get("X-Zane-Actor") && req.get("X-Zane-Actor") !== identity.id) throw new HttpError(409, "登录身份已变化，请重新加载页面", "IDENTITY_CHANGED");
         res.locals.identity = identity;

@@ -6,6 +6,7 @@ import * as z from "zod/v4";
 import { AccessService, publicUser, type Identity } from "../services/accessService.js";
 import { UserPortalService } from "../services/userPortalService.js";
 import { HttpError } from "../errors.js";
+import { assertRequestOrigin } from "../security/requestOrigin.js";
 import { accessPage, adminSetup, authLogin, userCreate, userUpdate, userAccess, passwordReset, ownScene, ownPreparation, ownSubmission, ownDraft, credentialCreate, credentialRevoke, runInputQuery, runActivityQuery } from "../ai/accessSchemas.js";
 import { draftFavoriteRequest } from "../ai/taskDraftSchemas.js";
 import { outputQuery, stepResultQuery } from "../ai/sceneSchemas.js";
@@ -18,11 +19,11 @@ export function createAuthRouter(access: AccessService) {
   router.get("/api/auth/status", (_req,res) => { const initialized = access.initialized(), userOnly = Boolean(res.locals.publicUserOnly); res.json({ initialized, nextAction: initialized ? "login" : userOnly ? "contact_admin" : "setup_admin", entryMode: userOnly ? "user-only" : "full", setupAllowed: !userOnly && !initialized, security: access.securityPolicy(userOnly) }); });
   router.post("/api/auth/setup", async (req,res) => {
     if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.ip ?? "")) throw new HttpError(403, "首次管理员初始化请在服务器本机完成", "LOCAL_SETUP_REQUIRED");
-    if (req.get("Origin") && req.get("Origin") !== req.protocol + "://" + req.get("Host")) throw new HttpError(403, "请求来源无效", "INVALID_REQUEST_ORIGIN");
+    assertRequestOrigin(req);
     const input = parsed(adminSetup, req.body); await access.create(input, true); const result = await access.login(input.username, input.password, { clientAddress: req.ip });
     sessionCookie(res, result.token, req.secure); res.status(201).json({ user: result.user, nextAction: "open_admin" });
   });
-  router.post("/api/auth/login", async (req,res) => { if (req.get("Origin") && req.get("Origin") !== req.protocol + "://" + req.get("Host")) throw new HttpError(403, "请求来源无效", "INVALID_REQUEST_ORIGIN"); const input = parsed(authLogin, req.body); const result = await access.login(input.username, input.password, { clientAddress: req.ip, userOnly: Boolean(res.locals.publicUserOnly) }); sessionCookie(res,result.token,req.secure); res.json({ user: result.user }); });
+  router.post("/api/auth/login", async (req,res) => { assertRequestOrigin(req); const input = parsed(authLogin, req.body); const result = await access.login(input.username, input.password, { clientAddress: req.ip, userOnly: Boolean(res.locals.publicUserOnly) }); sessionCookie(res,result.token,req.secure); res.json({ user: result.user }); });
   // Logout is handled after the identity gate, not by an unauthenticated bypass.
   return router;
 }

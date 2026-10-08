@@ -76,7 +76,7 @@ function DynamicField({
       {field.type === "json" ? (
         <JsonEditor id={id} value={value} onChange={onChange} required={field.required} placeholder={field.placeholder} />
       ) : multiline ? (
-        <textarea id={id} className={controlClass} value={value} onChange={(event) => onChange(event.target.value)} placeholder={field.placeholder} required={field.required} />
+        <textarea id={id} className={controlClass} rows={3} value={value} onChange={(event) => onChange(event.target.value)} placeholder={field.placeholder} required={field.required} />
       ) : field.type === "boolean" ? (
         <div className="boolean-options" role="radiogroup" aria-label={field.label}>
           {!field.required && <label><input type="radio" name={id} value="" checked={value === ""} onChange={(event) => onChange(event.target.value)} /><span>未设置</span></label>}

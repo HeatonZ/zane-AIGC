@@ -15,6 +15,7 @@ const factory: CapabilityFactory = () => ({
     outputs: [{ key: "rows", label: "对齐后的记录", type: "json" }, { key: "first", label: "首项", type: "json", required: false }, { key: "rest", label: "剩余记录", type: "json", required: false }],
     config: [
       { key: "itemKey", label: "主项字段名", type: "text", defaultValue: "item", valueSchema: configProperties.itemKey },
+      { key: "ordinalField", label: "连续1-based序号字段（可选）", type: "text", valueSchema: configProperties.ordinalField, description: "主项此字段必须严格等于输入顺序1,2,...；生成前拒绝重复/跳号/重排，不改列表。省略兼容旧快照。" },
       { key: "identityField", label: "主项唯一标识字段（可选）", type: "text", valueSchema: configProperties.identityField },
       { key: "itemSchema", label: "主项结构契约（可选）", type: "json", valueSchema: { ...configProperties.itemSchema, $defs: configSchema.$defs ?? {} }, description: "仅支持type/properties/required/additionalProperties/items/enum、长度/项数/数值上下界；不支持$ref、pattern、format。" },
       { key: "minItems", label: "最少项数", type: "number", defaultValue: 1, valueSchema: configProperties.minItems },

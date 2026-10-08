@@ -32,7 +32,7 @@ ZANE_LOGIN_MAX_CONCURRENT=4
 
 ### 用户客户端与AI接入
 
-浏览器访问用户入口 `/app`；根路径重定向到 `/app`。用户端保留登录、已授权场景、本人草稿/任务/素材、账户和本人AI接入等现有能力。
+浏览器访问用户入口 `/app`；根路径重定向到 `/app`。用户端保留登录、已授权场景、本人草稿/任务/素材、账户和本人AI接入等现有能力。输入停止约700毫秒后，表单会通过本人草稿服务自动保存；切换页面、提交任务或离开表单时会先保存待写入内容。自动保存只写入服务端，不把表单业务内容放进浏览器本地存储。
 
 普通用户MCP客户端将 `ZANE_BASE_URL` 指向实际用户入口，凭证仍从本人账户服务创建，使用现有stdio命令，不开放新的任意HTTP/SQL/文件代理。`get_workbench` 返回：
 
@@ -66,7 +66,7 @@ HTTP和stdio的OpenAPI/guide资源按入口收敛到用户可用路径。stdio�
 
 ## 上线配置尚需核验（本轮未改）
 
-1. **TLS终止反向代理**：当前原有Origin检查按请求protocol/Host判断，Cookie的Secure依据req.secure。TLS在代理终止、HTTP回源时，仍需独立核验可信代理、固定Origin和Secure Cookie；前次初审已复现默认配置下HTTPS Origin被403拒绝和Cookie缺少Secure。**本改造没有修复该问题，也没有提供已验证可直接用于HTTPS公网的代理配置。** 不能通过删Origin或随意信任转发头来绕过。
+1. **TLS终止反向代理**：已处理（2026-10-08）。新增 `ZANE_TRUST_PROXY`（可信代理范围）与 `ZANE_PUBLIC_ORIGIN`（精确公网来源，逗号分隔多域名），并由 `server/security/requestOrigin.ts` 统一来源校验：命中配置来源或与重建的 protocol+Host 同源才放行，缺省 Origin 保持放行；未在白名单内的来源仍然 403。`trust proxy` 只信任同机代理，客户端自报 `X-Forwarded-Proto` 不能伪造协议、来源或限流身份；HTTPS 下发 Secure Cookie。**仍需在实际 TLS 入口上确认 `ZANE_PUBLIC_ORIGIN` 与真实域名一致**——填错或不填仍然会 403。不要移除 Origin 校验或改成 `ZANE_TRUST_PROXY=true`。
 2. 防火墙、隧道和反向代理必须实际只公开用户端口。不要另行暴露ComfyUI、Hermes、开发服务器、数据目录或备份。
 3. 额度、队列容量、上传总配额/媒体校验、远程抓取与Agent工具权限隔离按当前决定暂不调整。这不是完整公网安全认证，仍有有效用户滥用/资源与执行边界风险。
 4. 正式升级仍先核验进程身份、空闲/待审核状态和备份，使用现有安全升级流程；不重启Hermes Gateway或ComfyUI。新增入口需要用户/运维明确配置后生效。
@@ -97,3 +97,41 @@ HTTP和stdio的OpenAPI/guide资源按入口收敛到用户可用路径。stdio�
 - 未调用真实模型、生成媒体、创建账号、审批或续跑生产任务；Hermes Gateway和ComfyUI未重启。
 
 **本机安全入口已启用，不等于已经公网可用。** 若使用同机代理/穿透，只回源用户端口8800，绝不公开8799。HTTPS代理的Origin / Secure cookie限制仍未处理，必须在真实TLS配置上解决并验收后才能宣称HTTPS公网登录可用；不要移除Origin校验或信任任意转发头绕过。
+
+## 公网 HTTPS 来源校验修复（2026-10-08）
+
+**问题**：经 Cloudflare Tunnel 访问 `https://aigc.zsfzsf.dpdns.org` 登录，返回 403 `INVALID_REQUEST_ORIGIN`（“请求来源无效”）。已在运行中的正式服务复现。
+
+**根因**：全代码库未设置 Express `trust proxy`，代理回源为 `http://127.0.0.1:8800`，浏览器 Origin 为 `https://aigc.zsfzsf.dpdns.org`，原校验只比 `Origin` 与 `req.protocol + "://" + Host`，必然不等。
+
+**改动**：
+
+- 新增 `server/security/requestOrigin.ts`：统一来源校验。命中配置来源或与重建的 protocol+Host 同源才放行；缺省 Origin（服务端/AI 客户端）保持放行；其余仍 403。
+- `server/config.ts`：新增 `ZANE_TRUST_PROXY` 与 `ZANE_PUBLIC_ORIGIN`，非法值启动即失败；配置公网来源但未配置可信代理时启动失败。
+- `server/index.ts`：`trust proxy` 仅在显式配置时设置，默认仍不信任代理头。
+- `server/api/accessRoutes.ts`、`server/services/accessService.ts`：登录、初始化与 Cookie 写操作改用统一来源校验。
+- `docs/public-user-deployment.md`：更新原“未处理”条目。
+
+**本机配置**（`.env.production.local`）：`ZANE_TRUST_PROXY=loopback`、`ZANE_PUBLIC_ORIGIN=https://aigc.zsfzsf.dpdns.org`。Cloudflared 以 Windows 服务运行（`C:\Program Files (x86)\cloudflared\cloudflared.exe tunnel run --token-file C:\ProgramData\cloudflared\token`，2026.10.0），同机回源，属 loopback 可信范围。
+
+**隔离验收**：新增 `server/security/requestOrigin.test.ts` 4 项（含真实隧道式登录闭环：https Origin + loopback Host + `X-Forwarded-Proto`，断言 200 且下发 `Secure`+`HttpOnly`+`SameSite=Strict`，非白名单来源仍 403）。隔离源码副本 `npm run check` 通过：typecheck 0 错误、单元/集成 **576 项通过 0 失败**、构建、AI 文档漂移检查及全部烟测（含双入口烟测）通过。
+
+**发布前状态**：本节改造完成时正式 dist 尚未重建、生产进程未重启，需按现有安全升级流程发布。发布前配置备份：`F:/temp/hermes/2026-10-08/env.production.local.bak-20261008-085755`。已按下方发布记录完成发布与真实入口复验。本轮全程未调用真实模型、未生成媒体、未重启 Hermes/ComfyUI。
+
+### 发布记录（2026-10-08）
+
+`npm run update:prod`（`run --background`），operationId / releaseId `e8f985dc-55c1-4bf2-a258-4e0ce6096dc6`，状态 `completed`。
+
+- 旧 PID 6360 → 新 PID 41288；`checkPassed=true`、`shutdownConfirmed`、`switched`、`servingConfirmed` 均为 true；产物哈希 `45fc50b6…b18e2cb`。
+- 隔离快照 `npm run check` 通过后才切换，旧工作台在检查期间持续运行。
+- 新模块已进产物：`dist-server/security/requestOrigin.js`（1717 字节，09:23 生成）。管理 8799 与用户 8800 双入口均由新进程监听。
+- 真实回执：
+  - 修复前（本机 8800，公网 Origin）→ `403 INVALID_REQUEST_ORIGIN`。
+  - 修复后同一请求 → `401 LOGIN_FAILED`（探测账号不存在），来源校验已放行。
+  - 恶意来源 `Origin: https://evil.example` → 仍 `403 INVALID_REQUEST_ORIGIN`，未被信任代理放开。
+  - 私有入口同源回退 `Origin: http://127.0.0.1:8799` → 正常进入登录校验。
+  - 经 Cloudflare Tunnel 的公网域名 `https://aigc.zsfzsf.dpdns.org/app` 返回 200；带同源 Origin 登录返回 401 而非 403。
+- 未调用真实模型、未生成媒体、未重启 Hermes Gateway/ComfyUI；登录限流只触发 1 次账号不存在的探测。
+- 未验证项：成功登录后 `Set-Cookie` 的 `Secure` 属性需用真实账号在浏览器确认（本次仅用不存在账号探测，未取得成功会话）。
+
+`ZANE_TRUST_PROXY=loopback` 与 Cloudflared 同机回源的拓扑一致；若日后改为跨机代理，必须同步改为对应取值并重新核验，不得直接填 `true`。

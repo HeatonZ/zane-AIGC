@@ -2,10 +2,11 @@ import RunMediaDownloadButton from "./RunMediaDownloadButton";
 import RunWarnings from "./RunWarnings";
 import { useEffect, useRef, useState } from "react";
 import { Activity, AlertCircle, Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, ClipboardCheck, Copy, Download, FileText, Layers3, LoaderCircle, PackageOpen, RefreshCw, RotateCcw, Square } from "lucide-react";
-import { accessApi, type OwnRun } from "../lib/accessApi";
+import { accessApi, accessMedia, type OwnRun } from "../lib/accessApi";
 import { resultPath, mergeResultPage, type ResultContext, type ResultOutput, type ResultPage } from "../lib/userPortal";
 import { activityLabel, mergeResultSlice, previousValueOffset, runDate, runStatusLabels } from "../lib/runDetails";
 import RunOverview from "./RunOverview";
+import RunValueView from "./RunValueView";
 
 type InputPage = ReturnType<typeof import("../../server/services/runDetailService").businessRunInputs>;
 type InputValue = InputPage["inputs"][number];
@@ -15,7 +16,31 @@ interface ActivityPage { runId: string; events: RunActivity[]; nextSequence: num
 function valueText(value: unknown): string {
   return value === undefined ? "未提供" : value === null ? "空值" : typeof value === "string" ? value : typeof value === "boolean" ? (value ? "是 / true" : "否 / false") : JSON.stringify(value, null, 2);
 }
-function OutputCard({ output, onSlice, busy }: { output: ResultOutput; onSlice: (offset: number, narrow?: boolean) => void; busy: boolean }) {
+function OutputImage({ url, alt, userId, number }: { url: string; alt: string; userId: string; number: number }) {
+  const [source, setSource] = useState("");
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl = "";
+    setSource(""); setError("");
+    void accessMedia(url, userId, controller.signal).then(blob => {
+      if (!blob.type.startsWith("image/")) throw new Error("工作台返回的内容不是图片");
+      if (controller.signal.aborted) return;
+      objectUrl = URL.createObjectURL(blob);
+      setSource(objectUrl);
+    }).catch(failure => {
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "图片读取失败");
+    });
+    return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [url, userId, attempt]);
+  return <figure>
+    {source ? <a href={source} target="_blank" rel="noreferrer"><img src={source} alt={alt} loading="lazy" onError={() => { URL.revokeObjectURL(source); setSource(""); setError("图片文件无法解码"); }} /></a>
+      : <div className="run-empty-state" role={error ? "alert" : "status"}><strong>{error ? "图片暂时无法读取" : "正在读取图片…"}</strong>{error && <><p>{error}</p><button className="button button-outline" onClick={() => setAttempt(value => value + 1)}>重试</button></>}</div>}
+    <figcaption><span>第 {number} 项</span>{source && <a href={source} download className="run-icon-button"><Download size={14} />下载</a>}</figcaption>
+  </figure>;
+}
+function OutputCard({ output, onSlice, busy, userId }: { output: ResultOutput; onSlice: (offset: number, narrow?: boolean) => void; busy: boolean; userId: string }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState("");
   useEffect(() => { setCopied(false); setCopyError(""); }, [output.value]);
@@ -32,10 +57,12 @@ function OutputCard({ output, onSlice, busy }: { output: ResultOutput; onSlice: 
       {!media.length && !output.valueOmitted && <button className="run-icon-button" onClick={() => void copy()} aria-label={`复制${output.label || output.key}当前片段`}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? "已复制" : segmented ? "复制本段" : "复制"}</button>}</header>
     {copyError && <p className="access-error">{copyError}</p>}
     {output.valueOmitted ? <div className="run-empty-state"><AlertCircle size={22} /><strong>内容未返回，不是空结果</strong><p>{output.omissionReason === "metadata_only" ? "当前只读取了元数据。" : "当前片段超过响应预算，请按更小片段读取。"}</p><button className="button button-outline" disabled={busy} onClick={() => onSlice(offset, true)}>读取较小片段</button></div>
-      : media.length ? <div className="business-media-grid">{media.map((item, index) => <figure key={item.url}>
-        {/video/.test(output.type) ? <video src={item.url} controls preload="metadata" aria-label={output.label + " " + (index + 1)} /> : /audio/.test(output.type) ? <audio src={item.url} controls preload="metadata" aria-label={output.label} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={output.label + " " + (index + 1)} loading="lazy" /></a>}
-        <figcaption><span>第 {(item.source?.mediaIndex ?? offset + index) + 1} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption>
-      </figure>)}</div> : <pre className={`business-value ${output.type === "text" ? "text" : ""}`}>{valueText(output.value)}</pre>}
+      : media.length ? <div className="business-media-grid">{media.map((item, index) => {
+        const number = (item.source?.mediaIndex ?? offset + index) + 1;
+        return /video/.test(output.type) ? <figure key={item.url}><video src={item.url} controls preload="metadata" aria-label={output.label + " " + number} /><figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
+          : /audio/.test(output.type) ? <figure key={item.url}><audio src={item.url} controls preload="metadata" aria-label={output.label} /><figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
+            : <OutputImage key={item.url} url={item.url} alt={output.label + " " + number} userId={userId} number={number} />;
+      })}</div> : <RunValueView value={output.value} type={output.type} mediaUserId={userId} className={`business-value ${output.type === "text" ? "text" : ""}`} />}
     {segmented && <footer className="run-value-pager"><span>{output.valuePage.kind === "string" ? "字符" : "项"} {offset + 1}–{offset + (output.valuePage.count ?? size)} / {output.valuePage.total}{output.valueOmitted ? "（未读取）" : ""}</span>
       <button className="run-icon-button" disabled={busy || offset === 0} onClick={() => onSlice(previousValueOffset(output.valuePage, size))}><ChevronLeft size={14} />上一段</button>
       <button className="run-icon-button" disabled={busy || !output.valuePage.hasMore || output.valueOmitted} onClick={() => onSlice(output.valuePage.nextValueOffset!)}>下一段<ChevronRight size={14} /></button></footer>}
@@ -109,7 +136,8 @@ export default function UserRunDetail({ run, userId, busy, submissionPending, on
   function inputCard(input: InputValue) {
     const page = input.valuePage;
     return <article key={input.key} className="business-input"><header><div><h4>{input.label}</h4><small>{input.key} · {input.type}{input.required ? " · 必填" : ""}</small></div><span className="run-input-tag">原始输入</span></header>
-      {input.valueOmitted ? <div className="run-omitted"><p>片段超过响应预算，值未返回。</p><button className="button button-outline" disabled={loading} onClick={() => void read("inputs", { inputKey: input.key, offset: page.offset, narrow: true })}>缩小片段读取</button></div> : <pre className="business-value">{input.present ? valueText(input.value) : "未提供此字段"}</pre>}
+      {input.valueOmitted ? <div className="run-omitted"><p>片段超过响应预算，值未返回。</p><button className="button button-outline" disabled={loading} onClick={() => void read("inputs", { inputKey: input.key, offset: page.offset, narrow: true })}>缩小片段读取</button></div>
+        : <RunValueView value={input.present ? input.value : undefined} type={input.type} mediaUserId={userId} className="business-value" />}
       {(page.hasMore || page.offset > 0) && <footer className="run-value-pager"><span>{page.kind === "string" ? "字符" : page.kind === "object" ? "键" : "项"} {page.offset + 1}–{page.offset + page.count} / {page.total}</span>
         <button className="run-icon-button" disabled={loading || !page.offset} onClick={() => void read("inputs", { inputKey: input.key, offset: previousValueOffset(page, 2000), chunk: page.pageSize })}><ChevronLeft size={14} />上一段</button>
         <button className="run-icon-button" disabled={loading || !page.hasMore || input.valueOmitted} onClick={() => void read("inputs", { inputKey: input.key, offset: page.nextValueOffset, chunk: page.pageSize })}>下一段<ChevronRight size={14} /></button></footer>}
@@ -142,8 +170,8 @@ export default function UserRunDetail({ run, userId, busy, submissionPending, on
         {!results?.outputs?.length && !results?.items?.length && !loading && <div className="run-empty-state"><PackageOpen size={32} /><strong>{step?.status === "pending" ? "此步骤尚未执行" : "当前没有可展示的结果"}</strong><p>{step?.status === "skipped" ? "流程根据条件跳过了此步骤，不会产生输出。" : selectedStep ? "步骤完成并保存结果后将在这里展示。" : run.status === "completed" ? "此流程没有保存最终输出，可查看各步骤的中间结果。" : "最终结果尚未生成，可以先查看左侧已完成步骤。"}</p></div>}
         <RunWarnings warnings={results?.warnings} />
         {["completed", "failed", "cancelled", "stale"].includes(run.status) && results?.outputs?.filter(output => /^(image|video|audio)(_list)?$/.test(output.type) && (output.valuePage.total ?? 0) > 0).map(output => <RunMediaDownloadButton key={output.key} runId={run.runId} outputKey={output.key} stepId={selectedStep} own userId={userId} />)}
-        {results?.outputs?.map(output => <OutputCard key={output.key} output={output} busy={loading} onSlice={(offset, narrow) => readOutput(output, undefined, offset, narrow)} />)}
-        {!!results?.items?.length && <div className="business-iterations"><h4>逐项结果 <span>共 {results.itemCount ?? results.items.length} 项</span></h4>{results.items.map(item => <details key={item.index} open={item.status === "failed" || results.items!.length < 4}><summary><span>第 {item.index + 1} 项{item.warnings?.length ? ` · ⚠ ${item.warnings.length} 条提示` : ""}</span><span className={`business-status ${item.status}`}>{runStatusLabels[item.status]}</span><ChevronRight size={15} /></summary>{item.error && <p className="access-error">{item.error}</p>}<RunWarnings warnings={item.warnings} />{item.outputs.map(output => <OutputCard key={output.key} output={output} busy={loading} onSlice={(offset, narrow) => readOutput(output, item.index, offset, narrow)} />)}{!item.outputs.length && <p className="access-muted">此项尚无结果。</p>}</details>)}</div>}
+        {results?.outputs?.map(output => <OutputCard key={output.key} output={output} busy={loading} userId={userId} onSlice={(offset, narrow) => readOutput(output, undefined, offset, narrow)} />)}
+        {!!results?.items?.length && <div className="business-iterations"><h4>逐项结果 <span>共 {results.itemCount ?? results.items.length} 项</span></h4>{results.items.map(item => <details key={item.index} open={item.status === "failed" || results.items!.length < 4}><summary><span>第 {item.index + 1} 项{item.warnings?.length ? ` · ⚠ ${item.warnings.length} 条提示` : ""}</span><span className={`business-status ${item.status}`}>{runStatusLabels[item.status]}</span><ChevronRight size={15} /></summary>{item.error && <p className="access-error">{item.error}</p>}<RunWarnings warnings={item.warnings} />{item.outputs.map(output => <OutputCard key={output.key} output={output} busy={loading} userId={userId} onSlice={(offset, narrow) => readOutput(output, item.index, offset, narrow)} />)}{!item.outputs.length && <p className="access-muted">此项尚无结果。</p>}</details>)}</div>}
         {results?.nextCursor && <button className="button button-outline run-load-more" disabled={loading} onClick={() => void read("results", { cursor: results.nextCursor })}>加载更多{selectedStep ? "逐项结果" : "输出"}<ChevronRight size={14} /></button>}
       </section></div>}
     {tab === "inputs" && <section className="business-inputs"><div className="run-section-intro"><h3>本次任务的原始输入</h3><p>固定在创建任务时的快照，不受场景后续修改影响。媒体显示固定素材引用，不展示服务器路径。</p></div>{inputs?.inputs.map(inputCard)}{inputs && !inputs.inputs.length && <p className="run-empty-state">此流程没有输入字段。</p>}{inputs?.nextCursor && <button className="button button-outline" disabled={loading} onClick={() => void read("inputs", { cursor: inputs.nextCursor })}>加载更多输入字段</button>}

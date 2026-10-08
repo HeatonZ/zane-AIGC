@@ -10,6 +10,7 @@ import { capabilityForStep } from "../lib/capabilities";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { useCapabilities } from "../hooks/useCapabilities";
 import CapabilityConfigEditor from "./CapabilityConfigEditor";
+import RunValueView from "./RunValueView";
 export interface RerunTarget { stepId?: string; itemIndex?: number; mode?: RerunMode }
 export default function RerunDialog({ run, target, onClose, onSubmit }: { run: WorkflowRunRecord; target: RerunTarget; onClose(): void; onSubmit(changes: RerunRequest): Promise<void> }) {
   const steps = run.workflow?.steps ?? [];
@@ -96,7 +97,7 @@ export default function RerunDialog({ run, target, onClose, onSubmit }: { run: W
           {output.type !== "text" && <small>使用 JSON 表示；媒体可以填写路径数组或保留附件对象。</small>}
         </label>)}
       </>}
-      <details className="run-input-snapshot"><summary>查看原结果</summary><pre>{JSON.stringify(editableOutputs(run, stepId, itemIndex), null, 2)}</pre></details>
+      <details className="run-input-snapshot"><summary>查看原结果</summary><RunValueView value={editableOutputs(run, stepId, itemIndex)} type="json" /></details>
       {error && <div className="notice error" role="alert">{error}</div>}
       {plan && <section className="rerun-plan" aria-label="局部重做计划"><h3>本次执行计划</h3><p>将重算 {plan.steps.filter((step) => step.action === "run").length} 个步骤，保留或替换 {plan.steps.filter((step) => step.action !== "run").length} 个步骤。</p><ol>{plan.steps.map((step) => <li key={step.stepId} data-action={step.action}><strong>{step.name}</strong><span>{step.action === "reuse" ? "复用" : step.action === "replace" ? "替换" : "重算"}</span><small>{step.reason}{step.runItemIndexes ? " · 第 " + step.runItemIndexes.map((index) => index + 1).join("、") + " 项重做；复用 " + (step.reuseItemIndexes?.length ?? 0) + " 项" : ""}</small></li>)}</ol></section>}
     </fieldset>

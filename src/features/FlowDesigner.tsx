@@ -31,6 +31,7 @@ import type {
   ComfyUIWorkflowNode,
   ComfyUIWorkflowSummary,
   HermesProfile,
+  JsonValue,
   SceneId,
   SceneModule,
   SceneVersion,
@@ -508,6 +509,73 @@ function LiteralValueControl({
   return <DeferredInput className="text-input literal-value-control" type={type === "number" ? "number" : "text"} step={type === "number" ? "any" : undefined} value={value} onCommit={onChange} placeholder={type === "number" ? "输入数字" : "填写固定值"} aria-label={ariaLabel} />;
 }
 
+function WorkflowInputJsonDefault({ field, onChange }: { field: WorkflowInputField; onChange: (value: JsonValue | undefined) => void }) {
+  const serialized = field.defaultValue === undefined ? "" : JSON.stringify(field.defaultValue, null, 2);
+  const [draft, setDraft] = useState(serialized);
+  const [error, setError] = useState("");
+  const mediaList = Boolean(canonicalWorkflowMediaType(field.type));
+
+  useEffect(() => {
+    setDraft(serialized);
+    setError("");
+  }, [serialized]);
+
+  function commit() {
+    if (!draft.trim()) {
+      onChange(undefined);
+      setError("");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(draft) as unknown;
+      if (mediaList && !Array.isArray(parsed)) {
+        setError("媒体列表默认值需要是 JSON 数组");
+        return;
+      }
+      if (field.type === "json" && (!parsed || typeof parsed !== "object")) {
+        setError("结构化数据默认值需要是 JSON 对象或数组");
+        return;
+      }
+      onChange(parsed as JsonValue);
+      setError("");
+    } catch {
+      setError("默认值 JSON 格式无效");
+    }
+  }
+
+  return <div className={`schema-default-json${error ? " invalid" : ""}`}>
+    <textarea id={`input-default-${field.key}`} className="text-input schema-default-textarea" value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} placeholder={mediaList ? "输入媒体引用 JSON 数组" : "输入 JSON 对象或数组"} aria-label={`${field.label}默认值`} aria-invalid={Boolean(error)} />
+    <small className={error ? "schema-default-error" : "schema-default-help"}>{error || (mediaList ? "JSON 数组；媒体引用须是可访问的固定素材" : "JSON 对象或数组；留空表示不设置")}</small>
+  </div>;
+}
+
+function WorkflowInputDefaultEditor({ field, onChange }: { field: WorkflowInputField; onChange: (value: JsonValue | undefined) => void }) {
+  const id = `input-default-${field.key}`;
+  const value = field.defaultValue;
+  const displayValue = value === undefined ? "" : typeof value === "string" ? value : String(value);
+  const mediaList = Boolean(canonicalWorkflowMediaType(field.type));
+
+  if (field.type === "boolean") {
+    return <div className="select-wrap schema-default-select"><select id={id} value={value === true ? "true" : value === false ? "false" : ""} onChange={(event) => onChange(event.target.value === "" ? undefined : event.target.value === "true")} aria-label={`${field.label}默认值`}><option value="">不设置</option><option value="true">是</option><option value="false">否</option></select><ChevronDown size={13} /></div>;
+  }
+  if (field.type === "select") {
+    const selected = typeof value === "string" ? value : "";
+    const known = (field.options ?? []).includes(selected);
+    return <div className="select-wrap schema-default-select"><select id={id} value={selected} onChange={(event) => onChange(event.target.value === "" ? undefined : event.target.value)} aria-label={`${field.label}默认值`}><option value="">不设置</option>{selected && !known && <option value={selected}>当前默认值（已不在选项中）</option>}{(field.options ?? []).map((option) => <option value={option} key={option}>{option}</option>)}</select><ChevronDown size={13} /></div>;
+  }
+  if (field.type === "json" || mediaList) return <WorkflowInputJsonDefault field={field} onChange={onChange} />;
+  if (field.type === "textarea") {
+    return <DeferredTextarea id={id} className="text-input schema-default-textarea" value={displayValue} onCommit={(next) => onChange(next === "" ? undefined : next)} placeholder="填写默认文本" aria-label={`${field.label}默认值`} />;
+  }
+  if (field.type === "number") {
+    return <DeferredInput id={id} className="text-input schema-default-input" type="number" step="any" value={displayValue} onCommit={(next) => {
+      if (!next.trim()) onChange(undefined);
+      else if (Number.isFinite(Number(next))) onChange(Number(next));
+    }} placeholder="不设置" aria-label={`${field.label}默认值`} />;
+  }
+  return <DeferredInput id={id} className="text-input schema-default-input" value={displayValue} onCommit={(next) => onChange(next === "" ? undefined : next)} placeholder="填写默认文本" aria-label={`${field.label}默认值`} />;
+}
+
 function literalValueError(type: WorkflowVariableType, value: string) {
   if (type === "number") return value.trim() && Number.isFinite(Number(value)) ? "" : "固定值需要填写有效数字";
   if (type === "boolean") return value === "true" || value === "false" ? "" : "固定值需要选择真或假";
@@ -876,6 +944,7 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
       inputs: workflow.inputs.map((field, fieldIndex) => {
         if (fieldIndex !== index) return field;
         const next = { ...field, ...changes };
+        if (("defaultValue" in changes && changes.defaultValue === undefined) || ("type" in changes && changes.type !== field.type)) delete next.defaultValue;
         return validWorkflowMediaRole(next.mediaRole, next.type) ? next : { ...next, mediaRole: undefined };
       }),
     });
@@ -1348,13 +1417,14 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
               <div className="schema-row-main">
                 <DeferredInput className="text-input schema-label-input" value={field.label} onCommit={(value) => updateInputField(index, { label: value })} aria-label="输入名称" placeholder="输入名称" />
                 <DeferredInput className="text-input schema-key-input" value={field.key} onCommit={(value) => updateInputField(index, { key: value.replace(/[^a-zA-Z0-9_]/g, "_") })} aria-label="输入 key" placeholder="field_key" />
-                <div className="media-type-controls"><div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(field.type) ?? field.type} onChange={(event) => updateInputField(index, { type: event.target.value as WorkflowFieldType, ...(event.target.value === "select" ? {} : { optionPresetId: undefined }) })} aria-label="输入类型">{fieldTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div><MediaRoleSelect type={field.type} value={field.mediaRole} onChange={mediaRole => updateInputField(index, { mediaRole })} label={`${field.label}的素材用途`} /></div>
+                <div className="media-type-controls"><div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(field.type) ?? field.type} onChange={(event) => updateInputField(index, { type: event.target.value as WorkflowFieldType, defaultValue: undefined, ...(event.target.value === "select" ? {} : { optionPresetId: undefined }) })} aria-label="输入类型">{fieldTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div><MediaRoleSelect type={field.type} value={field.mediaRole} onChange={mediaRole => updateInputField(index, { mediaRole })} label={`${field.label}的素材用途`} /></div>
                 <label className="required-toggle"><input type="checkbox" checked={field.required} onChange={(event) => updateInputField(index, { required: event.target.checked })} /><span>必填</span></label>
               </div>
               {field.type === "select" && <div className="schema-options-controls">
                 <DeferredInput className="text-input schema-options-input" value={(field.options ?? []).join(", ")} onCommit={(value) => updateInputField(index, { options: value.split(",").map((option) => option.trim()).filter(Boolean), optionPresetId: undefined })} placeholder="选项用逗号分隔" aria-label={`${field.label} 的选项`} />
                 <div className="select-wrap schema-option-preset-select"><select value={field.optionPresetId ?? ""} onChange={(event) => applyOptionPreset(index, event.target.value)} aria-label={`${field.label} 的选项预设`}><option value="">自定义选项</option>{optionPresets.map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select><ChevronDown size={13} /></div>
               </div>}
+              <div className="schema-default-field"><label htmlFor={`input-default-${field.key}`}>默认值</label><WorkflowInputDefaultEditor field={field} onChange={(defaultValue) => updateInputField(index, { defaultValue })} /><small>创建任务时预填，可由提交人修改；留空表示不设置</small></div>
               <DeferredInput className="text-input schema-placeholder-input" value={field.placeholder ?? ""} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, placeholder: value } : item) })} placeholder="填写提示（可选）" aria-label={`${field.label} 的填写提示`} />
             </div>)}
             <button className="designer-add-field" onClick={() => update({ ...workflow, inputs: [...workflow.inputs, newInputField(workflow.inputs.length + 1)] })}><ListPlus size={15} />添加场景输入</button>

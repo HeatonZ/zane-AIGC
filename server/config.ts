@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
@@ -84,7 +84,37 @@ export const localDirectory = path.resolve(nonEmpty(process.env.APP_DATA_DIR) ??
 export const settingsFile = path.join(localDirectory, "connections.json");
 export const workspaceFile = path.join(localDirectory, "workspace.json");
 export const distDirectory = path.resolve(nonEmpty(process.env.DIST_DIR) ?? "dist");
-export const hermesHome = path.resolve(nonEmpty(process.env.HERMES_HOME) ?? nonEmpty(process.env.HERMES_INSTALL_ROOT) ?? path.join(os.homedir(), ".hermes"));
+/**
+ * Hermes install root for the workbench. Resolution order is deliberately explicit:
+ *   ZANE_HERMES_HOME ?? HERMES_HOME ?? HERMES_INSTALL_ROOT ?? %USERPROFILE%\.hermes
+ *
+ * HERMES_HOME alone is unsafe here: a Hermes profile session exports it pointing at
+ * <root>/profiles/<name>, so a launcher-started server resolves that profile directory and
+ * discovers "default" only — every real profile silently vanishes because the missing
+ * `profiles/` directory is swallowed by a silent catch. ZANE_HERMES_HOME belongs to this
+ * workbench and is never shadowed by a launcher's profile environment. A configured value
+ * that points at a single profile directory is corrected to its install root when the sibling
+ * layout is unambiguous, so a mis-set value degrades loudly instead of silently.
+ */
+function resolveHermesHome() {
+  const configured = nonEmpty(process.env.ZANE_HERMES_HOME) ?? nonEmpty(process.env.HERMES_HOME) ?? nonEmpty(process.env.HERMES_INSTALL_ROOT);
+  if (!configured) return path.join(os.homedir(), ".hermes");
+  const home = path.resolve(configured);
+  // A Hermes profile session pins HERMES_HOME to <root>/profiles/<name>. Discover siblings from
+  // the shared root when the layout is unambiguous; leave genuine single-profile homes alone.
+  const profileName = path.basename(home), profilesDirectory = path.dirname(home);
+  if (path.basename(profilesDirectory).toLowerCase() === "profiles" && /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(profileName)
+    && existsSync(path.join(path.dirname(profilesDirectory), "config.yaml")) && existsSync(path.join(home, "config.yaml"))) {
+    return path.dirname(profilesDirectory);
+  }
+  return home;
+}
+export const hermesHome = resolveHermesHome();
+export const hermesHomeSource = nonEmpty(process.env.ZANE_HERMES_HOME) ? "ZANE_HERMES_HOME"
+  : nonEmpty(process.env.HERMES_HOME) ? "HERMES_HOME"
+    : nonEmpty(process.env.HERMES_INSTALL_ROOT) ? "HERMES_INSTALL_ROOT" : "default";
+/** False when the resolved directory has no `profiles/` subdirectory, i.e. discovery will be partial. */
+export const hermesHomeIsInstallRoot = existsSync(path.join(hermesHome, "profiles"));
 export const configuredComfyuiBaseUrl = nonEmpty(process.env.COMFYUI_BASE_URL)?.replace(/\/+$/, "");
 export const configuredWorkflowTimeoutMinutes = normalizeWorkflowTimeoutMinutes(process.env.ZANE_WORKFLOW_TIMEOUT_MINUTES);
 // Network retries are deliberately bounded: enough time for a local Hermes Gateway
@@ -113,6 +143,38 @@ export const publicUserHost = nonEmpty(process.env.ZANE_PUBLIC_USER_HOST) ?? "12
 const loginNumber = (key: string) => nonEmpty(process.env[key]) === undefined ? undefined : Number(process.env[key]);
 const loginWindowSeconds = loginNumber("ZANE_LOGIN_WINDOW_SECONDS");
 if (loginWindowSeconds !== undefined && !Number.isInteger(loginWindowSeconds)) throw new Error("ZANE_LOGIN_WINDOW_SECONDS 必须为整数秒");
+// Optional: trust a known reverse proxy (same-host tunnel/nginx) so protocol/IP survive TLS termination.
+// Never "true" here — a client-supplied X-Forwarded-Proto must not be able to forge scheme, origin or limiter identity.
+const trustProxyValue = nonEmpty(process.env.ZANE_TRUST_PROXY);
+if (trustProxyValue && trustProxyValue !== "true" && trustProxyValue !== "false" && !/^\d+$/.test(trustProxyValue) && !["loopback", "uniquelocal", "linklocal", "uniquelocal:0:0:0:0:0:0:0", "linklocal:0:0:0:0:0:0:0"].includes(trustProxyValue)) {
+  throw new Error("ZANE_TRUST_PROXY 只接受 loopback / linklocal / uniquelocal、跳数或 true/false");
+}
+export const trustProxySetting: boolean | number | string | undefined =
+  trustProxyValue === undefined ? undefined
+    : trustProxyValue === "true" ? true
+      : trustProxyValue === "false" ? false
+        : /^\d+$/.test(trustProxyValue) ? Number(trustProxyValue)
+          : trustProxyValue;
+
+/** Exact public origins accepted on cookie-authenticated writes, e.g. "https://studio.example". */
+export const publicOrigins: readonly string[] = (nonEmpty(process.env.ZANE_PUBLIC_ORIGIN) ?? "")
+  .split(",")
+  .map(value => value.trim())
+  .filter(Boolean)
+  .map(value => {
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("protocol");
+      if (parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("path");
+      return parsed.protocol + "//" + parsed.host.toLowerCase();
+    } catch {
+      throw new Error("ZANE_PUBLIC_ORIGIN 必须是无路径的完整来源，如 https://studio.example");
+    }
+  });
+if (publicOrigins.length > 0 && trustProxySetting === undefined) {
+  throw new Error("配置 ZANE_PUBLIC_ORIGIN 时必须同时配置 ZANE_TRUST_PROXY");
+}
+
 export const loginLimitOptions = {
   windowMs: loginWindowSeconds === undefined ? undefined : loginWindowSeconds * 1000,
   accountAttempts: loginNumber("ZANE_LOGIN_ACCOUNT_ATTEMPTS"),

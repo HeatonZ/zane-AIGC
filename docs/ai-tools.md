@@ -264,7 +264,7 @@ GET /api/v1/self/runs/{runId}/steps/{stepId}
 
 副作用：read
 
-按步骤/逐项读取本人业务结果，复用结果分页；长文本可用textOffset/textLimit分段；不返回提示词或工作流配置。
+按步骤/逐项读取本人业务结果，复用结果分页；长文本可用textOffset/textLimit分段；不返回提示词或工作流配置，也不返回管理员可见的Hermes原始错误回复。
 
 ## wait_own_run
 
@@ -456,7 +456,7 @@ PATCH /api/v1/scenes/{sceneId}/draft
 
 副作用：write
 
-步骤级for_each可配置execution.carry:{outputKey,initialSourceRef?}串行继承上一项输出；仅当前步骤已声明输出键，初始来源仅input/前序step；启用后默认maxConcurrency=1、onError=stop，显式冲突拒绝。iteration.previous/hasPrevious/index见x-for-each-carry；续跑仅复用匹配完成前缀，单项编辑/反馈重做失效整个后缀。用当前内容revision替换提供的完整scene/workflow部分，省略部分保持不变；不是深层patch。可创建引用的新预设，不暗中覆盖共享预设。图生图复用基础hermes链路：writer先将有序reference_images与想法prompt整理为text edit_brief，aixg只消费该输出与原图片转为text prompt；生成步骤inputs和ComfyUI正向binding均引用aixg输出。公开输入仅reference_images（图片）、prompt（想法）、seed、ratio、mp；负向/步数/CFG/缩放/空图不作为用户输入，保留工作流固定配置。ratio/mp绑定目标画布，参考图仍传给图像编辑条件。切换ComfyUI工作流必须同步核对bindings节点与端口；双采视频只改配置，长文JSON入口为201.String而非196采样器。长文用writer输出storyboard/shots，基础hermes aixg按writer.shots逐项只输出text prompt；H3生成inputs.prompts引用step.aixg.outputs.prompt列表，保持Writer镜头元数据且全列表校验后才生成。ComfyUI只绑定image_list/audio_list/video_list物理列表，业务分类不作为节点类型；基础media.select_references新增可选images/audios/videos合并输出（旧快照可省略），按groups顺序及组内原上传顺序合并且不去重，提示词Picture/Audio/Video编号同步；长文H3绑定iteration.item.references.images到192.ref_images、references.audios到192.ref_audios，适配在逐镜选择后合并。场景输入和兼容旧ComfyUI输入绑定可配mediaRole（character/scene/prop为图片，voice_reference为音频，reference通用参考）；不新增媒体类型或执行器，同端口按绑定顺序合并，旧快照不自动替换。AI套图配置复用基础Writer完整设计→data.zip数量/结构校验→媒体选择bundle→AIXG完整成图提示词→data.zip对齐→基础ComfyUI样张审核→剩余逐张生成→收集模型原始图片。新模板不含add_text、layout、文字后置或条件选择，不把AI成图当无字底图；图中需要的文字、图形、版式由图像模型直接生成。不用commerce_pack专用适配器，旧发布快照不自动替换。data.zip的itemSchema为有限本地JSON Schema，不能嵌入引用/代码；selection每组可用序号数组或all，bundle保留逐项边界。steps.inputs.referenceType可显式标注JSON字段中的image_list/video_list/audio_list，审核恢复后仍为真实附件；省略保持旧行为，不生成媒体。基础ComfyUI capabilityConfig.outputMediaCounts按声明输出key校验每次/逐项执行的媒体数量（0..144，最多64项），如{images:1}；省略兼容旧流程，多图/少图直接失败，不截断或错配。不会发布或执行。冲突返回currentRevision，重读后决策。
+步骤级for_each可配置execution.carry:{outputKey,initialSourceRef?}串行继承上一项输出；仅当前步骤已声明输出键，初始来源仅input/前序step；启用后默认maxConcurrency=1、onError=stop，显式冲突拒绝。iteration.previous/hasPrevious/index见x-for-each-carry；续跑仅复用匹配完成前缀，单项编辑/反馈重做失效整个后缀。用当前内容revision替换提供的完整scene/workflow部分，省略部分保持不变；不是深层patch。可创建引用的新预设，不暗中覆盖共享预设。图生图复用基础hermes链路：writer先将有序reference_images与想法prompt整理为text edit_brief，aixg只消费该输出与原图片转为text prompt；生成步骤inputs和ComfyUI正向binding均引用aixg输出。公开输入仅reference_images（图片）、prompt（想法）、seed、ratio、mp；负向/步数/CFG/缩放/空图不作为用户输入，保留工作流固定配置。ratio/mp绑定目标画布，参考图仍传给图像编辑条件。切换ComfyUI工作流必须同步核对bindings节点与端口；双采视频只改配置，长文JSON入口为201.String而非196采样器。长文用writer输出storyboard/shots，基础hermes aixg按writer.shots逐项只输出text prompt；H3生成inputs.prompts引用step.aixg.outputs.prompt列表，保持Writer镜头元数据且全列表校验后才生成。ComfyUI只绑定image_list/audio_list/video_list物理列表，业务分类不作为节点类型；基础media.select_references新增可选images/audios/videos合并输出（旧快照可省略），按groups顺序及组内原上传顺序合并且不去重，提示词Picture/Audio/Video编号同步；长文H3绑定iteration.item.references.images到192.ref_images、references.audios到192.ref_audios，适配在逐镜选择后合并。场景输入和兼容旧ComfyUI输入绑定可配mediaRole（character/scene/prop为图片，voice_reference为音频，reference通用参考）；不新增媒体类型或执行器，同端口按绑定顺序合并，旧快照不自动替换。AI套图配置复用基础Writer完整设计→data.zip数量/结构校验→媒体选择bundle→AIXG完整成图提示词→data.zip对齐→基础ComfyUI样张审核→剩余逐张生成→收集模型原始图片。新模板不含add_text、layout、文字后置或条件选择，不把AI成图当无字底图；图中需要的文字、图形、版式由图像模型直接生成。不用commerce_pack专用适配器，旧发布快照不自动替换。data.zip可选ordinalField要求主项该整数属性严格按输入顺序1,2,...，拒绝重复/跳号/重排且不排序；省略保持旧行为。data.zip的itemSchema为有限本地JSON Schema，不能嵌入引用/代码；selection每组可用序号数组或all，bundle保留逐项边界。steps.inputs.referenceType可显式标注JSON字段中的image_list/video_list/audio_list，审核恢复后仍为真实附件；省略保持旧行为，不生成媒体。基础ComfyUI capabilityConfig.outputMediaCounts按声明输出key校验每次/逐项执行的媒体数量（0..144，最多64项），如{images:1}；省略兼容旧流程，多图/少图直接失败，不截断或错配。不会发布或执行。冲突返回currentRevision，重读后决策。
 
 ## validate_scene_draft
 
@@ -464,7 +464,7 @@ POST /api/v1/scenes/{sceneId}/validate
 
 副作用：read
 
-校验指定revision草稿的结构、引用、默认值、预设与已安装能力。无生成副作用，不探测远程服务，也不发布。
+校验指定revision草稿的结构、引用、默认值、预设与已安装能力；输入默认值必须匹配字段类型且select值属于已配置选项。无生成副作用，不探测远程服务，也不发布。
 
 ## publish_scene
 
@@ -528,7 +528,7 @@ POST /api/v1/scenes/{sceneId}/prepare
 
 副作用：read
 
-无生成副作用预检：固定已发布版本、填默认值、校验输入与素材版本、能力配置，返回执行/审核边界。不是外部服务健康或计费承诺，提交时仍会重新校验。媒体首选assetId+assetVersion固定引用；管理员的本后台同源/相对固定素材媒体URL也由权威素材服务解析和校验，不走无凭据HTTP下载。返回媒体执行契约，说明Hermes/AIXG与ComfyUI共享固定版本来源；不放宽用户归属权限。
+无生成副作用预检：固定已发布版本、填默认值、校验输入与素材版本、能力配置，返回执行/审核边界。不是外部服务健康或计费承诺，提交时仍会重新校验。媒体首选assetId+assetVersion固定引用；管理员的本后台同源/相对固定素材媒体URL也由权威素材服务解析和校验，不走无凭据HTTP下载。返回媒体执行契约（含audioConsumers），说明Hermes/AIXG与ComfyUI共享固定版本来源；不放宽用户归属权限。
 
 ## submit_scene
 
@@ -536,7 +536,7 @@ POST /api/v1/scenes/{sceneId}/runs
 
 副作用：execute
 
-执行已确认的发布版场景，可能调用付费 Hermes/ComfyUI。UI格式ComfyUI工作流按x-comfy-ui-routing解析前端Reroute链与扇出，不提交虚拟中继；循环/缺失/多来源/非零出口返回INVALID_COMFY_REROUTE，不修改原图或自动重试；API格式图保持原样。先预检；必须提供固定 versionId 和预先保存的 runId。素材固定版本由后端解析并归档；Hermes/AIXG以归档字节构造inline图片，ComfyUI读取并上传同一来源与顺序；Hermes保留现有图片预算/压缩，不改选素材版本。不要求执行端持有工作台token或访问previewUrl。Hermes返回对象按x-hermes-output-json契约解析；仅单个提前闭合顶层括号或字符串内原始LF/CR/TAB可确定性修复，不组合修复；全回复解析、声明字段无缺失/未知/重复，完整保留解码值且不重试模型。返回后用 wait_run/get_run 查询。响应丢失只查同一 runId，不换 ID 再提交。
+执行已确认的发布版场景，可能调用付费 Hermes/ComfyUI。UI格式ComfyUI工作流按x-comfy-ui-routing解析前端Reroute链与扇出，不提交虚拟中继；循环/缺失/多来源/非零出口返回INVALID_COMFY_REROUTE，不修改原图或自动重试；API格式转换保持原样。运行绑定后按x-comfy-static-switch仅断开已证明静态布尔值的内置ComfySwitchNode未选中输入，避免无上下文首段校验示例视频；未知/循环选择器原样交给ComfyUI。显式空可选视频清除示例输入；真实选中的必需输入仍由上游校验，声明但未连线的标量输入可按object_info绑定。先预检；必须提供固定 versionId 和预先保存的 runId。素材固定版本由后端解析并归档；Hermes/AIXG以归档字节构造inline图片，ComfyUI读取并上传同一来源与顺序；Hermes保留现有图片预算/压缩，不改选素材版本。基础audio_list绑定将已授权私有音频（含media.select_references/data.zip中间JSON）按引用顺序上传为ComfyUI输入附件再连接LoadAudio；每文件100MB，保留已有合法附件，不读取previewUrl或转发工作台凭证；上传/读取失败在提交prompt前停止，不自动重试。完整机器契约见x-asset-media-execution.audioConsumers。不要求执行端持有工作台token或访问previewUrl。Hermes返回对象按x-hermes-output-json契约解析；仅单个提前闭合顶层括号或字符串内原始LF/CR/TAB可确定性修复，不组合修复；全回复解析、声明字段无缺失/未知/重复，完整保留解码值且不重试模型。返回后用 wait_run/get_run 查询。响应丢失只查同一 runId，不换 ID 再提交。
 
 ## list_runs
 
@@ -560,7 +560,7 @@ GET /api/v1/runs/{runId}/steps/{stepId}/result
 
 副作用：read
 
-读取指定步骤结果，不带提示词、输入或完整流程。可指定outputKey/itemIndex，foreach结果cursor分页、数组值分段，文本可显式textOffset/textLimit分段；结果变化（包括warnings）时旧cursor返回409重新读第一页。warnings为步骤/逐项非阻断提示，可在生成中或外部失败后读取，不当成error或自动重试原因。
+读取指定步骤结果，不带提示词、输入或完整流程。可指定outputKey/itemIndex，foreach结果cursor分页、数组值分段，文本可显式textOffset/textLimit分段；Hermes解析或输出校验失败时返回完整原始回复的分页投影，保留首尾空白；结果变化（包括warnings或原始回复）时旧cursor返回409重新读第一页。warnings为步骤/逐项非阻断提示，可在生成中或外部失败后读取，不当成error或自动重试原因。
 
 ## get_run
 
@@ -568,7 +568,7 @@ GET /api/v1/runs/{runId}
 
 副作用：read
 
-管理员读取完整运行快照、输入、步骤结果、pendingReview和输出，并返回服务端记录的submitter身份快照(userId、username、displayName)；旧记录有归属但无快照时按当前用户档案补齐，不改写历史。Hermes JSON不可安全解析时保持failed及可读错误，不截取第一个对象、不自动重投；原失败快照不因后台修复而改写。waiting 是审核，不是失败；stale 需显式恢复。
+管理员读取完整运行快照、输入、步骤结果、pendingReview和输出，并返回服务端记录的submitter身份快照(userId、username、displayName)；已执行Hermes步骤含实际发送的agentPrompt，for_each时记录在各item.agentPrompt中，便于核对模板展开、步骤输入、反馈与输出要求；Hermes解析或输出校验失败时还保存完整未trim的原始回复agentResponse（旧历史未记录时不推测补写），可通过get_step_result分页读取；旧记录有归属但无快照时按当前用户档案补齐，不改写历史。Hermes JSON不可安全解析时保持failed及可读错误，不截取第一个对象、不自动重投；原失败快照不因后台修复而改写。waiting 是审核，不是失败；stale 需显式恢复。
 
 ## wait_run
 

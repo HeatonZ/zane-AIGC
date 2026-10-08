@@ -52,6 +52,7 @@ export interface RunInputField {
   type: string;
   required?: boolean;
   options?: string[];
+  defaultValue?: JsonValue;
 }
 
 export interface RunStepOutput {
@@ -162,6 +163,10 @@ export interface RunStepRecord {
   message?: string;
   inputs?: Record<string, JsonValue>;
   inputLabels?: Record<string, string>;
+  /** Exact text sent to Hermes for this step execution, including resolved inputs and output instructions. */
+  agentPrompt?: string;
+  /** Exact untrimmed Hermes response, saved only when output parsing or validation fails. */
+  agentResponse?: string;
   outputs?: Record<string, JsonValue>;
   outputLabels?: Record<string, string>;
   outputTypes?: Record<string, string>;
@@ -177,6 +182,10 @@ export interface RunStepItemRecord {
   value: JsonValue;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
   inputs?: Record<string, JsonValue>;
+  /** Exact text sent to Hermes for this iteration item. */
+  agentPrompt?: string;
+  /** Exact untrimmed Hermes response, saved only when output parsing or validation fails. */
+  agentResponse?: string;
   outputs?: Record<string, JsonValue>;
   error?: string;
 }

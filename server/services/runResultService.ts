@@ -53,6 +53,20 @@ function stepOutputs(run: RunRecord, step: RunStepRecord, values: Record<string,
   const keys = Object.keys(values ?? {}).filter(key => !query.outputKey || key === query.outputKey);
   return keys.map(key => output(key, values![key], step.outputTypes?.[key] ?? declared.find(field => field.key === key)?.type ?? "json", step.outputLabels?.[key] ?? declared.find(field => field.key === key)?.label ?? key, { runId: run.runId, stepId: step.stepId, ...(itemIndex !== undefined ? { itemIndex } : {}), outputKey: key }, query, budget));
 }
+function agentResponsePage(response: string, query: ResultQuery, budget: ValueBudget) {
+  const characters = Array.from(response);
+  const offset = query.textLimit === undefined ? 0 : Math.min(query.textOffset, characters.length);
+  const end = query.textLimit === undefined ? characters.length : Math.min(offset + query.textLimit, characters.length);
+  const value = characters.slice(offset, end).join("");
+  const valueBytes = Buffer.byteLength(JSON.stringify(value) ?? "null");
+  const omitted = !query.includeValues || valueBytes > budget.remaining;
+  if (!omitted) budget.remaining -= valueBytes;
+  return {
+    ...(omitted ? { valueOmitted: true, omissionReason: query.includeValues ? "value_byte_limit" : "metadata_only", nextAction: query.includeValues ? "narrow_value_page_or_increase_maxValueBytes" : "read_with_includeValues" } : { value }),
+    valueBytes,
+    valuePage: { kind: query.textLimit === undefined ? "scalar" : "string", total: characters.length, offset, count: end - offset, pageSize: query.textLimit ?? characters.length, complete: !omitted && offset === 0 && end === characters.length, hasMore: end < characters.length, ...(end < characters.length ? { nextValueOffset: end } : {}) },
+  };
+}
 export function runOutputs(run: RunRecord, query: ResultQuery) {
   const selected = run.outputs.filter(item => !query.outputKey || item.key === query.outputKey);
   if (query.outputKey && !selected.length) throw new HttpError(404, "没有找到此最终输出；未完成运行可能尚未产出", "OUTPUT_NOT_AVAILABLE", { runId: run.runId, outputKey: query.outputKey, status: run.status });
@@ -69,8 +83,8 @@ export function stepResult(run: RunRecord, stepId: string, query: ResultQuery) {
   if (query.itemIndex !== undefined && !selected.length) throw new HttpError(404, "没有找到此逐项结果", "ITEM_RESULT_NOT_AVAILABLE", { runId: run.runId, stepId, itemIndex: query.itemIndex });
   const availableKeys = new Set([...Object.keys(step.outputs ?? {}), ...selected.flatMap(item => Object.keys(item.outputs ?? {}))]);
   if (query.outputKey && !availableKeys.has(query.outputKey)) throw new HttpError(404, "没有找到此步骤输出", "OUTPUT_NOT_AVAILABLE", { runId: run.runId, stepId, outputKey: query.outputKey });
-  const revision = contentRevision({ status: step.status, message: step.message, warnings: step.warnings, outputs: step.outputs, items: items.map(item => ({ index: item.index, status: item.status, warnings: item.warnings, outputs: item.outputs, error: item.error })) });
+  const revision = contentRevision({ status: step.status, message: step.message, warnings: step.warnings, outputs: step.outputs, agentResponse: step.agentResponse, items: items.map(item => ({ index: item.index, status: item.status, warnings: item.warnings, outputs: item.outputs, error: item.error, agentResponse: item.agentResponse })) });
   const selectedPage = resultPage(selected, revision, scope(run, query, stepId), query);
   const budget = { remaining: query.maxValueBytes };
-  return { runId: run.runId, runStatus: run.status, stepId, name: step.name, status: step.status, ...(step.message ? { message: step.message } : {}), ...(step.warnings?.length ? { warnings: step.warnings } : {}), revision, ...(query.itemIndex === undefined ? { outputs: stepOutputs(run, step, step.outputs, query, budget) } : {}), items: selectedPage.data.map(item => ({ index: item.index, status: item.status, ...(item.warnings?.length ? { warnings: item.warnings } : {}), ...(item.error ? { error: item.error } : {}), ...(item.reusedFromRunId ? { reusedFromRunId: item.reusedFromRunId } : {}), outputs: stepOutputs(run, step, item.outputs, query, budget, item.index) })), itemCount: items.length, total: selectedPage.total, hasMore: selectedPage.hasMore, ...(selectedPage.nextCursor ? { nextCursor: selectedPage.nextCursor } : {}), nextAction: "inspect_step_outputs" };
+  return { runId: run.runId, runStatus: run.status, stepId, name: step.name, status: step.status, ...(step.message ? { message: step.message } : {}), ...(step.warnings?.length ? { warnings: step.warnings } : {}), revision, ...(step.agentResponse !== undefined && query.itemIndex === undefined ? { agentResponse: agentResponsePage(step.agentResponse, query, budget) } : {}), ...(query.itemIndex === undefined ? { outputs: stepOutputs(run, step, step.outputs, query, budget) } : {}), items: selectedPage.data.map(item => ({ index: item.index, status: item.status, ...(item.warnings?.length ? { warnings: item.warnings } : {}), ...(item.error ? { error: item.error } : {}), ...(item.agentResponse !== undefined ? { agentResponse: agentResponsePage(item.agentResponse, query, budget) } : {}), ...(item.reusedFromRunId ? { reusedFromRunId: item.reusedFromRunId } : {}), outputs: stepOutputs(run, step, item.outputs, query, budget, item.index) })), itemCount: items.length, total: selectedPage.total, hasMore: selectedPage.hasMore, ...(selectedPage.nextCursor ? { nextCursor: selectedPage.nextCursor } : {}), nextAction: step.agentResponse !== undefined || items.some(item => item.agentResponse !== undefined) ? "inspect_hermes_response" : "inspect_step_outputs" };
 }

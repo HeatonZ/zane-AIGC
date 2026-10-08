@@ -6,6 +6,7 @@ import { Router } from "express";
 import type { SavedSettings } from "../domain/types.js";
 import { isRunId, runArtifactPaths } from "../artifacts/runArtifacts.js";
 import { HttpError } from "../errors.js";
+import { enablePrivateMediaRevalidation } from "./privateMediaCache.js";
 
 /** Stream media instead of buffering complete videos in the API process. */
 export function createMediaRouter(loadSettings: () => Promise<SavedSettings>, timeoutMs = 300000) {
@@ -19,7 +20,8 @@ export function createMediaRouter(loadSettings: () => Promise<SavedSettings>, ti
     const file = path.resolve(directory, filename);
     if (!file.startsWith(`${directory}${path.sep}`)) throw new HttpError(400, "归档媒体路径无效");
     // sendFile handles Content-Length, HEAD, Range and If-Range without a readFile buffer.
-    response.sendFile(file, { dotfiles: "allow" }, (error) => {
+    enablePrivateMediaRevalidation(response);
+    response.sendFile(file, { dotfiles: "allow", cacheControl: false, etag: true, lastModified: true }, (error) => {
       if (!error) return;
       if (response.headersSent) { next(error); return; }
       if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as { status?: number }).status === 404) response.status(404).json({ error: "没有找到归档媒体文件" });

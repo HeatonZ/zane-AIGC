@@ -1,5 +1,6 @@
 import type { JsonValue } from "../types";
 import type { AssetSource } from "../../server/domain/productionContracts";
+import { assetPreview } from "./production";
 
 /** Translate a durable local run archive path into its existing media route. */
 export function runMediaUrl(value: string): string | undefined {
@@ -20,7 +21,9 @@ export function runOutputMediaItems(value: JsonValue, type?: string, source?: Om
   visit(value);
   return values.flatMap((item, mediaIndex) => {
     const record = item && typeof item === "object" && !Array.isArray(item) ? item : undefined;
-    const location = typeof item === "string" ? item : [record?.previewUrl, record?.url, record?.path].find(candidate => typeof candidate === "string") as string | undefined;
+    const fixedAsset = record && typeof record.assetId === "string" && Number.isSafeInteger(record.assetVersion) && Number(record.assetVersion) > 0
+      ? assetPreview(record.assetId, Number(record.assetVersion)) : undefined;
+    const location = typeof item === "string" ? item : [record?.previewUrl, fixedAsset, record?.url, record?.path].find(candidate => typeof candidate === "string") as string | undefined;
     let url = location ? runMediaUrl(location) : undefined;
     const filename = typeof item === "string" ? item : [record?.assetName, record?.filename, record?.file, record?.path, location].find(candidate => typeof candidate === "string") as string;
     const extensionSource = [record?.filename, record?.file, record?.path, location].find(candidate => typeof candidate === "string") as string;
