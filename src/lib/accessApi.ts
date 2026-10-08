@@ -34,8 +34,14 @@ export async function accessMedia(path: string, actorId = currentActorId, signal
 }
 export const jsonBody = (value: unknown): RequestInit => ({method:"POST",body:JSON.stringify(value)});
 export interface AccessPage<T> { items:T[]; total?:number; hasMore:boolean; nextCursor?:string; revision?:string }
+export type OwnAssetPage = import("../../server/domain/assetLibraryContracts").OwnAssetPage;
+export function listOwnAssets(query: { limit?: number; cursor?: string; q?: string; kind?: import("../../server/domain/productionContracts").AssetKind }, actorId = currentActorId, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
+  return accessApi<OwnAssetPage>("/api/v1/self/assets?" + params.toString(), { signal }, actorId);
+}
 export type Account = import("../../server/services/accessService").UserAccount;
 export interface AvailableScene { sceneId:string; title:string; summary:string; versionId:string; version:string }
-export interface UserScene extends AvailableScene { description:string; fields:Array<{key:string;label:string;type:string;required:boolean;placeholder?:string;options?:string[]}>; inputDefaults:Record<string,unknown>; notices:string[] }
+export interface UserScene extends AvailableScene { description:string; fields:Array<{key:string;label:string;type:import("../types").WorkflowFieldType;required:boolean;hidden:boolean;minimum?:number;maximum?:number;placeholder?:string;options?:string[];inputMode?:"object_array";itemFields?:import("../types").WorkflowObjectArrayItemField[]}>; inputDefaults:Record<string,unknown>; notices:string[] }
 export type OwnRun = import("../../server/services/runDetailService").BusinessRun;
 export interface OwnDraft { id:string;revision:number;sceneId:string;versionId:string;title:string;inputValues:Record<string,unknown>;updatedAt:string;isFavorite:boolean }

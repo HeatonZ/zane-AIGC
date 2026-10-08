@@ -42,6 +42,7 @@ import type {
   WorkflowControlConfig,
   WorkflowFieldType,
   WorkflowInputField,
+  WorkflowObjectArrayItemField,
   WorkflowOptionPreset,
   WorkflowOutputField,
   WorkflowStepDefinition,
@@ -62,6 +63,7 @@ import { applyCapabilityToStep, capabilityForStep, capabilityConfigErrors, type 
 import { builtinCapabilities } from "../../server/capabilities/definitions.js";
 import { publishedSceneVersion, sceneDraftMatchesVersion, sceneVersionHash } from "../lib/sceneVersions";
 import { canonicalWorkflowMediaType, canonicalWorkflowType } from "../lib/workflowMigration";
+import { isEmptyWorkflowInput } from "../../server/domain/inputValidation.js";
 
 interface FlowDesignerProps {
   sceneId: SceneId;
@@ -146,6 +148,10 @@ const fieldTypeOptions: Array<[WorkflowFieldType, string]> = [
   ["video_list", "视频列表"],
   ["audio_list", "音频列表"],
   ["json", "结构化数据"],
+];
+
+const objectArrayItemTypeOptions: Array<[WorkflowObjectArrayItemField["type"], string]> = [
+  ["text", "单行文本"], ["number", "数字"], ["select", "下拉选项"], ["boolean", "是/否"],
 ];
 
 const outputTypeOptions: Array<[WorkflowStepOutput["type"], string]> = [
@@ -568,7 +574,7 @@ function WorkflowInputDefaultEditor({ field, onChange }: { field: WorkflowInputF
     return <DeferredTextarea id={id} className="text-input schema-default-textarea" value={displayValue} onCommit={(next) => onChange(next === "" ? undefined : next)} placeholder="填写默认文本" aria-label={`${field.label}默认值`} />;
   }
   if (field.type === "number") {
-    return <DeferredInput id={id} className="text-input schema-default-input" type="number" step="any" value={displayValue} onCommit={(next) => {
+    return <DeferredInput id={id} className="text-input schema-default-input" type="number" step="any" min={field.minimum} max={field.maximum} value={displayValue} onCommit={(next) => {
       if (!next.trim()) onChange(undefined);
       else if (Number.isFinite(Number(next))) onChange(Number(next));
     }} placeholder="不设置" aria-label={`${field.label}默认值`} />;
@@ -945,6 +951,7 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
         if (fieldIndex !== index) return field;
         const next = { ...field, ...changes };
         if (("defaultValue" in changes && changes.defaultValue === undefined) || ("type" in changes && changes.type !== field.type)) delete next.defaultValue;
+        if ("type" in changes && changes.type !== "number") { delete next.minimum; delete next.maximum; }
         return validWorkflowMediaRole(next.mediaRole, next.type) ? next : { ...next, mediaRole: undefined };
       }),
     });
@@ -1199,6 +1206,18 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
     if (inputKeys.some((key) => !key)) messages.push("场景输入需要设置字段 key");
     if (new Set(inputKeys).size !== inputKeys.length) messages.push("场景输入 key 不能重复");
     if (workflow.inputs.some((field) => field.type === "select" && !field.options?.length)) messages.push("下拉选项字段至少需要配置一个选项");
+    if (workflow.inputs.some(field => field.type === "number" && field.minimum !== undefined && field.maximum !== undefined && field.minimum > field.maximum)) messages.push("数字输入的最小值不能大于最大值");
+    if (workflow.inputs.some(field => field.hidden && field.required && isEmptyWorkflowInput(field, field.defaultValue))) messages.push("隐藏的必填字段需要配置非空默认值");
+    workflow.inputs.forEach(field => {
+      if (field.inputMode !== "object_array") return;
+      const itemFields = field.itemFields ?? [];
+      if (!itemFields.length) messages.push(`${field.label}对象数组至少需要一个行字段`);
+      const keys = itemFields.map(item => item.key.trim());
+      if (keys.some(key => !key) || new Set(keys).size !== keys.length) messages.push(`${field.label}的行字段 key 需要填写且不能重复`);
+      if (itemFields.some(item => !item.label.trim())) messages.push(`${field.label}的行字段名称不能为空`);
+      if (itemFields.some(item => item.type === "select" && !item.options?.length)) messages.push(`${field.label}的下拉行字段至少需要一个选项`);
+      if (itemFields.some(item => item.type === "number" && item.minimum !== undefined && item.maximum !== undefined && item.minimum > item.maximum)) messages.push(`${field.label}的数字行字段最小值不能大于最大值`);
+    });
     workflow.steps.forEach((step, index) => {
       const priorOptions = allReferenceOptions({ ...workflow, steps: workflow.steps.slice(0, index) });
       const iterationOption = step.execution?.mode === "for_each"
@@ -1404,7 +1423,7 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
           </div>
 
           {selection.kind === "inputs" && <section className="schema-editor">
-            <div className="designer-field-explainer"><Braces size={15} /><span>每个输入都会成为可引用变量，例如 <code>input.story_seed</code>。</span></div>
+            <div className="designer-field-explainer"><Braces size={15} /><span>每个输入都会成为可引用变量，例如 <code>input.story_seed</code>；隐藏仅影响网页输入表单展示。</span></div>
             {workflow.inputs.map((field, index) => <div className="schema-row" key={`schema-input-${field.key}-${index}`}>
               <div className="schema-row-toolbar">
                 <span className="schema-row-index">{String(index + 1).padStart(2, "0")}</span>
@@ -1420,12 +1439,39 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
                 <div className="media-type-controls"><div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(field.type) ?? field.type} onChange={(event) => updateInputField(index, { type: event.target.value as WorkflowFieldType, defaultValue: undefined, ...(event.target.value === "select" ? {} : { optionPresetId: undefined }) })} aria-label="输入类型">{fieldTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div><MediaRoleSelect type={field.type} value={field.mediaRole} onChange={mediaRole => updateInputField(index, { mediaRole })} label={`${field.label}的素材用途`} /></div>
                 <label className="required-toggle"><input type="checkbox" checked={field.required} onChange={(event) => updateInputField(index, { required: event.target.checked })} /><span>必填</span></label>
               </div>
+              {field.type === "number" && <div className="schema-number-controls">
+                <label><span>最小值</span><DeferredInput className="text-input" type="number" step="any" value={field.minimum === undefined ? "" : String(field.minimum)} onCommit={value => { const minimum = value.trim() ? Number(value) : undefined; if (minimum === undefined || Number.isFinite(minimum)) updateInputField(index, { minimum }); }} placeholder="不限制" aria-label={`${field.label}最小值`} /></label>
+                <label><span>最大值</span><DeferredInput className="text-input" type="number" step="any" value={field.maximum === undefined ? "" : String(field.maximum)} onCommit={value => { const maximum = value.trim() ? Number(value) : undefined; if (maximum === undefined || Number.isFinite(maximum)) updateInputField(index, { maximum }); }} placeholder="不限制" aria-label={`${field.label}最大值`} /></label>
+                <small>用户可不填写；填写时必须在范围内。</small>
+              </div>}
+              {field.type === "json" && <div className="object-array-mode-control"><label htmlFor={`input-mode-${field.key}`}>用户填写方式</label><div className="select-wrap"><select id={`input-mode-${field.key}`} value={field.inputMode ?? "json"} onChange={event => updateInputField(index, event.target.value === "object_array" ? { inputMode: "object_array", itemFields: field.itemFields?.length ? field.itemFields : [{ key: "item_field_1", label: "字段1", type: "text", required: true }] } : { inputMode: undefined, itemFields: undefined })}><option value="json">JSON 编辑器</option><option value="object_array">对象数组表单</option></select><ChevronDown size={13} /></div></div>}
+              {field.inputMode === "object_array" && <div className="object-array-schema-editor">
+                <div className="object-array-schema-heading"><strong>每行字段</strong><small>用户按行填写，提交值仍是结构化数组。</small></div>
+                {(field.itemFields ?? []).map((item, itemIndex) => <div className="object-array-schema-row" key={`${item.key}-${itemIndex}`}>
+                  <DeferredInput className="text-input" value={item.label} onCommit={label => updateInputField(index, { itemFields: (field.itemFields ?? []).map((current, position) => position === itemIndex ? { ...current, label } : current) })} placeholder="字段名称" aria-label={`${item.label}字段名称`} />
+                  <DeferredInput className="text-input" value={item.key} onCommit={key => updateInputField(index, { itemFields: (field.itemFields ?? []).map((current, position) => position === itemIndex ? { ...current, key: key.replace(/[^a-zA-Z0-9_]/g, "_") } : current) })} placeholder="field_key" aria-label={`${item.label}字段 key`} />
+                  <div className="select-wrap"><select value={item.type} onChange={event => updateInputField(index, { itemFields: (field.itemFields ?? []).map((current, position) => position === itemIndex ? { ...current, type: event.target.value as WorkflowObjectArrayItemField["type"], ...(event.target.value === "select" ? {} : { options: undefined }), ...(event.target.value === "number" ? {} : { minimum: undefined, maximum: undefined }) } : current) })} aria-label={`${item.label}字段类型`}>{objectArrayItemTypeOptions.map(([type, label]) => <option value={type} key={type}>{label}</option>)}</select><ChevronDown size={13} /></div>
+                  {item.type === "select" && <DeferredInput className="text-input" value={(item.options ?? []).join(", ")} onCommit={value => updateInputField(index, { itemFields: (field.itemFields ?? []).map((current, position) => position === itemIndex ? { ...current, options: value.split(",").map(option => option.trim()).filter(Boolean) } : current) })} placeholder="选项用逗号分隔" aria-label={`${item.label}下拉选项`} />}
+                  {item.type === "number" && <div className="schema-number-controls object-array-number-controls">
+                    <label><span>最小值</span><DeferredInput className="text-input" type="number" step="any" value={item.minimum === undefined ? "" : String(item.minimum)} onCommit={value => { const minimum = value.trim() ? Number(value) : undefined; if (minimum === undefined || Number.isFinite(minimum)) updateInputField(index, { itemFields: (field.itemFields ?? []).map((current, position) => position === itemIndex ? { ...current, minimum } : current) }); }} placeholder="不限制" aria-label={`${item.label}最小值`} /></label>
+                    <label><span>最大值</span><DeferredInput className="text-input" type="number" step="any" value={item.maximum === undefined ? "" : String(item.maximum)} onCommit={value => { const maximum = value.trim() ? Number(value) : undefined; if (maximum === undefined || Number.isFinite(maximum)) updateInputField(index, { itemFields: (field.itemFields ?? []).map((current, position) => position === itemIndex ? { ...current, maximum } : current) }); }} placeholder="不限制" aria-label={`${item.label}最大值`} /></label>
+                  </div>}
+                  <label className="required-toggle"><input type="checkbox" checked={item.required} onChange={event => updateInputField(index, { itemFields: (field.itemFields ?? []).map((current, position) => position === itemIndex ? { ...current, required: event.target.checked } : current) })} /><span>必填</span></label>
+                  <button className="icon-button schema-delete" onClick={() => updateInputField(index, { itemFields: (field.itemFields ?? []).filter((_current, position) => position !== itemIndex) })} title="删除子字段" aria-label={`删除${item.label}`}><Trash2 size={14} /></button>
+                </div>)}
+                <button className="designer-add-field" onClick={() => updateInputField(index, { itemFields: [...(field.itemFields ?? []), { key: `item_field_${(field.itemFields?.length ?? 0) + 1}`, label: `字段${(field.itemFields?.length ?? 0) + 1}`, type: "text", required: false }] })}><ListPlus size={14} />添加行字段</button>
+              </div>}
               {field.type === "select" && <div className="schema-options-controls">
                 <DeferredInput className="text-input schema-options-input" value={(field.options ?? []).join(", ")} onCommit={(value) => updateInputField(index, { options: value.split(",").map((option) => option.trim()).filter(Boolean), optionPresetId: undefined })} placeholder="选项用逗号分隔" aria-label={`${field.label} 的选项`} />
                 <div className="select-wrap schema-option-preset-select"><select value={field.optionPresetId ?? ""} onChange={(event) => applyOptionPreset(index, event.target.value)} aria-label={`${field.label} 的选项预设`}><option value="">自定义选项</option>{optionPresets.map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select><ChevronDown size={13} /></div>
               </div>}
               <div className="schema-default-field"><label htmlFor={`input-default-${field.key}`}>默认值</label><WorkflowInputDefaultEditor field={field} onChange={(defaultValue) => updateInputField(index, { defaultValue })} /><small>创建任务时预填，可由提交人修改；留空表示不设置</small></div>
               <DeferredInput className="text-input schema-placeholder-input" value={field.placeholder ?? ""} onCommit={(value) => update({ ...workflow, inputs: workflow.inputs.map((item, itemIndex) => itemIndex === index ? { ...item, placeholder: value } : item) })} placeholder="填写提示（可选）" aria-label={`${field.label} 的填写提示`} />
+              <label className="schema-hidden-toggle" title="从管理创作页和用户端网页表单中隐藏；输入契约与流程执行仍保留该字段">
+                <input type="checkbox" checked={Boolean(field.hidden)} onChange={event => updateInputField(index, { hidden: event.target.checked })} />
+                <span>从网页输入表单隐藏</span>
+                <small>字段仍参与预检和流程执行</small>
+              </label>
             </div>)}
             <button className="designer-add-field" onClick={() => update({ ...workflow, inputs: [...workflow.inputs, newInputField(workflow.inputs.length + 1)] })}><ListPlus size={15} />添加场景输入</button>
             <div className="designer-subsection option-presets-section">

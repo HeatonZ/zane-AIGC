@@ -28,6 +28,16 @@ export function runDuration(ms?: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
   return `${Math.floor(seconds / 3600)} 时 ${Math.floor(seconds % 3600 / 60)} 分`;
 }
+export function stepDurationLabel(step: { startedAt?: string; durationMs?: number; status?: string }, now: number, live = true): string {
+  if (live && step.status === "running" && step.startedAt && Number.isFinite(Date.parse(step.startedAt))) {
+    return runDuration(Math.max(0, now - Date.parse(step.startedAt)));
+  }
+  const stored = step.durationMs;
+  if (stored !== undefined && Number.isFinite(stored) && stored >= 0) return runDuration(stored);
+  if (step.status === "pending") return "尚未开始";
+  if (step.status === "skipped") return "未执行";
+  return "未记录";
+}
 export function elapsedRun(run: {createdAt?: string; finishedAt?: string; totalDurationMs?: number; status?: string}, now: number): number | undefined {
   if (run.totalDurationMs !== undefined) return run.totalDurationMs;
   if (!run.finishedAt && !["queued", "running", "cancelling", "waiting"].includes(run.status ?? "")) return undefined;

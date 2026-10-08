@@ -14,7 +14,7 @@ import { isRunId, runArtifactPaths } from "../artifacts/runArtifacts.js";
 import { SqliteStore } from "../storage/sqliteStore.js";
 import { HttpError } from "../errors.js";
 import { assetMetadataSchema, assetKindSchema, assetSourceSchema, updateAssetSchema } from "../domain/assetLibraryContracts.js";
-import { assetCatalog, assetEnvelope, assetVersions, assetVersion, parseAssetInput } from "./assetCatalog.js";
+import { assetCatalog, ownAssetCatalog, assetEnvelope, assetVersions, assetVersion, parseAssetInput } from "./assetCatalog.js";
 
 export const assetCategories: AssetCategory[] = ["character", "scene", "prop", "voice", "material"];
 export const assetMediaUrl = (id: string, version: number) => "/api/v1/assets/" + id + "/versions/" + version + "/media";
@@ -28,6 +28,7 @@ export class AssetService {
     return asset;
   }
   catalog(project: string, query: unknown = {}, actorId = "") { return assetCatalog(this.list(project), query, project, actorId); }
+  ownedCatalog(project: string, query: unknown, ownerUserId: string) { return ownAssetCatalog(this.list(project), query, project, ownerUserId, asset => this.reference(asset)); }
   detail(project: string, id: string) { const asset = this.required(project, id); return assetEnvelope(asset, this.reference(asset)); }
   versionsPage(project: string, id: string, query: unknown = {}, actorId = "") { const asset = this.required(project, id); return assetVersions(asset, query, project, actorId, version => this.reference(asset, version)); }
   versionDetail(project: string, id: string, version: number, query: unknown = {}) { const asset = this.required(project, id); return assetVersion(asset, version, query, this.reference(asset, version)); }

@@ -48,6 +48,14 @@ export interface StepExecutionContext {
   signal: AbortSignal;
 }
 export type ExecutionResult = Pick<RunRecord, "runId" | "status" | "steps" | "outputs" | "startedAt" | "finishedAt" | "durationMs" | "error" | "cancellationReason" | "archiveWarnings" | "pendingReview" | "resumedFromRunId" | "artifacts">;
+
+function finishStepTiming<T extends { startedAt?: string }>(record: T): T & { finishedAt: string; durationMs: number } {
+  const finishedAt = new Date().toISOString();
+  const parsedStart = Date.parse(record.startedAt ?? "");
+  const start = Number.isFinite(parsedStart) ? parsedStart : Date.parse(finishedAt);
+  return { ...record, finishedAt, durationMs: Math.max(0, Date.parse(finishedAt) - start) };
+}
+
 export interface ExecutionContext {
   controller: AbortController;
   executeStep(context: StepExecutionContext): Promise<Record<string, JsonValue>>;
@@ -226,7 +234,20 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         if ((record.replaced || record.review?.status === "pending") && reviewStep(step, record)) break;
         continue;
       }
-      const stepInputs = resolveStepInputs(step, itemInputValues, values) as Record<string, JsonValue>;
+      const stepStartedAt = new Date().toISOString();
+      let stepInputs: Record<string, JsonValue>;
+      try {
+        stepInputs = resolveStepInputs(step, itemInputValues, values) as Record<string, JsonValue>;
+      } catch (error) {
+        itemFailure = error instanceof Error ? error.message : `${step.name} 的输入无效`;
+        const inputLabels = Object.fromEntries((step.inputs ?? []).map((input) => [input.key, input.label ?? input.key])) as Record<string, string>;
+        const outputLabels = Object.fromEntries((step.outputs ?? []).map((output) => [output.key, output.label ?? output.key])) as Record<string, string>;
+        const outputTypes = Object.fromEntries((step.outputs ?? []).map((output) => [output.key, output.type])) as Record<string, string>;
+        itemSteps.push(finishStepTiming({ stepId: step.id, name: step.name, status: "failed" as const, startedAt: stepStartedAt, message: itemFailure, inputLabels, outputLabels, outputTypes }));
+        syncSteps(itemSteps);
+        await persistRuntime("running");
+        break;
+      }
       const inputLabels = Object.fromEntries((step.inputs ?? []).map((input) => [input.key, input.label ?? input.key])) as Record<string, string>;
       const outputLabels = Object.fromEntries((step.outputs ?? []).map((output) => [output.key, output.label ?? output.key])) as Record<string, string>;
       const outputTypes = Object.fromEntries((step.outputs ?? []).map((output) => [output.key, output.type])) as Record<string, string>;
@@ -234,7 +255,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         const condition = values.get(step.runCondition.conditionStepId)?.result;
         if (typeof condition !== "boolean") {
           itemFailure = `${step.name} 引用的条件节点没有布尔结果`;
-          itemSteps.push({ stepId: step.id, name: step.name, status: "failed", message: itemFailure, inputs: stepInputs, inputLabels, outputLabels, outputTypes });
+          itemSteps.push(finishStepTiming({ stepId: step.id, name: step.name, status: "failed" as const, startedAt: stepStartedAt, message: itemFailure, inputs: stepInputs, inputLabels, outputLabels, outputTypes }));
           break;
         }
         if (condition !== step.runCondition.expectedResult) {
@@ -252,7 +273,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         const carry = step.execution.carry;
         const carryType = step.outputs?.find(output => output.key === carry?.outputKey)?.type ?? "json";
         let initialCarry: JsonValue = null;
-        const parent: RunStepRecord = { stepId: step.id, name: step.name, status: "running", inputs: stepInputs, inputLabels, outputLabels, outputTypes, items: [] };
+        const parent: RunStepRecord = { stepId: step.id, name: step.name, status: "running", startedAt: stepStartedAt, inputs: stepInputs, inputLabels, outputLabels, outputTypes, items: [] };
         itemSteps.push(parent);
         syncSteps(itemSteps);
         try {
@@ -266,8 +287,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           if (carry?.initialSourceRef) initialCarry = carryValue(resolveWorkflowReference(carry.initialSourceRef, itemInputValues, values), carryType, "初始传递状态");
         } catch (error) {
           itemFailure = error instanceof Error ? error.message : `${step.name} 的逐项来源无效`;
-          parent.status = "failed";
-          parent.message = itemFailure;
+          Object.assign(parent, finishStepTiming({ ...parent, status: "failed" as const, message: itemFailure }));
           syncSteps(itemSteps);
           await persistRuntime("running");
           break;
@@ -346,6 +366,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
             return;
           }
           const sourceItem = sourceItems[itemIndex]!;
+          const itemStartedAt = new Date().toISOString();
           if (resumableItems.has(itemIndex)) return;
           let currentInputs: Record<string, JsonValue>;
           let currentValues: Map<string, Record<string, JsonValue>>;
@@ -369,7 +390,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
             currentStepInputs = resolveStepInputs(itemStep, currentInputs, currentValues) as Record<string, JsonValue>;
           } catch (error) {
             const message = error instanceof Error ? error.message : `${step.name} 的第 ${itemIndex + 1} 项输入无效`;
-            setIterationItem({ index: itemIndex, value: sourceItem, status: "failed", error: message });
+            setIterationItem(finishStepTiming({ index: itemIndex, value: sourceItem, status: "failed" as const, startedAt: itemStartedAt, error: message }));
             iterationProcessed[itemIndex] = true;
             iterationErrors.set(itemIndex, message);
             iterationFailed = true;
@@ -391,7 +412,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
             currentTypes.set("iteration.hasPrevious", "boolean");
             currentTypes.set("iteration.index", "number");
           }
-          const itemRecord: RunStepItemRecord = { index: itemIndex, value: sourceItem, status: "running", inputs: currentStepInputs, ...(itemStep !== step ? { stepSnapshot: structuredClone(itemStep) } : {}) };
+          const itemRecord: RunStepItemRecord = { index: itemIndex, value: sourceItem, status: "running", startedAt: itemStartedAt, inputs: currentStepInputs, ...(itemStep !== step ? { stepSnapshot: structuredClone(itemStep) } : {}) };
           setIterationItem(itemRecord);
           syncSteps(itemSteps);
           await persistRuntime("running");
@@ -400,6 +421,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
             itemRecord.outputs = outputs;
             if (carry) carryValue(outputs[carry.outputKey], carryType, "本项传递输出");
             itemRecord.status = "completed";
+            Object.assign(itemRecord, finishStepTiming(itemRecord));
             iterationProcessed[itemIndex] = true;
             iterationOutputs[itemIndex] = outputs;
             iterationSucceeded[itemIndex] = true;
@@ -408,11 +430,13 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
               itemCancelled = true;
               stopScheduling = true;
               itemRecord.status = "cancelled";
+              Object.assign(itemRecord, finishStepTiming(itemRecord));
               iterationProcessed[itemIndex] = true;
               itemRecord.error = String(runController.signal.reason ?? "运行已取消") || "运行已取消";
             } else {
               const message = error instanceof Error ? error.message : `${step.name} 的第 ${itemIndex + 1} 项执行失败`;
               itemRecord.status = "failed";
+              Object.assign(itemRecord, finishStepTiming(itemRecord));
               iterationProcessed[itemIndex] = true;
               itemRecord.error = message;
               iterationErrors.set(itemIndex, message);
@@ -447,8 +471,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           if (firstFailure) itemFailure = firstFailure[1];
         }
         if (itemCancelled) {
-          parent.status = "cancelled";
-          parent.message = String(runController.signal.reason ?? "运行已取消") || "运行已取消";
+          Object.assign(parent, finishStepTiming({ ...parent, status: "cancelled" as const, message: String(runController.signal.reason ?? "运行已取消") || "运行已取消" }));
           syncSteps(itemSteps);
           await persistRuntime("running");
           break;
@@ -457,13 +480,12 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         values.set(step.id, aggregatedOutputs);
         for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, canonicalWorkflowType(output.type));
         if (iterationFailed) {
-          parent.status = "failed";
-          parent.message = itemFailure || `${step.name} 有逐项执行失败`;
+          Object.assign(parent, finishStepTiming({ ...parent, status: "failed" as const, message: itemFailure || `${step.name} 有逐项执行失败` }));
           syncSteps(itemSteps);
           await persistRuntime("running");
           break;
         }
-        parent.status = "completed";
+        Object.assign(parent, finishStepTiming({ ...parent, status: "completed" as const }));
         syncSteps(itemSteps);
         await persistRuntime("running");
         if (reviewStep(step, parent)) break;
@@ -471,13 +493,13 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
       }
 
       try {
-        itemSteps.push({ stepId: step.id, name: step.name, status: "running", inputs: stepInputs, inputLabels, outputLabels, outputTypes });
+        itemSteps.push({ stepId: step.id, name: step.name, status: "running", startedAt: stepStartedAt, inputs: stepInputs, inputLabels, outputLabels, outputTypes });
         syncSteps(itemSteps);
         await persistRuntime("running");
         const outputs = await executeStep(step, itemInputValues, values, types, undefined, undefined, itemSteps[itemSteps.length - 1]);
         values.set(step.id, outputs);
         for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, output.type);
-        itemSteps[itemSteps.length - 1] = { ...itemSteps[itemSteps.length - 1], stepId: step.id, name: step.name, status: "completed", inputs: stepInputs, inputLabels, outputs, outputLabels, outputTypes };
+        itemSteps[itemSteps.length - 1] = finishStepTiming({ ...itemSteps[itemSteps.length - 1], stepId: step.id, name: step.name, status: "completed" as const, inputs: stepInputs, inputLabels, outputs, outputLabels, outputTypes });
         syncSteps(itemSteps);
         await persistRuntime("running");
         if (reviewStep(step, itemSteps[itemSteps.length - 1])) break;
@@ -486,15 +508,14 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           itemCancelled = true;
           const activeStep = itemSteps[itemSteps.length - 1];
           if (activeStep?.status === "running") {
-            activeStep.status = "cancelled";
-            activeStep.message = String(runController.signal.reason ?? "运行已取消") || "运行已取消";
+            Object.assign(activeStep, finishStepTiming({ ...activeStep, status: "cancelled" as const, message: String(runController.signal.reason ?? "运行已取消") || "运行已取消" }));
           }
           syncSteps(itemSteps);
           await persistRuntime("running");
           break;
         }
         itemFailure = error instanceof Error ? error.message : `${step.name} 执行失败`;
-        itemSteps[itemSteps.length - 1] = { ...itemSteps[itemSteps.length - 1], stepId: step.id, name: step.name, status: "failed", message: itemFailure, inputs: stepInputs, inputLabels, outputLabels, outputTypes };
+        itemSteps[itemSteps.length - 1] = finishStepTiming({ ...itemSteps[itemSteps.length - 1], stepId: step.id, name: step.name, status: "failed" as const, message: itemFailure, inputs: stepInputs, inputLabels, outputLabels, outputTypes });
         syncSteps(itemSteps);
         await persistRuntime("running");
         break;

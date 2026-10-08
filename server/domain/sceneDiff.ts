@@ -11,7 +11,7 @@ export interface RawSceneDiffChange extends Omit<SceneDiffChange, "before" | "af
 const labels: Record<string, string> = {
   scene: "场景信息", workflow: "流程", optionPresets: "选项预设", inputs: "输入", steps: "步骤", outputs: "输出",
   title: "场景名称", shortTitle: "简称", summary: "简介", description: "说明", cover: "封面", coverPosition: "封面位置", accent: "主题色", stages: "阶段",
-  name: "名称", label: "显示名称", key: "变量 key", type: "类型", required: "必填", defaultValue: "默认值", options: "选项", optionPresetId: "选项预设引用", placeholder: "占位提示",
+  name: "名称", label: "显示名称", key: "变量 key", type: "类型", required: "必填", hidden: "网页表单隐藏", defaultValue: "默认值", options: "选项", optionPresetId: "选项预设引用", placeholder: "占位提示",
   kind: "执行方式", capabilityId: "能力", capabilityVersion: "能力版本", capabilityConfig: "能力配置", hermesProfile: "Hermes Profile", promptTemplate: "提示词模板",
   execution: "执行模式", mode: "模式", sourceRef: "来源引用", itemAlias: "逐项别名", indexAlias: "序号别名", valueSource: "取值方式", literalValue: "固定值",
   comfyui: "ComfyUI", workflowFile: "工作流文件", bindings: "节点绑定", nodeId: "节点 ID", property: "节点端口", inputName: "输入端口", outputIndex: "输出序号", direction: "方向", adapter: "适配器",

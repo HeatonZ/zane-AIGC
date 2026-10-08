@@ -33,6 +33,8 @@ export function businessRun(run: RunRecord, executionStartedAt?: string) {
     return {
       stepId, order, name: String(scrubBusinessValue(record?.name ?? definition?.name ?? stepId)),
       status: record?.status ?? "pending" as const,
+      ...(record?.startedAt ? { startedAt: record.startedAt } : {}),
+      ...(record?.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
       inputCount: definition?.inputs?.length ?? Object.keys(record?.inputs ?? {}).length,
       outputCount: Object.keys(record?.outputs ?? {}).length,
       expectedOutputCount: definition?.outputs?.length ?? 0,
@@ -82,7 +84,7 @@ function mediaInput(value: unknown): unknown {
   return { assetId: reference.assetId, assetVersion: reference.assetVersion, ...(typeof reference.assetName === "string" ? { assetName: scrubBusinessValue(reference.assetName) } : {}) };
 }
 export interface BusinessInputProjection {
-  key: string; label: string; type: string; required: boolean; present: boolean; value?: unknown;
+  key: string; label: string; type: string; required: boolean; minimum?: number; maximum?: number; present: boolean; value?: unknown;
   valueOmitted?: boolean; omissionReason?: string; nextAction?: string; valueBytes: number;
   valuePage: { kind: string; total: number; offset: number; count: number; pageSize: number; complete: boolean; hasMore: boolean; nextValueOffset?: number };
 }
@@ -110,7 +112,7 @@ export function businessRunInputs(run: RunRecord, query: RunInputQuery) {
     const omitted = !query.includeValues || valueBytes > remaining;
     if (!omitted) remaining -= valueBytes;
     return {
-      key: field.key, label: String(scrubBusinessValue(asRecord(field)?.label ?? field.key)), type: field.type, required: Boolean(field.required), present,
+      key: field.key, label: String(scrubBusinessValue(asRecord(field)?.label ?? field.key)), type: field.type, required: Boolean(field.required), ...(field.type === "number" && field.minimum !== undefined ? { minimum: field.minimum } : {}), ...(field.type === "number" && field.maximum !== undefined ? { maximum: field.maximum } : {}), present,
       ...(omitted ? { valueOmitted: true, omissionReason: query.includeValues ? "value_byte_limit" : "metadata_only", nextAction: query.includeValues ? "narrow_value_page_or_increase_maxValueBytes" : "read_with_includeValues" } : present ? { value: slice } : {}),
       valueBytes, valuePage: { kind, total, offset, count: end - offset, pageSize: kind === "scalar" ? 1 : query.valueLimit, complete: !omitted && offset === 0 && end === total, hasMore: end < total, ...(end < total ? { nextValueOffset: end } : {}) },
     };

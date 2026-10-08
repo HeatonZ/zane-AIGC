@@ -5,7 +5,7 @@ import type { SceneDiffQuery, SceneDiffValueQuery } from "../ai/sceneDiffSchemas
 import { asRecord, splitWorkflowReference } from "../domain/workflowValues.js";
 import { contentRevision, referencedPresetIds, sceneContent, sceneContentHash } from "../domain/sceneContent.js";
 import { validateWorkflowShape, validateCarryReferences } from "../domain/workflowValidation.js";
-import { validateWorkflowInputs } from "../domain/inputValidation.js";
+import { isEmptyWorkflowInput, validateWorkflowInputs } from "../domain/inputValidation.js";
 import type { RunWorkflowDefinition } from "../domain/types.js";
 import type { ExecutorRegistry } from "../execution/executorRegistry.js";
 import { HttpError } from "../errors.js";
@@ -211,6 +211,10 @@ export class SceneDraftService {
     validateReferences(flow);
     for (const field of flow.inputs) {
       const value = asRecord(field)?.defaultValue;
+      if (field.hidden && field.required && isEmptyWorkflowInput(field, value)) {
+        const label = String(asRecord(field)?.label ?? field.key);
+        throw new HttpError(400, `隐藏的必填字段“${label}”需要配置非空默认值`, "HIDDEN_REQUIRED_INPUT_DEFAULT_MISSING", { inputKey: field.key, nextAction: "set_default_or_show_input" });
+      }
       if (value !== undefined && value !== null && value !== "") validateWorkflowInputs({ ...flow, inputs: [{ ...field, required: false }] }, { [field.key]: value as never });
     }
     // Installed capability validators are local; no executor or remote service is invoked.

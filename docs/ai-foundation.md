@@ -1,6 +1,6 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.5.25。当前 91 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.5.27。当前 92 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
 
@@ -184,7 +184,7 @@ H3生成前用通用段落标题归一化处理英文大小写/水平缩进与�
 
 ### user-scene-operation
 
-本人授权且已发布场景的业务目录与输入契约；服务端构造执行快照和归属，禁止任意流程与本机路径；本人输入草稿/运行/结果分页；版本变化显式冲突，审核/续跑遵守真实状态
+本人授权且已发布场景的业务目录与输入契约；服务端构造执行快照和归属，允许额外输入键透传且仍校验已声明字段，禁止任意流程与本机路径；本人输入草稿/运行/结果分页；按身份读取本人素材并选择固定版本；版本变化显式冲突，审核/续跑遵守真实状态
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -203,6 +203,7 @@ H3生成前用通用段落标题归一化处理英文大小写/水平缩进与�
 | `cancel_own_run` | `POST /api/v1/self/runs/{runId}/cancel` | write |
 | `review_own_run` | `POST /api/v1/self/runs/{runId}/review` | execute |
 | `resume_own_run` | `POST /api/v1/self/runs/{runId}/resume` | execute |
+| `list_own_assets` | `GET /api/v1/self/assets` | read |
 | `upload_own_asset` | `POST /api/v1/self/assets/upload` | write |
 | `get_own_asset` | `GET /api/v1/self/assets/{assetId}` | read |
 
@@ -222,13 +223,14 @@ H3生成前用通用段落标题归一化处理英文大小写/水平缩进与�
 
 ### business-run-details
 
-UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步骤和逐项计数、首次真实开始/排队/总历时；按字段/字符串/数组/对象分页原始输入，sequence增量业务动态，明确省略与revision冲突；无提示词、连接、内部错误payload，不生成
+UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步骤和逐项计数、每步真实startedAt/durationMs及首次真实开始/排队/总历时；for_each步骤durationMs是墙钟时间，逐项用时按步骤结果分页读取；按字段/字符串/数组/对象分页原始输入，sequence增量业务动态，明确省略与revision冲突；无提示词、连接、内部错误payload，不生成
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
 | `get_own_run` | `GET /api/v1/self/runs/{runId}` | read |
 | `get_own_run_inputs` | `GET /api/v1/self/runs/{runId}/inputs` | read |
 | `get_own_run_activity` | `GET /api/v1/self/runs/{runId}/activity` | read |
+| `get_own_step_result` | `GET /api/v1/self/runs/{runId}/steps/{stepId}` | read |
 
 ### user-ai-credentials
 
@@ -262,7 +264,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### scene-input-defaults
 
-流程输入可设置类型匹配的workflow.inputs[].defaultValue（select必须属于options）；草稿revision写入后由validate_scene_draft检查，显式发布后只影响该固定发布版的新输入表单与prepare默认值，用户显式输入覆盖默认值；UI/HTTP/MCP复用同一契约，不自动发布或执行
+流程输入可设置类型匹配的workflow.inputs[].defaultValue（select必须属于options）；number输入可定义包含minimum/maximum范围，两者可省略，配置后由表单、inputSchema和服务端校验；required=false允许不输入。hidden=true可从管理创作页和用户端网页输入表单隐藏字段，但仍保留在inputSchema、输入值和流程执行中；隐藏必填字段需要有效默认值。json输入可声明inputMode=object_array和itemFields，把规格等对象数组渲染成用户可增删行填写的表单，并按每行字段类型、数字范围、必填和下拉选项校验；草稿revision写入后由validate_scene_draft检查，显式发布后只影响该固定发布版的新输入表单和prepare契约，用户显式输入覆盖默认值；UI/HTTP/MCP复用同一契约，不自动发布或执行
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -273,10 +275,12 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 | `publish_scene` | `POST /api/v1/scenes/{sceneId}/publish` | write |
 | `get_scene` | `GET /api/v1/scenes/{sceneId}` | read |
 | `prepare_scene` | `POST /api/v1/scenes/{sceneId}/prepare` | read |
+| `get_available_scene` | `GET /api/v1/self/scenes/{sceneId}` | read |
+| `prepare_own_scene` | `POST /api/v1/self/scenes/{sceneId}/prepare` | read |
 
 ### scenes
 
-与网页同源同序的revision绑定分页目录，显式草稿/发布名称与差异；场景展示取对应scene.title，不以独立workflow.name代替，不改历史；场景草稿创建/编辑/校验/发布/恢复/删除，固定版本输入契约和预检；用基础步骤组合新场景，不为场景另造执行器；Qwen Image 2.1图生图以基础Hermes writer整理有序图片与想法，再由aixg将text edit_brief转为text prompt连接正向端口；仅图片/想法/seed/ratio/mp五项输入，画幅与MP走目标画布且参考图片仍参与条件编码，其余参数用固定配置，revision保护编辑后显式发布；双采视频复用workflowFile和bindings的草稿编辑/校验/显式发布，长文精简草稿采用Writer一次写制作级视频分镜（storyboard/shots无prompt）→基础Hermes aixg一次批量转换prompts、不重编剧情→data.zip等长对齐与确定性素材映射→同一个ComfyUI上下文开关工作流for_each.carry串行续接→拼接，共7步、两次AI调用，保留Writer时长/对白/选择与整镜JSON/24fps；业务分类留在上游，ComfyUI仅接收图片/音频/视频列表；基础引用选择images/audios/videos输出按分组顺序合并，H3本镜分类素材先选择并合并为references.images/audios，保留全局标签到连续局部编号的映射；输入与兼容旧ComfyUI绑定的可选mediaRole区分人物/场景/道具/参考音色，类型不变，固定发布契约回传用途；省略兼容旧版，revision编辑不自动迁移或发布
+与网页同源同序的revision绑定分页目录，显式草稿/发布名称与差异；场景展示取对应scene.title，不以独立workflow.name代替，不改历史；场景草稿创建/编辑/校验/发布/恢复/删除，固定版本输入契约和预检，允许额外输入键透传并保留，已声明字段仍按类型/必填校验；用基础步骤组合新场景，不为场景另造执行器；Qwen Image 2.1图生图以基础Hermes writer整理有序图片与想法，再由aixg将text edit_brief转为text prompt连接正向端口；仅图片/想法/seed/ratio/mp五项输入，画幅与MP走目标画布且参考图片仍参与条件编码，其余参数用固定配置，revision保护编辑后显式发布；双采视频复用workflowFile和bindings的草稿编辑/校验/显式发布，长文精简草稿采用Writer一次写制作级视频分镜（storyboard/shots无prompt）→基础Hermes aixg一次批量转换prompts、不重编剧情→data.zip等长对齐与确定性素材映射→同一个ComfyUI上下文开关工作流for_each.carry串行续接→拼接，共7步、两次AI调用，保留Writer时长/对白/选择与整镜JSON/24fps；业务分类留在上游，ComfyUI仅接收图片/音频/视频列表；基础引用选择images/audios/videos输出按分组顺序合并，H3本镜分类素材先选择并合并为references.images/audios，保留全局标签到连续局部编号的映射；输入与兼容旧ComfyUI绑定的可选mediaRole区分人物/场景/道具/参考音色，类型不变，固定发布契约回传用途；省略兼容旧版，revision编辑不自动迁移或发布
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -312,7 +316,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### runs
 
-固定发布版执行、管理员分页历史/详情含服务端验证并记录的提交人身份快照；get_run保存已执行Hermes步骤实际发送提示词agentPrompt，解析或输出校验失败时保存完整未trim原始回复agentResponse，for_each按item.agentPrompt/agentResponse保存；get_step_result可分页读原始回复；有界等待、事件、取消和恢复
+固定发布版执行、管理员分页历史/详情含服务端验证并记录的提交人身份快照；步骤和for_each各项保存startedAt/durationMs；get_run保存已执行Hermes步骤实际发送提示词agentPrompt，解析或输出校验失败时保存完整未trim原始回复agentResponse，for_each按item.agentPrompt/agentResponse保存；get_step_result可分页读逐项用时与原始回复；有界等待、事件、取消和恢复
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -361,7 +365,7 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 
 ### assets
 
-管理员专用素材库：本地上传/运行收藏、说明/分组/标签检索与筛选、快照分页、固定版本引用、版本分页与生成参数分段、revision写入和稳定createId对账；普通用户仅上传本人任务附件，不管理库
+管理员素材库：本地上传/运行收藏、说明/分组/标签检索与筛选、快照分页、固定版本引用、版本分页与生成参数分段、revision写入和稳定createId对账；普通用户另有按身份隔离的本人素材分页目录，可在自己的任务输入中选择固定版本
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -372,6 +376,7 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 | `save_asset` | `POST /api/v1/assets` | write |
 | `upload_asset` | `POST /api/v1/assets/upload` | write |
 | `update_asset` | `PATCH /api/v1/assets/{assetId}` | write |
+| `list_own_assets` | `GET /api/v1/self/assets` | read |
 
 ### clip-selections
 

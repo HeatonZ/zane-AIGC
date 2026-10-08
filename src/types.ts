@@ -117,6 +117,16 @@ export interface ComfyAudioAttachment {
 export type WorkflowMediaListType = "image_list" | "video_list" | "audio_list";
 export type WorkflowLegacyMediaType = "image" | "video" | "audio";
 export type WorkflowFieldType = "text" | "textarea" | "number" | "boolean" | "select" | WorkflowMediaListType | WorkflowLegacyMediaType | "json";
+export interface WorkflowObjectArrayItemField {
+  key: string;
+  label: string;
+  type: "text" | "number" | "boolean" | "select";
+  required: boolean;
+  minimum?: number;
+  maximum?: number;
+  placeholder?: string;
+  options?: string[];
+}
 export type WorkflowStepKind = "hermes" | "comfyui" | "manual" | "control" | "capability";
 export type WorkflowVariableType = Exclude<WorkflowFieldType, "textarea" | "select">;
 export type WorkflowValueSource = "literal" | "reference";
@@ -159,10 +169,17 @@ export interface WorkflowInputField {
   label: string;
   type: WorkflowFieldType;
   required: boolean;
+  minimum?: number;
+  maximum?: number;
+  /** Hides the field from scene input forms while retaining it in the input contract and workflow. */
+  hidden?: boolean;
   placeholder?: string;
   options?: string[];
   optionPresetId?: string;
   defaultValue?: JsonValue;
+  /** Renders a json array as a repeatable row form and validates every row against itemFields. */
+  inputMode?: "object_array";
+  itemFields?: WorkflowObjectArrayItemField[];
 }
 
 export interface WorkflowOptionPreset {
@@ -299,6 +316,9 @@ export interface WorkflowRunStepResult {
   capabilityVersion?: string;
   name: string;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
   message?: string;
   inputs?: Record<string, JsonValue>;
   inputLabels?: Record<string, string>;
@@ -318,6 +338,9 @@ export interface WorkflowRunStepItemResult {
   index: number;
   value: JsonValue;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
   inputs?: Record<string, JsonValue>;
   agentPrompt?: string;
   agentResponse?: string;

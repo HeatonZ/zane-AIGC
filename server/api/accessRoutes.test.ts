@@ -61,6 +61,71 @@ test("场景授权：只读发布标题与表单，未发布不可用，授权/�
   await h.access.setScenes({userId:a.user.id,revision:h.access.get(a.user.id).revision,sceneIds:["demo"]});assert.equal((await h.api("/api/v1/self/scenes?limit=1&cursor="+first.nextCursor,a.token)).data.code,"ACCESS_PAGE_CHANGED");
   assert.equal((await h.api("/api/v1/self/scenes/second",a.token)).data.code,"SCENE_ACCESS_DENIED");assert.equal(accessPage.safeParse({limit:0}).success,false);
 });
+test("用户数字场景输入：发布表单提供范围，可选值省略并允许边界值", async t => {
+  const h = await harness(t), user = await h.create("number-input-user");
+  await h.access.setScenes({ userId: user.user.id, revision: 1, sceneIds: ["demo"] });
+  const draft = await h.scenes.drafts.get("demo");
+  const workflow = structuredClone(draft.workflow as any);
+  workflow.inputs.find((field: any) => field.key === "style").defaultValue = "草稿值";
+  workflow.inputs.push({ key: "quantity", label: "数量", type: "number", required: false, minimum: 2, maximum: 8 });
+  const updated = await h.scenes.drafts.update("demo", { revision: draft.revision, workflow });
+  await h.scenes.drafts.validate("demo", updated.revision);
+  const versionId = randomUUID();
+  await h.scenes.drafts.publish("demo", updated.revision, versionId);
+
+  const detail = (await h.api("/api/v1/self/scenes/demo", user.token)).data;
+  const quantity = detail.fields.find((field: any) => field.key === "quantity");
+  assert.equal(quantity.minimum, 2); assert.equal(quantity.maximum, 8); assert.equal(quantity.required, false);
+  assert.equal(detail.inputSchema.properties.quantity.anyOf[1].minimum, 2);
+  assert.equal(detail.inputSchema.properties.quantity.anyOf[1].maximum, 8);
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: {} })).data.valid, true);
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: { quantity: 2 } })).data.valid, true);
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: { quantity: 8 } })).data.valid, true);
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: { quantity: 1 } })).data.code, "INPUT_OUT_OF_RANGE");
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: { quantity: 9 } })).data.code, "INPUT_OUT_OF_RANGE");
+});
+test("隐藏场景输入：用户表单返回隐藏标记，发布默认值和接口显式值仍可预检", async t => {
+  const h = await harness(t), user = await h.create("hidden-field-user");
+  await h.access.setScenes({ userId: user.user.id, revision: 1, sceneIds: ["demo"] });
+  const draft = await h.scenes.drafts.get("demo");
+  const workflow = structuredClone(draft.workflow as any);
+  workflow.inputs.find((field: any) => field.key === "flag").hidden = true;
+  workflow.inputs.find((field: any) => field.key === "style").defaultValue = "草稿值";
+  const updated = await h.scenes.drafts.update("demo", { revision: draft.revision, workflow });
+  await h.scenes.drafts.validate("demo", updated.revision);
+  const versionId = randomUUID();
+  await h.scenes.drafts.publish("demo", updated.revision, versionId);
+
+  const detail = (await h.api("/api/v1/self/scenes/demo", user.token)).data;
+  assert.equal(detail.fields.find((field: any) => field.key === "flag").hidden, true);
+  assert.equal(detail.inputSchema.properties.flag["x-hidden"], true);
+  assert.equal(detail.inputDefaults.flag, false);
+  assert.equal(detail.inputSchema.required.includes("flag"), false);
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: {} })).data.valid, true);
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: { flag: true } })).data.valid, true);
+});
+test("对象数组用户表单：发布快照返回行字段定义，普通用户提交类型化行值", async t => {
+  const h = await harness(t), user = await h.create("spec-form-user");
+  await h.access.setScenes({ userId: user.user.id, revision: 1, sceneIds: ["demo"] });
+  const draft = await h.scenes.drafts.get("demo");
+  const workflow = structuredClone(draft.workflow as any);
+  workflow.inputs.find((field: any) => field.key === "style").defaultValue = "草稿值";
+  workflow.inputs.push({ key: "specs", label: "规格数组", type: "json", required: true, inputMode: "object_array", itemFields: [
+    { key: "size", label: "尺寸", type: "select", required: true, options: ["S", "M"] },
+    { key: "type", label: "类型", type: "select", required: true, options: ["圆领", "V领"] },
+  ] });
+  const updated = await h.scenes.drafts.update("demo", { revision: draft.revision, workflow });
+  await h.scenes.drafts.validate("demo", updated.revision);
+  const versionId = randomUUID(); await h.scenes.drafts.publish("demo", updated.revision, versionId);
+  const detail = (await h.api("/api/v1/self/scenes/demo", user.token)).data;
+  const specsField = detail.fields.find((field: any) => field.key === "specs");
+  assert.equal(specsField.inputMode, "object_array"); assert.deepEqual(specsField.itemFields.map((field: any) => field.key), ["size", "type"]);
+  assert.deepEqual(detail.inputSchema.properties.specs.items.required, ["size", "type"]);
+  const specs = [{ size: "S", type: "圆领" }, { size: "M", type: "V领" }];
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: { flag: true, specs } })).data.valid, true);
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: { flag: true, specs: [{ size: "XL", type: "圆领" }] } })).data.code, "INVALID_INPUT_OPTION");
+  assert.equal((await h.api("/api/v1/self/scenes/demo/prepare", user.token, { versionId, inputValues: { flag: true, specs: [{ size: "S" }] } })).data.code, "REQUIRED_INPUT_MISSING");
+});
 test("用户管理：并发旧revision只有一次成功、登录名唯一、分页revision变更与无效参数",async t=>{
   const h=await harness(t);const admin=await h.create("admin","admin");const a=await h.create("alpha");const b=await h.create("beta");
   const responses=await Promise.all([h.api("/api/v1/users/"+a.user.id,admin.token,{revision:1,displayName:"A1"},"PATCH"),h.api("/api/v1/users/"+a.user.id,admin.token,{revision:1,displayName:"A2"},"PATCH")]);assert.deepEqual(responses.map(value=>value.response.status).sort(),[200,409]);
@@ -121,6 +186,41 @@ test("本人上传：预存assetId、重复拒绝和按ID对账；他人元数�
   assert.equal((await h.api("/api/v1/self/scenes/demo/prepare",a.token,{versionId:"version-a",inputValues:{flag:true,picture:"C:\\Users\\secret.png"}})).data.code,"INVALID_USER_MEDIA");
   assert.equal((await h.api("/api/v1/self/scenes/demo/prepare",a.token,{versionId:"version-a",inputValues:{flag:true,parameters:{path:"C:\\secret.txt"}}})).data.code,"INVALID_USER_MEDIA");
 });
+test("本人素材目录：只列自己的未归档固定版本，筛选/分页绑定身份与快照", async t => {
+  const h = await harness(t), a = await h.create("assetowner"), b = await h.create("assetother");
+  async function upload(token: string, name: string, kind: "image" | "audio" = "image") {
+    const assetId = randomUUID();
+    const response = await fetch(h.base + "/api/v1/self/assets/upload?" + new URLSearchParams({ assetId, name, kind }), { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/octet-stream", "X-File-Name": name + (kind === "image" ? ".png" : ".wav") }, body: Buffer.from(name) });
+    assert.equal(response.status, 201);
+    return { assetId, data: await response.json() as Record<string, any> };
+  }
+  const first = await upload(a.token, "first own picture"), second = await upload(a.token, "second own picture"), other = await upload(b.token, "other person's picture"), archived = await upload(a.token, "archived own picture");
+  await h.assets.update(archived.assetId, { revision: 1, archived: true });
+  await h.assets.save({ name: "legacy without owner", kind: "image" }, { bytes: Buffer.from("legacy"), filename: "legacy.png" });
+  assert.equal((await h.api("/api/v1/self/assets")).response.status, 401);
+  const firstPage = (await h.api("/api/v1/self/assets?limit=1&kind=image", a.token)).data;
+  assert.equal(firstPage.total, 2); assert.equal(firstPage.hasMore, true); assert.equal(firstPage.assets.length, 1);
+  assert.equal(firstPage.assets[0].reference.assetId, firstPage.assets[0].id);
+  assert.equal(firstPage.assets[0].reference.assetVersion, 1);
+  assert.equal(firstPage.assets[0].versionsOmitted, true); assert.ok(!("ownerUserId" in firstPage.assets[0]));
+  const secondPage = (await h.api("/api/v1/self/assets?limit=1&kind=image&cursor=" + encodeURIComponent(firstPage.nextCursor), a.token)).data;
+  assert.equal(secondPage.assets.length, 1); assert.notEqual(secondPage.assets[0].id, firstPage.assets[0].id);
+  assert.deepEqual(new Set([firstPage.assets[0].id, secondPage.assets[0].id]), new Set([first.assetId, second.assetId]));
+  assert.equal((await h.api("/api/v1/self/assets?limit=1&kind=image&cursor=" + encodeURIComponent(firstPage.nextCursor), b.token)).data.code, "INVALID_ASSET_CURSOR");
+  assert.equal((await h.api("/api/v1/self/assets?limit=1&kind=audio&cursor=" + encodeURIComponent(firstPage.nextCursor), a.token)).data.code, "INVALID_ASSET_CURSOR");
+  assert.equal((await h.api("/api/v1/self/assets?kind=image&q=second", a.token)).data.assets[0].id, second.assetId);
+  assert.equal((await h.api("/api/v1/self/assets?kind=audio", a.token)).data.total, 0);
+  assert.equal((await h.api("/api/v1/self/assets?ownerUserId=" + b.user.id, a.token)).response.status, 400);
+  assert.equal((await h.api("/api/v1/self/assets?limit=0", a.token)).response.status, 400);
+  assert.equal((await h.api("/api/v1/self/assets?limit=1&cursor=" + encodeURIComponent(firstPage.nextCursor), a.token)).response.headers.get("cache-control"), "no-store");
+  const changed = await upload(a.token, "third own picture");
+  assert.equal((await h.api("/api/v1/self/assets?limit=1&kind=image&cursor=" + encodeURIComponent(firstPage.nextCursor), a.token)).data.code, "ASSET_PAGE_CHANGED");
+  assert.equal((await h.api("/api/v1/self/assets", b.token)).data.assets.length, 1);
+  assert.equal((await h.api("/api/v1/self/assets?kind=image&q=other", b.token)).data.assets[0].id, other.assetId);
+  assert.equal((await h.api("/api/v1/self/assets?kind=image&q=first", b.token)).data.total, 0);
+  assert.equal((await h.api("/api/v1/self/assets/" + first.assetId, b.token)).response.status, 404);
+  assert.equal((await h.api("/api/v1/self/assets?kind=image&q=third", a.token)).data.assets[0].id, changed.assetId);
+});
 test("提交前再次核验：prepare后撤销授权，拒绝入队并保留原ID语义；旧发布版本明确冲突",async t=>{
   const h=await harness(t);const a=await h.create("alpha");await h.access.setScenes({userId:a.user.id,revision:1,sceneIds:["demo"]});const old=h.scenes.prepare.bind(h.scenes);const gate=deferred<void>();const started=deferred<void>();h.scenes.prepare=async(...args)=>{const result=await old(...args);started.resolve();await gate.promise;return result;};const runId=randomUUID();const submitting=h.api("/api/v1/self/scenes/demo/runs",a.token,{versionId:"version-a",runId,inputValues:{flag:true}});await started.promise;await h.access.setScenes({userId:a.user.id,revision:2,sceneIds:[]});gate.resolve();assert.equal((await submitting).response.status,403);assert.equal(h.store.getRun(h.settings.projectDirectory,runId),undefined);
   await h.access.setScenes({userId:a.user.id,revision:3,sceneIds:["demo"]});const draft=await h.scenes.drafts.get("demo");const fixed=await h.scenes.drafts.update("demo",{revision:draft.revision,workflow:{...(draft.workflow as any),inputs:((draft.workflow as any).inputs as any[]).map(field=>field.key === "style" ? {...field,defaultValue:"草稿值"} : field)}});await h.scenes.drafts.publish("demo",fixed.revision,randomUUID());assert.equal((await h.api("/api/v1/self/scenes/demo/prepare",a.token,{versionId:"version-a",inputValues:{flag:true}})).data.code,"SCENE_VERSION_CHANGED");
@@ -133,6 +233,12 @@ test("真实stdio MCP隔离闭环：管理员创建/授权→本人凭证→用�
   const h=await harness(t);const admin=await h.create("admin","admin");const management=await mcp(t,h.base,admin.token);const userId=randomUUID();const created=await management.call("create_user",{userId,username:"mcpuser",displayName:"MCP用户",password});assert.equal(created.ok,true);assert.equal((await management.call("set_user_scene_access",{userId,revision:1,sceneIds:["demo"]})).ok,true);
   const login=await h.access.login("mcpuser",password);const issued=h.access.createCredential(h.access.authenticate(login.token),{tokenId:randomUUID(),name:"user MCP"});const user=await mcp(t,h.base,issued.token);
   assert.equal((await user.call("get_current_user")).data.user.id,userId);assert.deepEqual((await user.call("list_available_scenes")).data.items.map((scene:any)=>scene.sceneId),["demo"]);assert.equal((await user.call("get_workspace")).error?.code,"ADMIN_REQUIRED");
+  const ownAssetId=randomUUID(),ownFile=path.join(h.root,"mcp-own-picture.png");await writeFile(ownFile,"owned MCP picture");const ownUpload=await user.call("upload_own_asset",{assetId:ownAssetId,filePath:ownFile,name:"MCP reusable picture",kind:"image"});assert.equal(ownUpload.ok,true);assert.equal(h.assets.get(h.settings.projectDirectory,ownAssetId)?.ownerUserId,userId);
+  const ownAssets=await user.call("list_own_assets",{q:"reusable",kind:"image",limit:1});assert.equal(ownAssets.ok,true);assert.equal(ownAssets.data.total,1);assert.equal(ownAssets.data.assets[0].id,ownAssetId);assert.equal(ownAssets.data.assets[0].reference.assetVersion,1);assert.ok(!("ownerUserId" in ownAssets.data.assets[0]));
+  assert.equal((await user.call("get_own_asset",{assetId:ownAssetId})).data.reference.assetId,ownAssetId);
+  assert.equal((await management.call("list_own_assets")).data.total,0,"admin self scope does not expose a user's private asset");
+  const other=await h.create("mcpother"),otherMcp=await mcp(t,h.base,other.token);assert.equal((await otherMcp.call("list_own_assets")).data.total,0);assert.equal((await otherMcp.call("get_own_asset",{assetId:ownAssetId})).error?.code,"OBJECT_NOT_FOUND");
+  const invalidAssetQuery=await user.client.callTool({name:"list_own_assets",arguments:{limit:101}});assert.equal(invalidAssetQuery.isError,true);
   const scene=(await user.call("get_available_scene",{sceneId:"demo"})).data;assert.ok(!("workflow" in scene));const draftId=randomUUID();assert.equal((await user.call("save_own_draft",{draftId,revision:0,title:"MCP草稿",sceneId:"demo",versionId:scene.versionId,inputValues:{flag:true}})).ok,true);assert.equal((await user.call("get_own_draft",{draftId})).data.draft.revision,1);
   assert.equal((await user.call("prepare_own_scene",{sceneId:"demo",versionId:scene.versionId,inputValues:{flag:true}})).data.valid,true);const runId=randomUUID();assert.equal((await user.call("submit_own_scene",{sceneId:"demo",versionId:scene.versionId,inputValues:{flag:true},runId})).ok,true);await until(()=>h.store.getRun(h.settings.projectDirectory,runId)?.status==="completed");const ownRun=(await user.call("get_own_run",{runId})).data;assert.equal(ownRun.status,"completed");assert.equal((await user.call("get_own_outputs",{runId})).data.outputs[0].value,"ok");
   assert.ok(!("submitter" in ownRun));assert.ok(!("ownerUserId" in ownRun));
@@ -199,16 +305,16 @@ test("新增详情经真实stdio MCP到同一业务服务：输入/动态分页�
   // Simulate a lost submit receipt: keep the saved ID, discard accepted payload,
   // then reconcile by read rather than submitting a new task.
   await h.api("/api/v1/self/scenes/demo/runs",a.token,{versionId:"version-a",runId,inputValues:{flag:true}});const done=await h.service.wait(h.settings.projectDirectory,runId);
-  done.outputs=[{key:"text",label:"成稿",type:"text",value:"😀甲乙丙丁"}];done.steps[0].outputs={value:"😀甲乙丙丁"};done.steps[0].items=[{index:0,value:null,status:"completed",outputs:{value:"😀甲乙丙丁"}}];
+  done.outputs=[{key:"text",label:"成稿",type:"text",value:"😀甲乙丙丁"}];done.steps[0].outputs={value:"😀甲乙丙丁"};done.steps[0].items=[{index:0,value:null,status:"completed",startedAt:"2026-10-08T00:00:00.000Z",finishedAt:"2026-10-08T00:00:00.057Z",durationMs:57,outputs:{value:"😀甲乙丙丁"}}];
   h.store.saveRun(h.settings.projectDirectory,done,[]);
   const transport=new StdioClientTransport({command:process.execPath,args:["--import","tsx",path.resolve("server/mcp/index.ts")],cwd:process.cwd(),env:{...Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>typeof entry[1]==="string")),ZANE_BASE_URL:h.base,ZANE_API_TOKEN:a.token},stderr:"pipe"});const client=new Client({name:"run-detail-isolation",version:"1"});t.after(()=>client.close());await client.connect(transport);
   const call=async(name:string,args:Record<string,unknown>)=>(await client.callTool({name,arguments:args})).structuredContent as Record<string,any>;
-  const detail=await call("get_own_run",{runId});assert.equal(detail.ok,true);assert.equal(detail.data.runId,runId);assert.equal(detail.data.progress.completed,2);assert.equal(detail.data.steps[0].itemProgress.completed,1);
+  const detail=await call("get_own_run",{runId});assert.equal(detail.ok,true);assert.equal(detail.data.runId,runId);assert.equal(detail.data.progress.completed,2);assert.equal(detail.data.steps[0].itemProgress.completed,1);assert.ok(detail.data.steps[0].startedAt);assert.equal(typeof detail.data.steps[0].durationMs,"number");
   const first=await call("get_own_run_inputs",{runId,limit:1});assert.equal(first.ok,true);assert.equal(first.data.inputs[0].value,true);const second=await call("get_own_run_inputs",{runId,limit:1,cursor:first.data.nextCursor});assert.equal(second.data.inputs[0].value,"已发布值");
   const meta=await call("get_own_run_inputs",{runId,includeValues:false});assert.equal(meta.data.inputs[0].omissionReason,"metadata_only");
   const activity=await call("get_own_run_activity",{runId,limit:1});assert.equal(activity.ok,true);assert.equal(activity.data.events.length,1);const later=await call("get_own_run_activity",{runId,limit:1,afterSequence:activity.data.nextSequence});assert.ok(later.data.nextSequence>activity.data.nextSequence);
   const text=await call("get_own_outputs",{runId,outputKey:"text",textLimit:2,textOffset:2});assert.equal(text.data.outputs[0].value,"乙丙");assert.equal(text.data.outputs[0].valuePage.kind,"string");
-  const item=await call("get_own_step_result",{runId,stepId:"first",itemIndex:0,outputKey:"value",textLimit:2,textOffset:2});assert.equal(item.data.items[0].outputs[0].value,"乙丙");
+  const item=await call("get_own_step_result",{runId,stepId:"first",itemIndex:0,outputKey:"value",textLimit:2,textOffset:2});assert.equal(item.data.items[0].outputs[0].value,"乙丙");assert.equal(item.data.items[0].startedAt,"2026-10-08T00:00:00.000Z");assert.equal(item.data.items[0].durationMs,57);
   const before=h.store.listRuns(h.settings.projectDirectory).runs.length;await call("get_own_run_inputs",{runId,limit:1});assert.equal(h.store.listRuns(h.settings.projectDirectory).runs.length,before);
   const invalid=await client.callTool({name:"get_own_run_activity",arguments:{runId,afterSequence:-1}});assert.equal(invalid.isError,true);
   done.outputs[0].value="请访问 F:/private/key.txt 获取结果";done.steps[0].outputs={value:"请访问 F:/private/key.txt 获取结果"};h.store.saveRun(h.settings.projectDirectory,done,[]);

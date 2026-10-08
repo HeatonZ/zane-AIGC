@@ -11,6 +11,7 @@ import { accessPage, adminSetup, authLogin, userCreate, userUpdate, userAccess, 
 import { draftFavoriteRequest } from "../ai/taskDraftSchemas.js";
 import { outputQuery, stepResultQuery } from "../ai/sceneSchemas.js";
 import { AI_CONTRACT_VERSION, aiOperations } from "../ai/operations.js";
+import { ownAssetQuerySchema } from "../domain/assetLibraryContracts.js";
 const parsed = <S extends z.ZodType>(schema: S, value: unknown): z.output<S> => { const result = schema.safeParse(value); if (!result.success) throw new HttpError(400, result.error.issues.map(issue => issue.path.join(".") + ": " + issue.message).join("; "), "INVALID_ACCESS_REQUEST"); return result.data; };
 const identity = (res: Response): Identity => res.locals.identity;
 const sessionCookie = (res: Response, token: string, secure: boolean) => res.cookie("zane_session", token, { httpOnly: true, secure, sameSite: "strict", path: "/", maxAge: 24 * 3600 * 1000 });
@@ -83,6 +84,7 @@ export function createAccessRouter(access: AccessService, portal: UserPortalServ
     let filename: string; try { filename = decodeURIComponent(req.get("X-File-Name") ?? "media.bin"); } catch { throw new HttpError(400,"文件名无效","INVALID_ACCESS_REQUEST"); }
     res.status(201).json(await portal.upload(identity(res),input.assetId,input.name,input.kind,req.body,filename));
   });
+  router.get("/api/v1/self/assets", async (req,res) => { res.set("Cache-Control", "no-store"); res.json(await portal.listOwnAssets(identity(res),parsed(ownAssetQuerySchema,req.query))); });
   router.get("/api/v1/self/assets/:assetId", async (req,res) => res.json(await portal.getAsset(identity(res),String(req.params.assetId))));
   return router;
 }

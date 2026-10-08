@@ -7,6 +7,7 @@ import type {
   SceneModule,
   WorkflowDefinition,
   WorkflowFieldType,
+  WorkflowObjectArrayItemField,
   WorkflowOptionPreset,
   WorkflowStepDefinition,
   WorkflowValueSource,
@@ -130,8 +131,15 @@ function normalizeWorkflowInput(value: unknown, index: number) {
     type: enumValue(canonicalWorkflowType(value.type), workflowFieldTypes, `第 ${index + 1} 个场景输入类型`),
     required: value.required,
   };
+  if (value.hidden !== undefined && typeof value.hidden !== "boolean") throw new Error(`场景包中的场景输入“${input.label}”隐藏设置无效`);
+  if (value.hidden !== undefined) input.hidden = value.hidden;
   if (!validWorkflowMediaRole(value.mediaRole, input.type)) throw new Error("场景包中的素材用途与场景输入类型不兼容");
   if (value.mediaRole !== undefined) input.mediaRole = value.mediaRole;
+  if (value.minimum !== undefined || value.maximum !== undefined) {
+    if (input.type !== "number" || (value.minimum !== undefined && (typeof value.minimum !== "number" || !Number.isFinite(value.minimum))) || (value.maximum !== undefined && (typeof value.maximum !== "number" || !Number.isFinite(value.maximum))) || (typeof value.minimum === "number" && typeof value.maximum === "number" && value.minimum > value.maximum)) throw new Error(`场景包中的场景输入“${input.label}”数字范围无效`);
+    if (typeof value.minimum === "number") input.minimum = value.minimum;
+    if (typeof value.maximum === "number") input.maximum = value.maximum;
+  }
   if (value.defaultValue !== undefined) {
     if (!isJsonValue(value.defaultValue)) throw new Error(`场景包中的场景输入“${input.label}”默认值不是有效 JSON`);
     input.defaultValue = structuredClone(value.defaultValue);
@@ -142,6 +150,32 @@ function normalizeWorkflowInput(value: unknown, index: number) {
     input.options = value.options.map((option) => option.trim()).filter(Boolean);
   }
   if (typeof value.optionPresetId === "string" && value.optionPresetId) input.optionPresetId = value.optionPresetId;
+  if (value.inputMode !== undefined || value.itemFields !== undefined) {
+    if (value.inputMode !== "object_array" || input.type !== "json" || !Array.isArray(value.itemFields) || value.itemFields.length === 0 || value.itemFields.length > 50) throw new Error(`场景包中的场景输入“${input.label}”对象数组表单配置无效`);
+    const seen = new Set<string>();
+    input.inputMode = "object_array";
+    input.itemFields = value.itemFields.map((raw, itemIndex) => {
+      if (!isRecord(raw)) throw new Error(`场景包中的对象数组第 ${itemIndex + 1} 个子字段无效`);
+      const key = requiredString(raw.key, "对象数组子字段 key");
+      const label = requiredString(raw.label, "对象数组子字段名称");
+      if (seen.has(key)) throw new Error("对象数组子字段 key 不能重复");
+      seen.add(key);
+      if (!["text", "number", "boolean", "select"].includes(String(raw.type)) || typeof raw.required !== "boolean") throw new Error(`对象数组子字段“${label}”类型或必填配置无效`);
+      const item: WorkflowObjectArrayItemField = { key, label, type: raw.type as WorkflowObjectArrayItemField["type"], required: raw.required };
+      if (raw.minimum !== undefined || raw.maximum !== undefined) {
+        if (item.type !== "number" || (raw.minimum !== undefined && (typeof raw.minimum !== "number" || !Number.isFinite(raw.minimum))) || (raw.maximum !== undefined && (typeof raw.maximum !== "number" || !Number.isFinite(raw.maximum))) || (typeof raw.minimum === "number" && typeof raw.maximum === "number" && raw.minimum > raw.maximum)) throw new Error(`场景包中的对象数组字段“${label}”数字范围无效`);
+        if (typeof raw.minimum === "number") item.minimum = raw.minimum;
+        if (typeof raw.maximum === "number") item.maximum = raw.maximum;
+      }
+      if (typeof raw.placeholder === "string") item.placeholder = raw.placeholder;
+      if (Array.isArray(raw.options)) {
+        if (raw.options.some(option => typeof option !== "string")) throw new Error(`对象数组子字段“${label}”选项无效`);
+        item.options = raw.options.map(option => option.trim()).filter(Boolean);
+      }
+      if (item.type === "select" && !item.options?.length) throw new Error(`对象数组下拉字段“${label}”至少需要一个选项`);
+      return item;
+    });
+  }
   return input;
 }
 

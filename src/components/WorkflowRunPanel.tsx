@@ -1,7 +1,7 @@
 import RunMediaDownloadButton from "./RunMediaDownloadButton";
 import RunWarnings from "./RunWarnings";
 import { Check, ChevronRight, Copy, Download, History as HistoryIcon, MessageSquare, Pencil, RotateCcw, Square } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RunMetrics } from "./RunOverview";
 import ClipSelectionDialog from "./ClipSelectionDialog";
 import ReviewPanel from "./ReviewPanel";
@@ -12,6 +12,7 @@ import type { AssetSource } from "../../server/domain/productionContracts";
 import { runOutputMediaItems } from "../lib/runMedia";
 import { useCapabilities } from "../hooks/useCapabilities";
 import type { JsonValue, WorkflowRunOutput, WorkflowRunResult } from "../types";
+import { stepDurationLabel } from "../lib/runDetails";
 
 function StepValue({ value, type, source }: { value: JsonValue; type?: string; source?: Omit<AssetSource,"mediaIndex"> }) {
   const media = runOutputMediaItems(value, type, source);
@@ -85,6 +86,14 @@ export default function WorkflowRunPanel({
 }) {
   const [copied, setCopied] = useState(false);
   const [selectingClips, setSelectingClips] = useState(false);
+  const [now, setNow] = useState(Date.now);
+  const liveRun = ["running", "cancelling"].includes(result.status);
+  const hasRunningSteps = liveRun && result.steps.some(step => step.status === "running");
+  useEffect(() => {
+    if (!hasRunningSteps) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasRunningSteps]);
   const { capabilities } = useCapabilities();
   const feedbackAllowed = !["queued", "running", "cancelling", "waiting"].includes(result.status);
   const submitFeedback = onFeedbackStep ?? (onRerunStep ? (stepId: string, itemIndex?: number) => onRerunStep(stepId, itemIndex, "feedback") : undefined);
@@ -155,7 +164,7 @@ export default function WorkflowRunPanel({
             <details className="workflow-run-step">
               <summary className="workflow-run-step-summary">
                 <span className="workflow-run-step-name"><ChevronRight size={14} /><strong>{step.name}</strong></span>
-                <span className="workflow-run-step-meta"><span className={`workflow-run-step-status ${step.status}`}>{stepStatusLabel(step.status)}</span>{step.message && <small>{step.message}</small>}{(step.warnings?.length || step.items?.some(item => item.warnings?.length)) ? <small>⚠ {(step.warnings?.length ?? 0) + (step.items ?? []).reduce((sum, item) => sum + (item.warnings?.length ?? 0), 0)} 条提示</small> : null}<span>{inputCount} 个输入 · {outputKeys.length} 个输出</span></span>
+                <span className="workflow-run-step-meta"><span className={`workflow-run-step-status ${step.status}`}>{stepStatusLabel(step.status)}</span>{step.message && <small>{step.message}</small>}{(step.warnings?.length || step.items?.some(item => item.warnings?.length)) ? <small>⚠ {(step.warnings?.length ?? 0) + (step.items ?? []).reduce((sum, item) => sum + (item.warnings?.length ?? 0), 0)} 条提示</small> : null}<span className="workflow-run-step-duration">用时 {stepDurationLabel(step, now, liveRun)}</span><span>{inputCount} 个输入 · {outputKeys.length} 个输出</span></span>
               </summary>
               <div className="workflow-run-step-content"><RunWarnings warnings={step.warnings} />
                 {onRerunStep && <div className="rerun-step-actions"><button className="text-button" type="button" onClick={() => onRerunStep(step.stepId, undefined, "rerun")}>重做本步骤</button>{step.status === "completed" && !step.items?.length && <button className="text-button" type="button" onClick={() => onRerunStep(step.stepId, undefined, "replace")}>修改本步结果</button>}{step.reusedFromRunId && <small>{step.replaced ? "使用手动替换结果" : "复用历史结果"}</small>}</div>}
@@ -180,7 +189,7 @@ export default function WorkflowRunPanel({
                       const itemInputCount = itemInputKeys.length + (item.agentPrompt || legacyItemPromptTemplate ? 1 : 0);
                       const itemOutputKeys = [...new Set([...Object.keys(step.outputLabels ?? {}), ...Object.keys(itemOutputValues)])];
                       return <details className="workflow-run-step-item" key={`${step.stepId}-item-${item.index}`}>
-                        <summary><strong>第 {item.index + 1} 项</strong><span className={`workflow-run-step-status ${item.status}`}>{stepItemStatusLabel(item.status)}</span><small>{outputValueLabel(item.value)}</small>{!!item.warnings?.length && <small>⚠ {item.warnings.length} 条提示</small>}</summary>
+                        <summary><strong>第 {item.index + 1} 项</strong><span className={`workflow-run-step-status ${item.status}`}>{stepItemStatusLabel(item.status)}</span><small>{outputValueLabel(item.value)}</small><small>用时 {stepDurationLabel(item, now, liveRun)}</small>{!!item.warnings?.length && <small>⚠ {item.warnings.length} 条提示</small>}</summary>
                         <div className="workflow-run-step-item-content">
                           {onRerunStep && <div className="rerun-step-actions"><button className="text-button" type="button" onClick={() => onRerunStep(step.stepId, item.index, "rerun")}>只重做第 {item.index + 1} 项</button>{item.status === "completed" && <button className="text-button" type="button" onClick={() => onRerunStep(step.stepId, item.index, "replace")}>替换此项结果</button>}{item.reusedFromRunId && <small>复用历史结果</small>}</div>}
                           {submitFeedback && feedbackAllowed && isHermes && item.status === "completed" && Object.keys(itemOutputValues).length > 0 && <div className="rerun-step-actions"><button className="text-button workflow-run-feedback" type="button" onClick={() => submitFeedback(step.stepId, item.index)}><MessageSquare size={14} />反馈并重做第 {item.index + 1} 项</button></div>}

@@ -18,6 +18,7 @@ import { createAiRouter } from "./api/aiRoutes.js";
 import { AiSceneService } from "./services/aiSceneService.js";
 import { resolveComfyInputBindingTarget } from "./comfyuiBindingTarget.js";
 import { resolveComfyUIReroutes } from "./comfyuiReroutes.js";
+import { createComfyUIBypassResolver } from "./comfyuiBypass.js";
 import { specializeComfyStaticSwitches } from "./comfyuiStaticSwitches.js";
 import { comfyNodeInputSchema, comfyNamedAutogrowSchemas } from "./comfyuiInputSchema.js";
 import { ClipSelectionService } from "./services/clipSelectionService.js";
@@ -60,6 +61,7 @@ import {
 
 import { createPublicUserApp, publicEntryGuard, validatePublicListener } from "./security/publicEntry.js";
 import { createErrorHandler, redactErrorText } from "./security/errorHandler.js";
+import { HttpError } from "./errors.js";
 import { LoginLimiter } from "./security/loginLimiter.js";
 import { publicUserPort, publicUserHost, loginLimitOptions, trustProxySetting } from "./config.js";
 
@@ -484,6 +486,7 @@ interface ComfyUIWorkflowLink {
   originSlot: number;
   targetId: string;
   targetSlot: number;
+  type?: string | number;
 }
 
 type ComfyLinkSource =
@@ -493,6 +496,7 @@ type ComfyLinkSource =
 interface ComfyUIWorkflowExpansion {
   nodes: ComfyUIWorkflowNodeEntry[];
   sources: Map<string, ComfyLinkSource>;
+  linkTypes: Map<string, string | number>;
 }
 
 function comfyNodeEntries(payload: unknown): ComfyUIWorkflowNodeEntry[] {
@@ -513,8 +517,9 @@ function comfyLinkRecords(payload: unknown): ComfyUIWorkflowLink[] {
       const originSlot = typeof value[2] === "number" ? value[2] : Number(value[2]);
       const targetId = comfyNodeId(value[3]);
       const targetSlot = typeof value[4] === "number" ? value[4] : Number(value[4]);
+      const type = typeof value[5] === "string" || typeof value[5] === "number" ? value[5] : undefined;
       return id && originId && targetId && Number.isInteger(originSlot) && Number.isInteger(targetSlot)
-        ? [{ id, originId, originSlot, targetId, targetSlot }]
+        ? [{ id, originId, originSlot, targetId, targetSlot, ...(type === undefined ? {} : { type }) }]
         : [];
     }
     const link = asRecord(value);
@@ -527,8 +532,9 @@ function comfyLinkRecords(payload: unknown): ComfyUIWorkflowLink[] {
     const targetSlot = typeof (link?.target_slot ?? link?.targetSlot) === "number"
       ? (link?.target_slot ?? link?.targetSlot) as number
       : Number(link?.target_slot ?? link?.targetSlot);
+    const type = typeof link?.type === "string" || typeof link?.type === "number" ? link.type : undefined;
     return id && originId && targetId && Number.isInteger(originSlot) && Number.isInteger(targetSlot)
-      ? [{ id, originId, originSlot, targetId, targetSlot }]
+      ? [{ id, originId, originSlot, targetId, targetSlot, ...(type === undefined ? {} : { type }) }]
       : [];
   });
 }
@@ -591,7 +597,9 @@ function expandComfyUIWorkflow(
   const nodes = comfyNodeEntries(nodePayload);
   const links = comfyLinkRecords(linkPayload);
   const sources = new Map(initialSources);
+  const linkTypes = new Map<string, string | number>();
   for (const link of links) {
+    if (link.type !== undefined) linkTypes.set(link.id, link.type);
     if (!sources.has(link.id) && link.originId !== "-10" && link.originId !== "-20") {
       sources.set(link.id, { kind: "link", value: [link.originId, link.originSlot] });
     }
@@ -625,6 +633,7 @@ function expandComfyUIWorkflow(
     );
     expandedNodes.push(...child.nodes);
     for (const [linkId, source] of child.sources) sources.set(linkId, source);
+    for (const [linkId, type] of child.linkTypes) linkTypes.set(linkId, type);
 
     const outputSources = new Map<number, ComfyLinkSource>();
     for (const link of childLinks) {
@@ -638,7 +647,7 @@ function expandComfyUIWorkflow(
       if (source) sources.set(link.id, source);
     }
   }
-  return { nodes: expandedNodes, sources };
+  return { nodes: expandedNodes, sources, linkTypes };
 }
 
 async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal?: AbortSignal): Promise<ComfyWorkflowConversion> {
@@ -662,6 +671,8 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal
   if (!uiNodes.length && apiGraph.length) {
     return { format: "api", converted: false, graph: Object.fromEntries(apiGraph), outputProperties: {} };
   }
+  const bypassResolver = createComfyUIBypassResolver(uiNodes, expansion.sources, expansion.linkTypes);
+  const activeUiNodes = uiNodes.filter(({ node }) => !bypassResolver.isInactive(node));
   const objectInfoCache = new Map<string, Promise<unknown>>();
   async function loadObjectInfo(nodeType: string) {
     if (!baseUrl) return undefined;
@@ -675,7 +686,7 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal
     return request;
   }
 
-  const objectInfoTypes = uniqueStrings(uiNodes.flatMap(({ node }) => {
+  const objectInfoTypes = uniqueStrings(activeUiNodes.flatMap(({ node }) => {
     const values = comfyWidgetValues(node);
     return Object.keys(values.named).length || values.values.length
       ? [typeof node.type === "string" ? node.type : ""]
@@ -685,7 +696,7 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal
 
   const graph: Record<string, Record<string, unknown>> = {};
   const outputProperties: Record<string, string[]> = {};
-  for (const { id, node } of uiNodes) {
+  for (const { id, node } of activeUiNodes) {
     const nodeType = typeof node.type === "string" && node.type.trim() ? node.type : "Unknown";
     if (nodeType === "MarkdownNote" || nodeType === "Note") continue;
     const nodeInputs = Array.isArray(node.inputs) ? node.inputs.flatMap((value) => {
@@ -697,7 +708,10 @@ async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string, signal
     for (const { input, name } of nodeInputs) {
       if (input.link === null || input.link === undefined) continue;
       linkedNames.add(name);
-      const source = comfySourceFromLink(input.link, expansion.sources);
+      // Resolve Bypass/Muted nodes before API serialization. The target input
+      // type is part of ComfyUI's bypass slot selection, so this is done for
+      // each consumer rather than by globally rewriting a shared link ID.
+      const source = bypassResolver.resolve(input.link, input.type ?? expansion.linkTypes.get(String(input.link)));
       if (source?.kind === "link") inputs[name] = [...source.value];
       if (source?.kind === "literal") inputs[name] = source.value;
     }
@@ -2159,6 +2173,10 @@ app.get("/api/comfyui/workflow", async (request, response) => {
     }
     response.json(await summarizeComfyUIWorkflow(payload, filename, settings.comfyuiBaseUrl));
   } catch (error) {
+    if (error instanceof HttpError) {
+      response.status(error.status).json({ error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) });
+      return;
+    }
     const message = error instanceof Error && error.name === "AbortError" ? "读取 ComfyUI 工作流超时" : "读取 ComfyUI 工作流内容失败";
     response.status(502).json({ error: message });
   }

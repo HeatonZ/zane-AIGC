@@ -35,7 +35,7 @@ export class UserPortalService {
     this.access.authorizeScene(identity, sceneId); const selected = await this.scenes.get(sceneId);
     this.access.authorizeScene(identity,sceneId);
     const scene = asRecord(selected.scene) ?? {};
-    const fields = selected.workflow.inputs.map(field => ({ key: field.key, label: String(asRecord(field)?.label ?? field.key), type: field.type, required: Boolean(field.required), placeholder: String(asRecord(field)?.placeholder ?? ""), ...(field.options ? { options: field.options } : {}) }));
+    const fields = selected.workflow.inputs.map(field => ({ key: field.key, label: String(asRecord(field)?.label ?? field.key), type: field.type, required: Boolean(field.required), hidden: Boolean(field.hidden), ...(field.type === "number" && field.minimum !== undefined ? { minimum: field.minimum } : {}), ...(field.type === "number" && field.maximum !== undefined ? { maximum: field.maximum } : {}), placeholder: String(asRecord(field)?.placeholder ?? ""), ...(field.options ? { options: field.options } : {}), ...(field.inputMode ? { inputMode: field.inputMode, itemFields: field.itemFields ?? [] } : {}) }));
     const inputDefaults = Object.fromEntries(Object.entries(selected.inputDefaults).filter(([key]) => !fields.some(field => field.key === key && isMediaWorkflowType(field.type))));
     const inputSchema = structuredClone(selected.inputSchema);
     const properties = inputSchema.properties as Record<string,unknown>;
@@ -73,7 +73,7 @@ export class UserPortalService {
     };
     Object.values(supplied).forEach(checkStructured);
     const inputValues = { ...supplied };
-    for (const field of selected.workflow.inputs) if (isMediaWorkflowType(field.type)) { checkMedia(supplied[field.key]); if (supplied[field.key] === undefined) inputValues[field.key] = ""; }
+    for (const field of selected.workflow.inputs) if (isMediaWorkflowType(field.type)) { checkMedia(supplied[field.key]); if (supplied[field.key] === undefined && !field.hidden) inputValues[field.key] = ""; }
     return inputValues;
   }
   async prepare(identity: Identity, input: { sceneId: string; versionId: string; inputValues: Record<string, JsonValue> }) {
@@ -190,6 +190,12 @@ export class UserPortalService {
     if (this.scenes.assets.get(project, assetId)) throw new HttpError(409, "素材ID已存在，请读取同一ID对账，不重复上传", "ASSET_ALREADY_EXISTS");
     const saved = await this.scenes.assets.save({ name, kind }, { bytes, filename }, { ownerUserId: identity.id, assetId, authorize: () => { this.access.refresh(identity); } });
     return { reference: saved.reference, asset: { id: saved.asset.id, revision: saved.asset.revision, name: saved.asset.name, kind, currentVersion: saved.asset.currentVersion }, nextAction: "save_reference" };
+  }
+  async listOwnAssets(identity: Identity, query: unknown) {
+    this.access.refresh(identity);
+    const project = await this.project();
+    const current = this.access.refresh(identity);
+    return this.scenes.assets.ownedCatalog(project, query, current.id);
   }
   async getAsset(identity: Identity, id: string) { this.access.refresh(identity); const asset = this.scenes.assets.get(await this.project(), id); if (!asset || asset.ownerUserId !== identity.id) throw new HttpError(404, "素材不存在", "OBJECT_NOT_FOUND"); return { asset: { id: asset.id, revision: asset.revision, name: asset.name, kind: asset.kind, currentVersion: asset.currentVersion }, reference: this.scenes.assets.reference(asset) }; }
 }

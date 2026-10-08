@@ -4,11 +4,14 @@ import { loadWorkflowRun, loadConnectionSettings, pickLocalMediaFile, uploadComf
 import { createId } from "../lib/ids";
 import { AssetPickerDialog } from "../components/AssetBrowser";
 import JsonEditor from "../components/JsonEditor";
+import ObjectArrayInput from "../components/ObjectArrayInput";
 import RerunDialog, { type RerunTarget } from "../components/RerunDialog";
 import type { RerunRequest } from "../../server/domain/rerunContracts.js";
 import type { WorkflowRunRecord } from "../types";
 import WorkflowRunPanel from "../components/WorkflowRunPanel";
 import { canonicalWorkflowMediaType } from "../lib/workflowMigration";
+import { parseObjectArrayFormValue } from "../lib/objectArrayInput";
+import { visibleInputFields } from "../lib/workflowInputVisibility";
 import { appendMediaInputValue, mediaInputLabel, mediaInputPreviewUrl, mediaListValues, moveMediaInputValue, removeMediaInputValue } from "../lib/mediaInput";
 import type { JsonValue, PageId, SceneId, SceneModule, WorkflowDefinition, WorkflowDraft, WorkflowInputField, WorkflowRunResult } from "../types";
 
@@ -57,7 +60,8 @@ function DynamicField({
   pickerBusy: boolean;
 }) {
   const id = `studio-input-${field.key}`;
-  const multiline = field.type === "textarea" || field.type === "json";
+  const objectArray = field.type === "json" && field.inputMode === "object_array";
+  const multiline = field.type === "textarea" || (field.type === "json" && !objectArray);
   const controlClass = `text-input studio-dynamic-control${multiline ? " text-area" : ""}`;
   const [choosingAsset, setChoosingAsset] = useState(false);
   const imageFileInputRef = useRef<HTMLInputElement>(null);
@@ -68,12 +72,15 @@ function DynamicField({
   const audios = mediaType === "audio_list" ? mediaListValues(value) : [];
 
   return (
-    <div className={`studio-dynamic-field ${multiline ? "wide-field" : ""}`}>
+    <div className={`studio-dynamic-field ${multiline || objectArray ? "wide-field" : ""}`}>
       <label className="field-label" htmlFor={id}>{field.label}{field.required && <span>必填</span>}</label>
+      {field.type === "number" && <small className="studio-field-hint">{field.minimum !== undefined || field.maximum !== undefined ? `允许范围：${field.minimum ?? "不限"}–${field.maximum ?? "不限"}` : "数字可不填写；如填写则需为有效数字"}{!field.required ? " · 可不填" : ""}</small>}
       {mediaType && <button className="text-button production-pick-asset" type="button" disabled={pickerBusy} onClick={() => setChoosingAsset(true)}>从素材库选择</button>}
       {choosingAsset && mediaType && <AssetPickerDialog kind={mediaType === "video_list" ? "video" : mediaType === "audio_list" ? "audio" : "image"} onClose={() => setChoosingAsset(false)} onPick={reference => onChange(appendMediaInputValue(value, reference as unknown as Record<string, unknown>))} />}
       {mediaType === "image_list" && field.placeholder && <p className="studio-field-hint">{field.placeholder}</p>}
-      {field.type === "json" ? (
+      {objectArray ? (
+        <ObjectArrayInput field={field} disabled={pickerBusy} value={value} onChange={rows => onChange(JSON.stringify(rows))} />
+      ) : field.type === "json" ? (
         <JsonEditor id={id} value={value} onChange={onChange} required={field.required} placeholder={field.placeholder} />
       ) : multiline ? (
         <textarea id={id} className={controlClass} rows={3} value={value} onChange={(event) => onChange(event.target.value)} placeholder={field.placeholder} required={field.required} />
@@ -150,8 +157,10 @@ function DynamicField({
             return <li key={`${label}-${index}`}><Film size={14} /><span title={label}>{label}</span><button className="icon-button" type="button" title="移除视频" aria-label="移除视频" onClick={() => onChange(JSON.stringify(removeMediaInputValue(videoValues, index)))}><Trash2 size={14} /></button></li>;
           })}</ol>}
         </div>
+      ) : field.type === "number" ? (
+        <input id={id} className={controlClass} type="number" step="any" min={field.minimum} max={field.maximum} value={value} onChange={(event) => onChange(event.target.value)} placeholder={field.placeholder} required={field.required} />
       ) : (
-        <input id={id} className={controlClass} type={field.type === "number" ? "number" : "text"} step={field.type === "number" ? "any" : undefined} value={value} onChange={(event) => onChange(event.target.value)} placeholder={field.placeholder} required={field.required} />
+        <input id={id} className={controlClass} type="text" value={value} onChange={(event) => onChange(event.target.value)} placeholder={field.placeholder} required={field.required} />
       )}
     </div>
   );
@@ -228,10 +237,14 @@ export default function Studio({ sceneId, scene, workflow, publication, draft, o
         else {
           const number = Number(value);
           if (!Number.isFinite(number)) throw new Error(`${field.label} 需要填写有效数字`);
+          if (field.minimum !== undefined && number < field.minimum) throw new Error(`${field.label} 不能小于 ${field.minimum}`);
+          if (field.maximum !== undefined && number > field.maximum) throw new Error(`${field.label} 不能大于 ${field.maximum}`);
           inputValues[field.key] = number;
         }
       } else if (field.type === "boolean") inputValues[field.key] = value === "" ? null : value === "true";
-      else if (field.type === "json") {
+      else if (field.type === "json" && field.inputMode === "object_array") {
+        inputValues[field.key] = parseObjectArrayFormValue(field, value);
+      } else if (field.type === "json") {
         if (!value.trim()) inputValues[field.key] = null;
         else {
           try {
@@ -367,7 +380,7 @@ export default function Studio({ sceneId, scene, workflow, publication, draft, o
               <label className="field-label" htmlFor="studio-run-title">作品标题（可选）</label>
               <input id="studio-run-title" className="text-input studio-dynamic-control" type="text" maxLength={120} value={runTitle} onChange={(event) => { setRunTitle(event.target.value); setFormError(""); setRunResult(null); }} placeholder="方便在运行记录中查找" />
             </div>
-            {studioWorkflow.inputs.map((field) => <DynamicField key={field.key} field={field} value={values[field.key] ?? ""} onChange={(value) => updateValue(field.key, value)} onPickFile={(type) => void pickFile(field.key, type)} onPickImage={(file) => void addImage(field.key, file)} onPickAudio={(file) => void addAudio(field.key, file)} picking={pickingField === field.key} pickerBusy={pickingField !== null} />)}
+            {visibleInputFields(studioWorkflow.inputs).map((field) => <DynamicField key={field.key} field={field} value={values[field.key] ?? ""} onChange={(value) => updateValue(field.key, value)} onPickFile={(type) => void pickFile(field.key, type)} onPickImage={(file) => void addImage(field.key, file)} onPickAudio={(file) => void addAudio(field.key, file)} picking={pickingField === field.key} pickerBusy={pickingField !== null} />)}
           </div>
 
           <div className="workflow-preview">

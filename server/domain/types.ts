@@ -51,8 +51,13 @@ export interface RunInputField {
   key: string;
   type: string;
   required?: boolean;
+  minimum?: number;
+  maximum?: number;
+  hidden?: boolean;
   options?: string[];
   defaultValue?: JsonValue;
+  inputMode?: "object_array";
+  itemFields?: Array<{ key: string; label?: string; type: "text" | "number" | "boolean" | "select"; required?: boolean; minimum?: number; maximum?: number; options?: string[] }>;
 }
 
 export interface RunStepOutput {
@@ -160,6 +165,9 @@ export interface RunStepRecord {
   capabilityVersion?: string;
   name: string;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
   message?: string;
   inputs?: Record<string, JsonValue>;
   inputLabels?: Record<string, string>;
@@ -181,6 +189,9 @@ export interface RunStepItemRecord {
   index: number;
   value: JsonValue;
   status: "running" | "completed" | "skipped" | "failed" | "cancelled";
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
   inputs?: Record<string, JsonValue>;
   /** Exact text sent to Hermes for this iteration item. */
   agentPrompt?: string;

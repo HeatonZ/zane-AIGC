@@ -131,11 +131,14 @@ test("restoring a version remaps a conflicting option preset ID", () => {
 });
 
 test("scene packages round-trip media selections and include only referenced presets", () => {
-  const serialized = serializeScenePackage(scene, workflow, [sharedPreset, unusedPreset]);
+  const transferWorkflow = clone(workflow);
+  transferWorkflow.inputs[0].hidden = true;
+  const serialized = serializeScenePackage(scene, transferWorkflow, [sharedPreset, unusedPreset]);
   const parsed = parseScenePackage(JSON.parse(serialized));
 
   assert.equal(parsed.optionPresets.length, 1);
   assert.equal(parsed.optionPresets[0].id, sharedPreset.id);
+  assert.equal(parsed.workflow.inputs[0].hidden, true);
   assert.deepEqual(parsed.workflow.steps[0].inputs[0].selection, { mode: "item", index: 1 });
   assert.deepEqual(parsed.workflow.steps[0].comfyui?.bindings[0].selection, { mode: "all" });
   assert.deepEqual(parsed.workflow.outputs[0].selection, { mode: "item", index: 0 });

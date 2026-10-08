@@ -17,16 +17,17 @@
 - 步骤进度是已结束步骤 / 快照步骤总数，不是耗时进度或预计完成时间。已跳过、失败、取消均计入已结束，状态另行展示。
 - `startedAt` 只取持久化的首个 `run.started` 事件。排队记录里的占位值不算真实开始；旧版导入任务没有事件时明确缺失。
 - 总历时从创建到结束，包含排队及人工确认等待；不是模型执行耗时。未结束任务可由页面按这些时间戳实时计时，终态缺失结束时间时不伪造计时。
+- 每个实际执行的步骤持久化 `startedAt`、`finishedAt` 和 `durationMs`，失败/取消也记录已用时间；运行中的步骤由界面按 `startedAt` 实时计时。`for_each` 步骤的总用时是墙钟时间，另按逐项记录各 item 的用时，不把并行项相加。步骤计时不含之后的人工审核等待；旧历史缺少起止记录时不补造时间。
 - 业务事件 sequence 不连续可能是过滤了内部 checkpoint，不是静默丢失。
 
 ## HTTP / MCP
 
 UI 与 MCP 读取同一个业务服务及 SQLite 运行快照：
 
-- `get_own_run`：单任务 revision、快照版本、进度、全部步骤和真实时间。
+- `get_own_run`：单任务 revision、快照版本、进度、全部步骤和真实时间；步骤包含实际开始时间和用时，运行中可据此计算当前用时。
 - `get_own_run_inputs`：`inputKey` 选字段；`limit/cursor` 分页字段；`valueOffset/valueLimit` 分段值（默认 2000、最多 8192）；`includeValues:false` 只读取元数据。值超预算明确 `valueOmitted`，`maxValueBytes` 最多 262144。不可拆分的过大单个嵌套值仍明确省略，需要缩小原始输入。
 - `get_own_run_activity`：`afterSequence/limit` 增量业务动态，`hasMore` 用 `nextSequence` 继续。
-- `get_own_outputs` / `get_own_step_result`（管理员相应工具也支持）：数组仍用 `valueOffset/valueLimit`，长文本显式使用 `textOffset/textLimit`（最多 32768 Unicode 码点）。`valuePage` 指明当前片段和完整度；未提供 `textLimit` 保持原 scalar 行为。
+- `get_own_outputs` / `get_own_step_result`（管理员相应工具也支持）：数组仍用 `valueOffset/valueLimit`，长文本显式使用 `textOffset/textLimit`（最多 32768 Unicode 码点）。步骤结果同时包含步骤/逐项执行的用时。`valuePage` 指明当前片段和完整度；未提供 `textLimit` 保持原 scalar 行为。
 
 读取不生成、不修改任务。输入游标绑定运行、参数与 revision，结果变化 `409 RESULT_PAGE_CHANGED` 时重读第一页，不拼接不同快照。用户只能读取本人任务；已接受历史输入、动态和结果在撤销场景权限后仍可读取，但继续生成必须重新核验权限。未归属历史仅管理员可见。
 

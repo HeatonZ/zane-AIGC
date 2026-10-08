@@ -9,7 +9,7 @@ import type { RunRecord } from "../domain/types.js";
 
 const post = (base: string, route: string, body: unknown) => fetch(base + route, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-test("AI发布场景：发现、固定选项/默认值、纯预检、拒绝草稿及未知输入", async t => {
+test("AI发布场景：发现、固定选项/默认值、纯预检、拒绝草稿并透传额外输入", async t => {
   const h = await aiHarness(t);
   const manifest = await (await fetch(h.base + "/api/v1/ai")).json() as { contractVersion: string; worker: { ready: boolean }; operations: unknown[] };
   assert.equal(manifest.contractVersion, AI_CONTRACT_VERSION); assert.equal(manifest.worker.ready, true); assert.equal(manifest.operations.length, aiOperations.length);
@@ -19,7 +19,9 @@ test("AI发布场景：发现、固定选项/默认值、纯预检、拒绝草�
   const prepared = await preview.json() as { valid: boolean; inputValues: unknown; externalServicesChecked: boolean }; assert.equal(prepared.valid, true); assert.equal(prepared.externalServicesChecked, false); assert.deepEqual(prepared.inputValues, { flag: false, style: "已发布值" });
   assert.equal(h.store.listRuns(h.settings.projectDirectory).runs.length, 0);
   assert.deepEqual(await readdir(path.join(h.settings.projectDirectory, ".zane", "runs")).catch(() => []), []);
-  for (const input of [{ typo: true }, { flag: "true" }, { style: "草稿值" }]) assert.equal((await post(h.base, "/api/v1/scenes/demo/prepare", { versionId: "version-a", inputValues: input })).status, 400);
+  const extra = await post(h.base, "/api/v1/scenes/demo/prepare", { versionId: "version-a", inputValues: { typo: true } }); assert.equal(extra.status, 200);
+  assert.deepEqual((await extra.json() as { inputValues: unknown }).inputValues, { flag: false, style: "已发布值", typo: true });
+  for (const input of [{ flag: "true" }, { style: "草稿值" }]) assert.equal((await post(h.base, "/api/v1/scenes/demo/prepare", { versionId: "version-a", inputValues: input })).status, 400);
   assert.equal((await post(h.base, "/api/v1/scenes/demo/runs", { inputValues: {}, runId: id("missing-version") })).status, 400);
   assert.equal((await fetch(h.base + "/api/v1/scenes/unpublished")).status, 409);
   assert.equal((await fetch(h.base + "/api/v1/scenes/missing")).status, 404);

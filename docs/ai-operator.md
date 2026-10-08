@@ -20,7 +20,7 @@ ZANE_PUBLIC_USER_PORT留空不开启；显式开启第二监听入口时管理AP
 
 # AI 工作台操作手册
 
-契约版本：1.5.25。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
+契约版本：1.5.27。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
 本手册与 MCP 的 zane://guide、HTTP /api/v1/ai/guide 同源。
 
 ## 系统任务并发（1.5.15）
@@ -75,14 +75,14 @@ MCP_RESTARTING是JSON-RPC -32603，data.outcome:rejected，表示没有转发本
 先配置 ZANE_API_TOKEN 并读取 get_current_user。HTTP可用登录会话Cookie；MCP只转发本人Bearer凭证，不保管另一套用户/场景库。首次管理员在服务器本机网页显式创建，没有默认密码。管理后台 /admin；用户端 /app；产品没有每人一份工作区。
 admin 保留下文管理工具；user 只调用 self 操作。get_workbench 返回当前身份可用操作，管理工具即使出现在旧MCP静态发现里也会由服务端拒绝。AUTH_REQUIRED/ACCOUNT_DISABLED 需要重新登录或管理员处理；ADMIN_REQUIRED不能通过改参数、换profile绕过。
 管理员：list_users 分页 → get_user 保存revision → set_user_scene_access设置完整sceneIds。新用户默认空授权，新场景不自动授权；未发布场景即使已授权也不能使用。角色/启停/密码重置使旧会话和AI凭证失效。
-普通用户：list_available_scenes分页 → get_available_scene固定versionId和业务输入 → upload_own_asset（媒体时先保存assetId，固定assetVersion）→ prepare_own_scene → 明确授权执行后submit_own_scene。只能提交本人资产引用，不能提交完整workflow或本机路径。SCENE_VERSION_CHANGED重读新表单，不自动切版。
+普通用户：list_available_scenes分页 → get_available_scene固定versionId和业务输入；填写媒体时可用list_own_assets按类型/关键词分页选择本人素材，或upload_own_asset上传新素材（先保存assetId，固定assetVersion）→ prepare_own_scene → 明确授权执行后submit_own_scene。本人素材目录只返回当前身份拥有的未归档素材，不包含他人及未归属历史。可携带未声明的额外输入键，作为透传值保存在运行输入中；已声明字段仍严格校验，步骤使用哪些输入仍由发布绑定决定。只能提交本人资产引用，不能提交完整workflow或本机路径。SCENE_VERSION_CHANGED重读新表单，不自动切版。
 save_own_draft 只保存输入，revision:0新建；更新必须读当前revision。草稿列表省略inputValues时用get_own_draft读，不是空值。所有已保存状态必须等服务端回执，客户端乐观显示不等于落库。
 submit_own_scene先保存runId；响应丢失get_own_run查询同一ID，RUN_PREPARING稍后再查，禁止换ID重建。get_own_outputs/get_own_step_result按输出/逐项分页，valueOmitted和valuePage明确值是否完整。本人媒体地址支持HEAD/Range；未归属历史任务仅管理员可见。
 管理员list_runs分页摘要、get_run详情和wait_run观察包含服务端绑定的ownerUserId及submitter身份快照(userId、username、displayName)。身份从已验证会话/凭证取得，不接受请求体伪造；新任务固定提交时的显示名与登录名。历史已有ownerUserId但无身份快照时仅在管理读取时按当前用户档案补齐，不改写历史；不存在的账号仍显示稳定ownerUserId，未归属历史明确保持未归属。普通用户任务投影不暴露其他人的身份信息。
 get_run运行快照会在agentPrompt记录每个已执行Hermes步骤实际发送的提示词（含模板展开、已解析步骤输入、反馈与JSON输出要求）；for_each步骤按各items[].agentPrompt分别保存。解析或输出校验失败时，同一记录在agentResponse保存Hermes返回的完整未trim原文（含首尾空白），仅失败响应写入，旧历史没有此字段时不推测补写。运行记录UI显示失败步骤/逐项的原始返回；管理员get_step_result可用textOffset/textLimit按Unicode码点分页读取agentResponse，先读第一页并按valuePage继续。普通用户工具仍不返回原始回复。
-运行详情get_own_run提供revision、固定版本、progress与全部快照步骤(含pending未执行)、逐项计数、结果数和首次真实startedAt；没有持久化开始事件时省略开始/排队计时，不使用queued占位时间。progress只表示步骤，不代表实际时间比例；totalDurationMs包含排队和人工确认。
+运行详情get_own_run提供revision、固定版本、progress与全部快照步骤(含pending未执行)、逐项计数、结果数、每个已开始步骤的startedAt与步骤结束后的durationMs，以及首次真实startedAt；运行中的步骤用startedAt计算当前已用时间。for_each步骤durationMs表示整个步骤墙钟用时，逐项durationMs由get_own_step_result分页读取；步骤用时不含人工确认等待。旧历史缺少步骤起止记录时省略durationMs并在UI标记未记录。没有持久化run.started事件时省略开始/排队计时，不使用queued占位时间。progress只表示步骤，不代表耗时百分比；totalDurationMs包含排队和人工确认。
 get_own_run_inputs按需读取原始运行输入，标签和类型不随当前场景变动。limit/cursor分页字段；inputKey+valueOffset/valueLimit分段字符串(Unicode码点)、数组(项)、对象(键)，valuePage说明完整度。present:false不同于null；valueOmitted不是空值。metadata_only要includeValues:true；value_byte_limit先缩小valueLimit或单字段提高maxValueBytes(最大262144)。游标不兼容查询变更；409 RESULT_PAGE_CHANGED重读第一页。
-get_own_outputs/get_own_step_result(以及管理员get_run_outputs/get_step_result)可显式设置textLimit和textOffset分段长文本(Unicode码点，最多32768)，valuePage.kind:string、offset/count/total/nextValueOffset说明片段；未设置textLimit保持原scalar行为。数组仍使用valueOffset/valueLimit，媒体不会按字符切碎。HTTP/UI/MCP复用同一结果服务。复制本段不代表复制整篇。
+get_own_outputs/get_own_step_result(以及管理员get_run_outputs/get_step_result)可显式设置textLimit和textOffset分段长文本(Unicode码点，最多32768)，valuePage.kind:string、offset/count/total/nextValueOffset说明片段；未设置textLimit保持原scalar行为。数组仍使用valueOffset/valueLimit，媒体不会按字符切碎。get_own_step_result同时返回步骤和逐项startedAt/durationMs，HTTP/UI/MCP复用同一结果服务。复制本段不代表复制整篇。
 get_own_run_activity按afterSequence/limit读取业务时间线，hasMore用nextSequence继续；非连续sequence是内部checkpoint被过滤，不是数据丢失。后续仍用最后nextSequence轮询，空页不代表任务结束。不会返回原始日志/错误payload/提示词或连接。本人历史输入和动态不受后续场景改名/撤权影响，账户及任务归属仍实时校验。
 waiting使用review_own_run与最新reviewId，可approve/redo，不接受feedback；使用submit_system_feedback交管理员处理问题，不能改输出或流程。resume_own_run只能按本人原快照续跑且不能绕过waiting。普通用户不开放任意局部重做/选片合成/全局素材管理；使用原有管理工具不会获得权限。
 撤销场景授权禁止新任务及继续生成操作，已经接受的任务不自动取消；本人历史结果仍可读取，cancel_own_run只需本人任务与有效身份，不要求保留场景授权。禁用账户使所有访问失效。
@@ -178,7 +178,7 @@ changes按场景、流程设置、输入、步骤、输出及关联预设分组�
 
 get_workbench → list_scenes → get_scene（inputSchema/默认值/示例）→ prepare_scene → submit_scene → wait_run → get_run_outputs/get_step_result → 审核/收藏/选片/合成。
 
-prepare_scene 参数：sceneId、versionId、inputValues。它填默认值，拒绝未知输入键，固定发布版本的选项预设，校验输入类型、素材版本/文件和已安装能力配置。
+prepare_scene 参数：sceneId、versionId、inputValues。它填默认值；允许额外输入键透传并保存在运行输入中，但额外键不属于场景表单字段，也不参与workflow.inputs字段级类型/必填校验。已声明字段仍按固定发布版本的选项预设校验输入类型、素材版本/文件和已安装能力配置；步骤引用仍由发布工作流中的显式绑定决定。
 它不调用 Hermes/ComfyUI、不创建任务或复制运行归档。返回 validationScope 和 externalServicesChecked:false；不承诺外部服务在线、全部引用可执行、最终费用或生成质量。
 submit_scene 会重新预检，并复制发布快照进运行。之后场景改版不会改变这个运行。
 历史发布版本可以通过 versionId 使用，但版本最多保留10个，过期返回 SCENE_VERSION_UNAVAILABLE；不能静默换成新版本。
@@ -265,7 +265,7 @@ resume_run 复用已持久化完成步骤，但尚未checkpoint的远程请求�
 
 ## 7. 素材与媒体
 
-素材库管理仅管理员（含使用管理员本人凭证的AI）可用；普通用户的upload_own_asset是本人任务附件，不开放库检索、维护或他人/未归属媒体。UI、HTTP、MCP共用AssetService与SQLite，没有AI旁路库。
+素材元数据维护、运行收藏、归档和版本管理仅管理员（含使用管理员本人凭证的AI）可用。普通用户可用list_own_assets分页检索自己的未归档素材，并在用户端输入中选择其固定版本；upload_own_asset上传的素材归属从已验证身份取得。本人目录不返回他人或未归属历史，也不能维护管理员素材。UI、HTTP、MCP共用AssetService与SQLite，没有AI旁路库。
 媒体执行输入首选真实assetId+assetVersion；previewUrl只是需鉴权的浏览器/HTTP显示接口，不是执行端读取凭证。后端在预检/入队阶段校验固定版本，提交时从权威素材服务归档同一任务私有副本。Hermes/AIXG把归档字节转换为inline图片附件，ComfyUI读取并上传同一来源，参考图顺序保持一致；不会把本机路径文本当图片，也不让两端自行取最新版。Hermes保留现有inline图片预算、必要时压缩；不会改变固定素材版本，ComfyUI继续使用原归档字节。不向ComfyUI/外部URL转发工作台token。管理员已有本后台同源（同协议/端口、loopback等价）或相对固定版本媒体地址也按同一服务解析；跨源地址仍为外部源，不取得本机素材权限，代理地址请用固定ID引用。普通用户仍只接受本人固定引用、不接受路径或URL。INVALID_ASSET_REFERENCE/ASSET_FILE_MISSING在排队前拒绝，不重传素材、不改提示词；读原runId确认真实失败后，显式resume_run保存新的runId并复用已完成步骤，不自动触发付费生成。OpenAPI x-asset-media-execution和媒体inputRequirements.mediaExecution提供机器契约。
 list_assets默认24条、最多100条，可用q检索名称/description/分组/标签，用kind/category/group/tag筛选；archived:true包含归档。摘要含currentVersion/versionCount/revision/versionsOmitted，不携带历史与大参数。hasMore时用同一筛选的nextCursor继续；游标绑定项目、身份、筛选与目录快照。ASSET_PAGE_CHANGED重读第一页，不拼接不同快照。
 get_asset读取一个摘要和当前固定reference；list_asset_versions分页读取新到旧的历史，每版含固定reference和parametersOmitted。get_asset_version读取一个版本；includeParameters:true按parametersOffset/parametersLimit读取JSON字符片段（默认8000、最多16000）。hasMore时沿nextOffset续读，完整拼接后解析，不能把片段当完整参数。
@@ -324,7 +324,9 @@ outcome:unknown 明确表示变更可能已发生。即使AI没有收到 runId �
 单场景读取get_scene_draft，返回scene/workflow、它引用的预设、内容revision、contentHash和保留版本目录；不会搬整工作区。
 创建使用create_scene，先保存scene.id；空工作区原子初始化。响应丢失先读同一sceneId，SCENE_ALREADY_EXISTS不是同请求自动成功，不换ID重建。
 update_scene_draft必须带当前内容revision，提供的scene/workflow是完整部分替换（不是深层patch），省略部分保持不变。可随场景添加引用的新预设，不能暗中改已有共享预设。
-流程输入可设置workflow.inputs[].defaultValue；按字段类型填写，select默认值须在options中。validate_scene_draft会校验默认值；发布后固定版本的inputDefaults/inputSchema和prepare使用它预填输入，提交人明确填写的值优先。默认值修改仍需用当前revision保存并显式发布，不会自动执行。
+流程输入可设置workflow.inputs[].defaultValue；按字段类型填写，select默认值须在options中。validate_scene_draft会校验默认值；发布后固定版本的inputDefaults/inputSchema和prepare使用它预填输入，提交人明确填写的值优先。默认值修改仍需用当前revision保存并显式发布，不会自动执行。workflow.inputs[].hidden=true会从管理创作页与普通用户网页输入表单隐藏字段，输入契约和流程执行仍保留该字段；隐藏必填字段必须有有效默认值。hidden只控制网页展示，AI/HTTP/MCP仍可按发布契约提交该字段，请勿用来存放需要保密或禁止用户提交的值。
+number类型的场景输入可配置minimum和maximum，都是包含边界且可分别省略；required=false表示提交人可以留空，填写时UI与服务端都会检查范围。数字默认值也必须在范围内。get_scene的inputSchema及inputRequirements会返回范围；普通用户get_available_scene返回同样的发布快照限制。对象数组itemFields中的number也支持minimum/maximum，表单和服务端按每个行字段校验。反向范围会被草稿校验拒绝。
+需要用户以普通表单填写对象数组（如规格列表）时，输入字段配置示例：{key:'specs',label:'规格数组',type:'json',required:true,inputMode:'object_array',itemFields:[{key:'size',label:'尺寸',type:'select',required:true,options:['S','M','L']},{key:'stock',label:'库存',type:'number',required:false,minimum:0,maximum:999}] }。itemFields的key唯一，type支持text/number/boolean/select，select必须提供options；数字行字段可分别设包含minimum/maximum，不设置的一侧不限制。表单显示可增删行的“尺寸/库存”控件，运行值为{specs:[{size:'S',stock:24}]}这样的类型化对象数组，不要把JSON文本传给用户表单。服务端按固定发布快照校验行结构、类型、数字范围、必填和选项，最多100行。get_scene/get_available_scene返回itemFields/inputMode和对应inputSchema；步骤仍可把该数组作为JSON引用或逐项遍历。用当前draft revision更新并显式validate/publish，不自动修改现有发布版本。
 双采视频是现有ComfyUI配置，不新增场景执行器：AI文生视频、AI参考生视频、文生无设计版用Zane/video_双采.json；长文用Zane/video_双采_json.json。改workflowFile必须同步核对bindings；不能只换文件名。
 文本入口192.prompt、秒数155.value、分辨率115、视频92.video；参考图仍接192.ref_images。长文shot_json把完整iteration.item序列化为text写201.String；196现在是SelfLiftAvatarH3Sampler，不可写String；197是H3SigmaRefiner。长文保留逐项执行、192.length=iteration.item.frames、152.fps=24、素材ref_images/音色ref_audios、原生对白和无音乐策略以及原有拼接。
 只迁移已确认场景的草稿，保留其他配置与旧发布/运行快照；核对已有未发布编辑后，用revision校验并显式publish_scene。配置迁移不submit_scene；需要外部客户端安装双采节点/工作流，草稿结构校验不会探测其安装。

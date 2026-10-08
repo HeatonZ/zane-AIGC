@@ -22,10 +22,14 @@ export const uploadAssetSchema = assetMetadataSchema.extend({ kind: assetKindSch
 export const updateAssetSchema = assetMetadataSchema.omit({ createId: true, assetId: true }).extend({ revision, archived: z.boolean().optional() }).strict();
 export const assetPageSchema = z.object({ limit: z.int().min(1).max(100).default(24), cursor: z.string().min(1).max(2048).optional() }).strict();
 export const assetQuerySchema = assetPageSchema.extend({ q: z.string().max(4000).default(""), kind: assetKindSchema.optional(), category: assetCategorySchema.optional(), group: z.string().max(160).optional(), tag: z.string().max(80).optional(), archived: z.boolean().default(false) }).strict();
+export const ownAssetQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(100).default(24), cursor: z.string().min(1).max(2048).optional(), q: z.string().max(4000).default(""), kind: assetKindSchema.optional() }).strict();
 export const assetVersionQuerySchema = z.object({ includeParameters: z.boolean().default(false), parametersOffset: z.int().nonnegative().default(0), parametersLimit: z.int().min(1).max(16000).default(8000) }).strict();
 export type AssetSummary = Omit<AssetRecord, "versions" | "description"> & { description: string; versionCount: number; versionsOmitted: true };
+export type OwnAssetQuery = z.output<typeof ownAssetQuerySchema>;
+export type OwnAssetSummary = Omit<AssetSummary, "ownerUserId"> & { reference: AssetReference };
 export type AssetVersionSummary = Omit<AssetVersion, "parameters" | "filename"> & { parametersOmitted: boolean; reference: AssetReference };
 export interface AssetPage { schemaVersion: 1; catalogRevision: string; assets: AssetSummary[]; total: number; hasMore: boolean; nextCursor?: string; nextAction: "get_asset" }
+export interface OwnAssetPage { schemaVersion: 1; catalogRevision: string; assets: OwnAssetSummary[]; total: number; hasMore: boolean; nextCursor?: string; nextAction: "get_own_asset" }
 export interface AssetEnvelope { asset: AssetSummary; reference: AssetReference; nextAction: "save_reference_or_list_asset_versions" }
 export interface AssetVersionPage { schemaVersion: 1; assetId: string; revision: number; versions: AssetVersionSummary[]; total: number; hasMore: boolean; nextCursor?: string; nextAction: "get_asset_version" }
 export interface AssetVersionEnvelope { assetId: string; revision: number; version: AssetVersionSummary; parameters?: { encoding: "json"; totalChars: number; offset: number; text: string; hasMore: boolean; nextOffset?: number }; nextAction: "save_reference_or_read_parameters" }

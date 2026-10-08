@@ -1,6 +1,6 @@
 import type * as z from "zod/v4";
-import { assetQuerySchema, assetPageSchema, assetVersionQuerySchema } from "../domain/assetLibraryContracts.js";
-import type { AssetEnvelope, AssetPage, AssetSummary, AssetVersionSummary, AssetVersionPage, AssetVersionEnvelope } from "../domain/assetLibraryContracts.js";
+import { assetQuerySchema, assetPageSchema, assetVersionQuerySchema, ownAssetQuerySchema } from "../domain/assetLibraryContracts.js";
+import type { AssetEnvelope, AssetPage, AssetSummary, AssetVersionSummary, AssetVersionPage, AssetVersionEnvelope, OwnAssetPage } from "../domain/assetLibraryContracts.js";
 import type { AssetRecord, AssetReference, AssetVersion } from "../domain/productionContracts.js";
 import { contentRevision } from "../domain/sceneContent.js";
 import { HttpError } from "../errors.js";
@@ -46,6 +46,20 @@ export function assetCatalog(assets: AssetRecord[], raw: unknown, project: strin
   const catalogRevision = contentRevision(assets.map(asset => [asset.id, asset.revision]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
   const { selected: result, ...pagination } = page(selected, { limit, cursor }, contentRevision({ project, actorId, filters, view: "catalog" }), catalogRevision);
   return { schemaVersion: 1, catalogRevision, assets: result.map(assetSummary), ...pagination, nextAction: "get_asset" };
+}
+export function ownAssetCatalog(assets: AssetRecord[], raw: unknown, project: string, ownerUserId: string, reference: (asset: AssetRecord) => AssetReference): OwnAssetPage {
+  const { limit, cursor, q: search, kind } = parseAssetInput(ownAssetQuerySchema, raw);
+  const owned = ownerUserId ? assets.filter(asset => asset.ownerUserId === ownerUserId) : [];
+  const catalogRevision = contentRevision(owned.map(asset => [asset.id, asset.revision]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+  const q = search.toLocaleLowerCase();
+  const selected = owned.filter(asset => !asset.archivedAt && (!kind || asset.kind === kind) && (!q || [asset.name, asset.description ?? "", asset.group, ...asset.tags].join(" ").toLocaleLowerCase().includes(q)))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  const { selected: result, ...pagination } = page(selected, { limit, cursor }, contentRevision({ project, actorId: ownerUserId, filters: { q: search, kind }, view: "own-catalog" }), catalogRevision);
+  return {
+    schemaVersion: 1, catalogRevision,
+    assets: result.map(asset => { const { ownerUserId: _owner, ...summary } = assetSummary(asset); return { ...summary, reference: reference(asset) }; }),
+    ...pagination, nextAction: "get_own_asset",
+  };
 }
 export function assetVersions(asset: AssetRecord, raw: unknown, project: string, actorId: string, reference: (version: number) => AssetReference): AssetVersionPage {
   const query = parseAssetInput(assetPageSchema, raw);

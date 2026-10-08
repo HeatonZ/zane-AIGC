@@ -79,9 +79,6 @@ export class AiSceneService {
     const settings = await this.loadSettings();
     if (!settings.projectDirectory) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
     if (!(await stat(settings.projectDirectory).catch(() => undefined))?.isDirectory()) throw new HttpError(409, "项目目录不存在或不可读取", "PROJECT_DIRECTORY_UNAVAILABLE");
-    const known = new Set(selected.workflow.inputs.map(field => field.key));
-    const unknown = Object.keys(supplied).filter(key => !known.has(key));
-    if (unknown.length) throw new HttpError(400, "场景输入包含未声明的字段：" + unknown.join(", "), "UNKNOWN_SCENE_INPUT");
     const defaults = workflowInputDefaults(selected.workflow);
     const inputValues = { ...defaults, ...structuredClone(supplied) } as Record<string, JsonValue>;
     if (selected.workflow.steps.length > 100 || selected.workflow.inputs.length > 200) throw new HttpError(400, "工作流规模超出限制", "INVALID_WORKFLOW");

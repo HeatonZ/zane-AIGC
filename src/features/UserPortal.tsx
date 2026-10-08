@@ -4,8 +4,10 @@ import { getOwnDraft, setOwnDraftFavorite } from "../lib/taskDraftApi";
 import { OwnDraftSaveQueue, sameDraftInputs, type OwnDraftSaveSession } from "../lib/userDraftAutosave";
 import { Star } from "lucide-react";
 import UserMediaInput, { type UserMediaKind } from "../components/UserMediaInput";
+import ObjectArrayInput from "../components/ObjectArrayInput";
+import { visibleInputFields } from "../lib/workflowInputVisibility";
 import { DraftFavoriteUnconfirmedError, writeDraftFavorite } from "../lib/draftFavoriteWrite";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FocusEvent } from "react";
 import {
   AccessApiError, accessApi, jsonBody, type Account, type AccessPage,
   type AvailableScene, type UserScene, type OwnRun, type OwnDraft,
@@ -15,6 +17,8 @@ import {
 } from "../lib/userPortal";
 import UserRunDetail from "../components/UserRunDetail";
 import { runDate, runStatusLabels } from "../lib/runDetails";
+import { parseObjectArrayFormValue } from "../lib/objectArrayInput";
+import type { WorkflowInputField } from "../types";
 import AccountTokens from "./AccountTokens";
 
 type PendingUpload = { id: string; key: string; type: string; sceneId: string };
@@ -34,7 +38,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   const [uploadingKey, setUploadingKey] = useState("");
   const [draftSaving, setDraftSaving] = useState(false);
   const [draftAutoSaveStatus, setDraftAutoSaveStatus] = useState<"idle" | "pending" | "saving" | "saved" | "error" | "reconcile" | "review">("idle");
-  const [autoSaveAttempt, setAutoSaveAttempt] = useState(0);
   const draftSaveCountRef = useRef(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -48,7 +51,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   const [draftRevision, setDraftRevision] = useState(0);
   const [draftUnknown, setDraftUnknown] = useState(false);
   const draftSessionRef = useRef<OwnDraftSaveSession | null>(null);
-  const draftAutoSaveTimerRef = useRef<number | undefined>(undefined);
   const draftSaveQueueRef = useRef<OwnDraftSaveQueue | null>(null);
   if (!draftSaveQueueRef.current) {
     draftSaveQueueRef.current = new OwnDraftSaveQueue(request => api<{ draft: OwnDraft }>("/api/v1/self/drafts", jsonBody(request)));
@@ -116,32 +118,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     if (page === "drafts") void attempt(() => loadDrafts());
     if (page === "runs") void attempt(() => loadRuns());
   }, [page]);
-  useEffect(() => {
-    const session = draftSessionRef.current;
-    if (page !== "scenes" || !scene || !session || draftUnknown || session.reconcileRequired || session.reviewRequired
-      || session.editVersion <= session.savedEditVersion) return;
-    const timer = window.setTimeout(() => {
-      draftAutoSaveTimerRef.current = undefined;
-      let inputValues: Record<string, unknown>;
-      try { inputValues = inputs(values, scene); }
-      catch (reason) {
-        setDraftAutoSaveStatus("error");
-        setError(reason instanceof Error ? reason.message : "草稿输入暂时无法自动保存");
-        return;
-      }
-      void saveDraftSnapshot(session, inputValues, session.editVersion).catch(reason => {
-        if (draftSessionRef.current !== session) return;
-        if (session.reconcileRequired) setDraftUnknown(true);
-        setDraftAutoSaveStatus(session.reconcileRequired ? "reconcile" : "error");
-        setError((reason as Error).message + " 草稿ID：" + session.id);
-      });
-    }, 700);
-    draftAutoSaveTimerRef.current = timer;
-    return () => {
-      window.clearTimeout(timer);
-      if (draftAutoSaveTimerRef.current === timer) draftAutoSaveTimerRef.current = undefined;
-    };
-  }, [page, scene, values, draftId, draftUnknown, autoSaveAttempt]);
   useEffect(() => {
     const flushWhenHidden = () => {
       if (document.visibilityState === "hidden") void flushDraftAutosave().catch(reason => setError((reason as Error).message));
@@ -214,18 +190,29 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     valuesRef.current = next;
     setValues(next);
   }
-  function inputs(sourceValues = values, sourceScene = scene) {
+  function autosaveDraftOnBlur() {
+    void flushDraftAutosave().catch(() => undefined);
+  }
+  function handleDraftFieldBlur(event: FocusEvent<HTMLElement>) {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+    autosaveDraftOnBlur();
+  }
+  function inputs(sourceValues = values, sourceScene = scene, validateRequired = false) {
     const result = { ...sourceValues };
     for (const field of sourceScene?.fields ?? []) {
       const value = result[field.key];
       if (field.type === "number" && typeof value === "string" && value.trim()) {
         const number = Number(value);
         if (!Number.isFinite(number)) throw new Error(field.label + "需要有效数字");
+        if (validateRequired && field.minimum !== undefined && number < field.minimum) throw new Error(field.label + "不能小于 " + field.minimum);
+        if (validateRequired && field.maximum !== undefined && number > field.maximum) throw new Error(field.label + "不能大于 " + field.maximum);
         result[field.key] = number;
       }
       if (field.type === "json" && typeof value === "string" && value.trim()) {
         try { result[field.key] = JSON.parse(value); } catch { throw new Error(field.label + "需要有效JSON"); }
       }
+      if (field.type === "json" && field.inputMode === "object_array") result[field.key] = parseObjectArrayFormValue({ ...field, type: "json" } as WorkflowInputField, value, validateRequired);
     }
     return result;
   }
@@ -265,15 +252,19 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   async function flushDraftAutosave() {
     const session = draftSessionRef.current;
     if (!session) return;
-    const timer = draftAutoSaveTimerRef.current;
-    if (timer !== undefined) { window.clearTimeout(timer); draftAutoSaveTimerRef.current = undefined; }
     if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
     if (session.reviewRequired) return;
     if (session.pendingWrite) await session.pendingWrite;
     if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
     if (session.editVersion <= session.savedEditVersion) return;
     if (!scene) throw new Error("当前草稿表单尚未就绪，未自动保存");
-    const inputValues = inputs(valuesRef.current, scene);
+    let inputValues: Record<string, unknown>;
+    try { inputValues = inputs(valuesRef.current, scene); }
+    catch (reason) {
+      setDraftAutoSaveStatus("error");
+      setError(reason instanceof Error ? reason.message : "草稿输入暂时无法自动保存");
+      throw reason;
+    }
     await saveDraftSnapshot(session, inputValues, session.editVersion);
   }
   async function navigateToPage(nextPage: typeof page) {
@@ -287,8 +278,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     if (!session) { setError("当前草稿表单尚未就绪"); return; }
     if (session.reviewRequired && !window.confirm("服务端草稿与本页输入不同。确定用本页内容覆盖服务端当前版本吗？")) return;
     session.reviewRequired = false;
-    const timer = draftAutoSaveTimerRef.current;
-    if (timer !== undefined) { window.clearTimeout(timer); draftAutoSaveTimerRef.current = undefined; }
     setBusy(true); setError(""); setNotice("");
     try {
       const revision = await saveDraftSnapshot(session, inputs(), session.editVersion, true);
@@ -319,7 +308,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
       session.reviewRequired = false;
       setNotice("已确认原草稿ID的保存回执 · r" + data.draft.revision);
       setDraftAutoSaveStatus(session.editVersion > session.savedEditVersion ? "pending" : "saved");
-      if (session.editVersion > session.savedEditVersion) setAutoSaveAttempt(value => value + 1);
     } else if (matchesLastSaved && session.lastSaved) {
       session.savedEditVersion = Math.max(session.savedEditVersion, session.lastSaved.editVersion);
       session.enqueuedEditVersion = session.savedEditVersion;
@@ -327,7 +315,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
       session.reviewRequired = false;
       setNotice("已读取原草稿ID并确认服务端基线 · r" + data.draft.revision);
       setDraftAutoSaveStatus(session.editVersion > session.savedEditVersion ? "pending" : "saved");
-      if (session.editVersion > session.savedEditVersion) setAutoSaveAttempt(value => value + 1);
     } else {
       session.failedWrite = undefined;
       session.reviewRequired = true;
@@ -350,7 +337,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     let id = "";
     try {
       await flushDraftAutosave();
-      const inputValues = inputs();
+      const inputValues = inputs(values, scene, true);
       await api("/api/v1/self/scenes/" + scene.sceneId + "/prepare", jsonBody({ versionId: scene.versionId, inputValues }));
       if (!window.confirm("确认提交？此场景可能调用外部模型并产生费用，后续审核也可能继续生成。")) return;
       id = crypto.randomUUID();
@@ -409,7 +396,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
         method: "POST", body: file, headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
       });
       updateValues(current => ({ ...current, [key]: uploadedInput(current[key], type, data.reference) }));
-      setNotice("媒体已上传，固定版本引用已填入");
+      setNotice("媒体已上传并添加到任务输入");
     } catch (e) {
       if (e instanceof AccessApiError && e.status === 0) setUploadUnknown({ id, key, type, sceneId: scene.sceneId });
       setError((e as Error).message + " 素材ID：" + id);
@@ -459,7 +446,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     <main className="access-main">
       <header className="access-heading"><div>
         <h1>{page === "scenes" ? "可用场景" : page === "drafts" ? "我的草稿" : page === "runs" ? "我的任务" : page === "feedback" ? "系统反馈" : "账户与AI接入"}</h1>
-        <p>{page === "feedback" ? "提交使用问题或改进建议，由管理员处理；不会自动影响 Agent。" : page === "runs" ? "跟踪任务进度、核对原始输入、查看结果；历史与详情以服务端运行快照为准。" : page === "drafts" ? "收藏常用输入草稿并置顶，快速继续填写和复用；所有确认保存的数据都在服务端。" : page === "account" ? "查看账户信息，为 AI 配置本人接入凭证。" : scene ? "输入停止后会自动保存到服务端，离开表单前也会先保存。" : "只展示你可以使用的已发布场景；所有已保存数据以服务端为准。"}</p>
+        <p>{page === "feedback" ? "提交使用问题或改进建议，由管理员处理；不会自动影响 Agent。" : page === "runs" ? "跟踪任务进度、核对原始输入、查看结果；历史与详情以服务端运行快照为准。" : page === "drafts" ? "收藏常用输入草稿并置顶，快速继续填写和复用；所有确认保存的数据都在服务端。" : page === "account" ? "查看账户信息，为 AI 配置本人接入凭证。" : scene ? "输入框失焦后会自动保存到服务端，离开表单前也会先保存。" : "只展示你可以使用的已发布场景；所有已保存数据以服务端为准。"}</p>
       </div></header>
       {error && <p className="access-error" role="alert">{error}</p>}
       {notice && <p className="access-success" role="status">{notice}</p>}
@@ -485,8 +472,11 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
         {!scene && sceneCursor && <button className="button button-outline" onClick={() => void attempt(() => loadScenes(sceneCursor))}>加载更多场景</button>}
         {scene && <section className="access-card">
           <h2>{scene.title}</h2><p>{scene.description || scene.summary}</p><small>固定发布版：{scene.version} · {scene.versionId}</small>
-          <form onSubmit={e => { e.preventDefault(); void save(); }}>
-            {scene.fields.map(field => /image|video|audio/.test(field.type) ? <div className="access-media-field" key={field.key}>
+          <form noValidate onSubmit={e => { e.preventDefault(); void save(); }}>
+            {visibleInputFields(scene.fields).map(field => field.inputMode === "object_array" ? <div className="access-media-field" key={field.key} onBlur={handleDraftFieldBlur}>
+              <div className="access-media-field-label">{field.label}{field.required && <span> *</span>}</div>
+              <ObjectArrayInput field={{ ...field, type: "json" } as WorkflowInputField} value={values[field.key]} disabled={lockedForm} onChange={rows => updateValues(current => ({ ...current, [field.key]: rows }))} />
+            </div> : /image|video|audio/.test(field.type) ? <div className="access-media-field" key={field.key} onBlur={handleDraftFieldBlur}>
               <div className="access-media-field-label">{field.label}{field.required && <span> *</span>}</div>
               <UserMediaInput
                 label={field.label}
@@ -497,6 +487,19 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
                 disabled={lockedForm}
                 uploading={uploadingKey === field.key}
                 onUpload={file => void upload(field.key, field.type, file)}
+                onSelect={reference => {
+                  updateValues(current => ({ ...current, [field.key]: uploadedInput(current[field.key], field.type, reference) }));
+                  setNotice("已从我的素材库选择素材");
+                }}
+                onMove={(index, offset) => updateValues(current => {
+                  const currentValue = current[field.key];
+                  const items = Array.isArray(currentValue) ? currentValue : currentValue === undefined || currentValue === null || currentValue === "" ? [] : [currentValue];
+                  const target = index + offset;
+                  if (index < 0 || index >= items.length || target < 0 || target >= items.length) return current;
+                  const next = [...items];
+                  [next[index], next[target]] = [next[target], next[index]];
+                  return { ...current, [field.key]: next };
+                })}
                 onRemove={index => updateValues(current => {
                   const currentValue = current[field.key];
                   const items = Array.isArray(currentValue) ? currentValue : currentValue === undefined || currentValue === null || currentValue === "" ? [] : [currentValue];
@@ -504,11 +507,13 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
                 })}
                 onClear={() => updateValues(current => ({ ...current, [field.key]: "" }))}
               />
-            </div> : <label key={field.key}>{field.label}{field.required && <span> *</span>}
+            </div> : <label key={field.key} onBlur={handleDraftFieldBlur}>{field.label}{field.required && <span> *</span>}
+              {field.type === "number" && <small className="access-muted">{field.minimum !== undefined || field.maximum !== undefined ? `范围：${field.minimum ?? "不限"}–${field.maximum ?? "不限"}` : "数字输入"}{!field.required ? " · 可不填" : ""}</small>}
               {field.type === "boolean" ? <input type="checkbox" disabled={lockedForm} checked={values[field.key] === true} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.checked }))} />
                 : field.type === "select" ? <select className="text-input" disabled={lockedForm} value={String(values[field.key] ?? "")} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))}>
                   <option value="">请选择</option>{field.options?.map(option => <option key={option}>{option}</option>)}
-                </select> : <textarea className="text-input" rows={3} disabled={lockedForm} value={typeof values[field.key] === "string" ? values[field.key] as string
+                </select> : field.type === "number" ? <input className="text-input" type="number" step="any" min={field.minimum} max={field.maximum} disabled={lockedForm} value={values[field.key] === undefined || values[field.key] === null ? "" : String(values[field.key])} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))} placeholder={field.placeholder} />
+                : <textarea className="text-input" rows={3} disabled={lockedForm} value={typeof values[field.key] === "string" ? values[field.key] as string
                   : values[field.key] === undefined || values[field.key] === null ? "" : field.type === "json" ? JSON.stringify(values[field.key], null, 2) : String(values[field.key])}
                   placeholder={field.placeholder} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))} />}
             </label>)}
@@ -516,7 +521,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
               <button className="button button-outline" type="submit" disabled={lockedForm}>保存我的草稿</button>
               <button className="button button-dark" type="button" disabled={lockedForm || !!pendingRun} onClick={() => void submit()}>{busy ? "处理中…" : "提交任务"}</button>
               <small>草稿 {draftId} · r{draftRevision}</small>
-              <small className="access-muted" role="status" aria-live="polite">{draftAutoSaveStatus === "pending" ? "输入已修改，等待自动保存" : draftAutoSaveStatus === "saving" ? "正在自动保存到服务端…" : draftAutoSaveStatus === "saved" ? "已自动保存到服务端" : draftAutoSaveStatus === "error" ? "自动保存未完成；修正输入后会重试" : draftAutoSaveStatus === "reconcile" ? "保存回执待核对" : draftAutoSaveStatus === "review" ? "服务端内容已变化，请核对后手动保存" : ""}</small>
+              <small className="access-muted" role="status" aria-live="polite">{draftAutoSaveStatus === "pending" ? "输入已修改，失焦后自动保存" : draftAutoSaveStatus === "saving" ? "正在自动保存到服务端…" : draftAutoSaveStatus === "saved" ? "已自动保存到服务端" : draftAutoSaveStatus === "error" ? "自动保存未完成；修正输入后会重试" : draftAutoSaveStatus === "reconcile" ? "保存回执待核对" : draftAutoSaveStatus === "review" ? "服务端内容已变化，请核对后手动保存" : ""}</small>
             </div>
             {draftUnknown && <button type="button" className="button button-outline" onClick={() => void attempt(reconcileDraft)}>读取原草稿ID对账</button>}
             <p className="access-muted">配置、保存草稿和预检不会调用模型。提交及后续审核可能产生费用。</p>

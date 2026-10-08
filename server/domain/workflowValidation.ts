@@ -55,7 +55,32 @@ export function validateWorkflowShape(value: Record<string, unknown>) {
       if (keys.has(String(field.key))) invalid(`${label}重复键`);
       keys.add(String(field.key));
       if (field.options !== undefined && list(field.options, "字段选项").some((option) => typeof option !== "string")) invalid("字段选项");
+      if ((field.minimum !== undefined || field.maximum !== undefined) && (output || field.type !== "number")) invalid("数字输入范围类型");
+      if (field.minimum !== undefined && (typeof field.minimum !== "number" || !Number.isFinite(field.minimum))) invalid("数字最小值");
+      if (field.maximum !== undefined && (typeof field.maximum !== "number" || !Number.isFinite(field.maximum))) invalid("数字最大值");
+      if (typeof field.minimum === "number" && typeof field.maximum === "number" && field.minimum > field.maximum) invalid("数字最小值不能大于最大值");
       if (field.required !== undefined && typeof field.required !== "boolean") invalid("必填配置");
+      if (field.hidden !== undefined && typeof field.hidden !== "boolean") invalid("输入表单隐藏配置");
+      if (field.inputMode !== undefined || field.itemFields !== undefined) {
+        if (output || field.type !== "json" || field.inputMode !== "object_array") invalid("对象数组表单配置");
+        const itemFields = list(field.itemFields, "对象数组子字段");
+        if (!itemFields.length || itemFields.length > 50) invalid("对象数组子字段");
+        const itemKeys = new Set<string>();
+        for (const rawItem of itemFields) {
+          const item = record(rawItem, "对象数组子字段");
+          text(item.key, "对象数组子字段键"); text(item.label, "对象数组子字段名称");
+          if (itemKeys.has(String(item.key))) invalid("对象数组子字段重复键");
+          itemKeys.add(String(item.key));
+          if (!["text", "number", "boolean", "select"].includes(String(item.type))) invalid("对象数组子字段类型");
+          if ((item.minimum !== undefined || item.maximum !== undefined) && item.type !== "number") invalid("对象数组数字范围类型");
+          if (item.minimum !== undefined && (typeof item.minimum !== "number" || !Number.isFinite(item.minimum))) invalid("对象数组数字最小值");
+          if (item.maximum !== undefined && (typeof item.maximum !== "number" || !Number.isFinite(item.maximum))) invalid("对象数组数字最大值");
+          if (typeof item.minimum === "number" && typeof item.maximum === "number" && item.minimum > item.maximum) invalid("对象数组数字最小值不能大于最大值");
+          if (typeof item.required !== "boolean") invalid("对象数组子字段必填配置");
+          if (item.type === "select" && (!Array.isArray(item.options) || item.options.length === 0 || item.options.some(option => typeof option !== "string" || !option.trim()))) invalid("对象数组下拉选项");
+          if (item.options !== undefined && (!Array.isArray(item.options) || item.options.some(option => typeof option !== "string"))) invalid("对象数组字段选项");
+        }
+      }
       if (output) text(field.sourceRef, "最终输出来源");
       selection(field.selection);
     }

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { AssetSource } from "../../server/domain/productionContracts";
 import type { JsonValue } from "../types";
-import { runOutputMediaItems } from "../lib/runMedia";
+import { isRunMediaRecord, runOutputMediaItems } from "../lib/runMedia";
 import { ProtectedMediaPreview, type UserMediaKind } from "./UserMediaInput";
 
 const keyLabels: Record<string, string> = {
@@ -28,11 +28,22 @@ function isMediaType(type?: string) {
   return /^(image|video|audio)(_list)?$/.test(type ?? "");
 }
 
+function isProtectedMediaUrl(url: string) {
+  if (url.startsWith("/api/")) return true;
+  if (typeof window === "undefined") return false;
+  try {
+    const parsed = new URL(url, window.location.href);
+    return parsed.origin === window.location.origin && parsed.pathname.startsWith("/api/");
+  } catch {
+    return false;
+  }
+}
+
 function MediaValue({ value, type, source, mediaUserId }: { value: unknown; type?: string; source?: Omit<AssetSource, "mediaIndex">; mediaUserId?: string }): ReactNode {
   const media = runOutputMediaItems(value as JsonValue, isMediaType(type) ? type : undefined, source);
   if (!media.length) return isMediaType(type) ? <span className="run-value-empty">暂无可预览媒体</span> : null;
   return <div className="run-value-media">{media.map((item, index) => <figure key={`${item.url}:${item.mediaIndex}:${index}`}>
-    {mediaUserId ? <ProtectedMediaPreview url={item.url} kind={(item.isVideo ? "video" : item.isAudio ? "audio" : "image") as UserMediaKind} userId={mediaUserId} label={item.filename || `${item.isVideo ? "视频" : item.isAudio ? "音频" : "图片"} ${index + 1}`} />
+    {mediaUserId && isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(item.isVideo ? "video" : item.isAudio ? "audio" : "image") as UserMediaKind} userId={mediaUserId} label={item.filename || `${item.isVideo ? "视频" : item.isAudio ? "音频" : "图片"} ${index + 1}`} />
       : item.isVideo ? <video src={item.url} controls preload="metadata" aria-label={item.filename || `视频 ${index + 1}`} /> : item.isAudio ? <audio src={item.url} controls preload="metadata" aria-label={item.filename || `音频 ${index + 1}`} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename || `图片 ${index + 1}`} loading="lazy" /></a>}
     {item.filename && <figcaption>{item.filename}</figcaption>}
   </figure>)}</div>;
@@ -47,19 +58,22 @@ function scalar(value: unknown): ReactNode {
   return String(value);
 }
 
-function ValueNode({ value, depth = 0 }: { value: unknown; depth?: number }): ReactNode {
+function ValueNode({ value, depth = 0, source, mediaUserId }: { value: unknown; depth?: number; source?: Omit<AssetSource, "mediaIndex">; mediaUserId?: string }): ReactNode {
+  if (isRunMediaRecord(value as JsonValue) || (typeof value === "string" && runOutputMediaItems(value, undefined, source).length > 0)) {
+    return <MediaValue value={value as JsonValue} source={source} mediaUserId={mediaUserId} />;
+  }
   if (Array.isArray(value)) {
     if (!value.length) return <span className="run-value-empty">暂无项目</span>;
     return <div className="run-value-array">
       <small className="run-value-count">共 {value.length} 项</small>
-      <ol>{value.map((item, index) => <li key={index}><ValueNode value={item} depth={depth + 1} /></li>)}</ol>
+      <ol>{value.map((item, index) => <li key={index}><ValueNode value={item} depth={depth + 1} source={source} mediaUserId={mediaUserId} /></li>)}</ol>
     </div>;
   }
   if (value && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
     if (!entries.length) return <span className="run-value-empty">暂无字段</span>;
     return <dl className={`run-value-object${depth ? " nested" : ""}`}>
-      {entries.map(([key, item]) => <div key={key}><dt>{labelForKey(key)}</dt><dd><ValueNode value={item} depth={depth + 1} /></dd></div>)}
+      {entries.map(([key, item]) => <div key={key}><dt>{labelForKey(key)}</dt><dd><ValueNode value={item} depth={depth + 1} source={source} mediaUserId={mediaUserId} /></dd></div>)}
     </dl>;
   }
   return scalar(value);
@@ -68,7 +82,6 @@ function ValueNode({ value, depth = 0 }: { value: unknown; depth?: number }): Re
 /** Render structured run data as labeled fields and lists instead of a JSON dump. */
 export default function RunValueView({ value, type, source, mediaUserId, className = "" }: { value: unknown; type?: string; source?: Omit<AssetSource, "mediaIndex">; mediaUserId?: string; className?: string }) {
   const parsed = parseJsonString(value, type);
-  const media = (isMediaType(type) || (parsed !== null && typeof parsed === "object")) && <MediaValue value={parsed} type={type} source={source} mediaUserId={mediaUserId} />;
-  if (media && (isMediaType(type) || runOutputMediaItems(parsed as JsonValue, undefined, source).length)) return <div className={`run-value-view${className ? ` ${className}` : ""}`}>{media}</div>;
-  return <div className={`run-value-view${className ? ` ${className}` : ""}`}><ValueNode value={parsed} /></div>;
+  if (isMediaType(type)) return <div className={`run-value-view${className ? ` ${className}` : ""}`}><MediaValue value={parsed as JsonValue} type={type} source={source} mediaUserId={mediaUserId} /></div>;
+  return <div className={`run-value-view${className ? ` ${className}` : ""}`}><ValueNode value={parsed} source={source} mediaUserId={mediaUserId} /></div>;
 }

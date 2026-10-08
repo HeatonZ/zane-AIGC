@@ -4,6 +4,7 @@ export interface ResultOutput {
   key: string;
   label: string;
   type: string;
+  source?: { runId: string; stepId?: string; itemIndex?: number; outputKey: string };
   value?: unknown;
   valueOmitted?: boolean;
   omissionReason?: string;
@@ -14,7 +15,7 @@ export interface ResultOutput {
 export interface ResultPage {
   warnings?: string[];
   outputs?: ResultOutput[];
-  items?: Array<{ index: number; status: string; error?: string; warnings?: string[]; outputs: ResultOutput[] }>;
+  items?: Array<{ index: number; status: string; startedAt?: string; durationMs?: number; error?: string; warnings?: string[]; outputs: ResultOutput[] }>;
   itemCount?: number;
   hasMore: boolean;
   revision?: string;

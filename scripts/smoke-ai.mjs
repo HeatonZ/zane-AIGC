@@ -190,7 +190,7 @@ try {
   const qwenPackage = JSON.parse(await readFile(path.join(root, "examples/scenes/image-to-image-qwen21.json"), "utf8"));
   const qwenSceneId = "qwen-image-dialect-smoke";
   // Start from the previously-published two-step/eight-field configuration.
-  // The MCP edit must really remove legacy fields, not merely rename five unchanged inputs.
+  // The MCP edit must remove legacy workflow fields and a seed binding that is now randomized in ComfyUI.
   const legacyGenerator = structuredClone(qwenPackage.workflow.steps[2]);
   legacyGenerator.inputs.push(
     { key: "negative_prompt", label: "反向提示词", sourceRef: "input.negative_prompt" },
@@ -215,7 +215,11 @@ try {
   const previousQwenVersionId = randomUUID();
   await call("publish_scene", { sceneId: qwenSceneId, revision: qwenCreated.revision, publicationId: previousQwenVersionId });
   const qwenBefore = await call("get_scene_draft", { sceneId: qwenSceneId });
-  const qwenWorkflow = { ...structuredClone(qwenPackage.workflow), sceneId: qwenSceneId };
+  const qwenWorkflow = structuredClone(qwenPackage.workflow);
+  qwenWorkflow.sceneId = qwenSceneId;
+  qwenWorkflow.inputs = qwenWorkflow.inputs.filter(input => input.key !== "seed");
+  qwenWorkflow.steps[2].inputs = qwenWorkflow.steps[2].inputs.filter(input => input.key !== "seed");
+  qwenWorkflow.steps[2].comfyui.bindings = qwenWorkflow.steps[2].comfyui.bindings.filter(binding => binding.key !== "seed");
   const invalidQwen = structuredClone(qwenWorkflow); invalidQwen.steps[0].hermesProfile = 21;
   assert.equal((await client.callTool({ name: "update_scene_draft", arguments: { sceneId: qwenSceneId, revision: qwenBefore.revision, workflow: invalidQwen } })).isError, true);
   assert.equal((await call("get_scene_draft", { sceneId: qwenSceneId })).revision, qwenBefore.revision);
@@ -231,7 +235,7 @@ try {
   assert.equal(qwenBefore.workflow.inputs.length, 8);
   assert.deepEqual(qwenSaved.workflow.inputs, qwenWorkflow.inputs);
   assert.ok(!JSON.stringify(qwenSaved.workflow).match(/input\.(negative_prompt|steps|empty)\b/));
-  assert.deepEqual(qwenSaved.workflow.inputs.map(field => field.key), ["reference_images", "prompt", "seed", "ratio", "mp"]);
+  assert.deepEqual(qwenSaved.workflow.inputs.map(field => field.key), ["reference_images", "prompt", "ratio", "mp"]);
   assert.equal(qwenSaved.workflow.steps[2].inputs.find(input => input.key === "prompt").sourceRef, QWEN_IMAGE_21_PROMPT_REF);
   assert.equal(qwenSaved.workflow.steps[2].comfyui.bindings.find(binding => binding.key === "prompt").sourceRef, QWEN_IMAGE_21_PROMPT_REF);
   assert.equal(qwenSaved.publishedVersionId, previousQwenVersionId);
@@ -253,30 +257,27 @@ try {
   assert.equal(publishedQwen.versionId, qwenVersionId); assert.equal(publishedQwen.workflow.steps[0].capabilityId, "core.hermes");
   assert.equal(publishedQwen.workflow.steps[1].capabilityId, "core.hermes");
   assert.equal(publishedQwen.workflow.steps[2].capabilityId, "core.comfyui");
-  assert.deepEqual(Object.keys(publishedQwen.inputSchema.properties), ["reference_images", "prompt", "seed", "ratio", "mp"]);
+  assert.deepEqual(Object.keys(publishedQwen.inputSchema.properties), ["reference_images", "prompt", "ratio", "mp"]);
   assert.equal(publishedQwen.inputSchema.properties.prompt.title, "想法");
   assert.equal(publishedQwen.inputDefaults.ratio, "1:1 (Square)"); assert.equal(publishedQwen.inputDefaults.mp, 1);
-  const qwenInputs = { reference_images: ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="], prompt: "只改背景", seed: 20261005, ratio: "9:16 (Portrait Widescreen)", mp: 1 };
-  const qwenPrepared = await call("prepare_scene", { sceneId: qwenSceneId, versionId: qwenVersionId, inputValues: qwenInputs });
-  assert.equal(qwenPrepared.valid, true); assert.equal(qwenPrepared.inputValues.seed, qwenInputs.seed);
+  const qwenInputs = { reference_images: ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="], prompt: "只改背景", ratio: "9:16 (Portrait Widescreen)", mp: 1 };
+  const qwenExtraInputs = { ...qwenInputs, seed: 20261005, steps: 25, negative_prompt: "多余输入", empty: true };
+  const qwenPrepared = await call("prepare_scene", { sceneId: qwenSceneId, versionId: qwenVersionId, inputValues: qwenExtraInputs });
+  assert.equal(qwenPrepared.valid, true); assert.deepEqual(qwenPrepared.inputValues, qwenExtraInputs);
   assert.equal(qwenPrepared.inputValues.ratio, qwenInputs.ratio); assert.equal(qwenPrepared.inputValues.mp, qwenInputs.mp);
   for (const [inputValues, code] of [
     [{ ...qwenInputs, reference_images: [] }, "REQUIRED_INPUT_MISSING"],
     [{ ...qwenInputs, prompt: "" }, "REQUIRED_INPUT_MISSING"],
-    [{ ...qwenInputs, seed: "不是数字" }, "INPUT_TYPE_MISMATCH"],
     [{ ...qwenInputs, mp: "1MP" }, "INPUT_TYPE_MISMATCH"],
     [{ ...qwenInputs, ratio: "无效画幅" }, "INVALID_INPUT_OPTION"],
-    [{ ...qwenInputs, steps: 25 }, "UNKNOWN_SCENE_INPUT"],
-    [{ ...qwenInputs, negative_prompt: "多余输入" }, "UNKNOWN_SCENE_INPUT"],
-    [{ ...qwenInputs, empty: true }, "UNKNOWN_SCENE_INPUT"],
   ]) {
     const invalid = await client.callTool({ name: "prepare_scene", arguments: { sceneId: qwenSceneId, versionId: qwenVersionId, inputValues } });
     assert.equal(invalid.isError, true); assert.equal(invalid.structuredContent.error.code, code);
   }
-  // A later draft may gain a field; the already-published five-field contract is immutable.
+  // A later draft may gain a field; the already-published four-field contract is immutable.
   const fixedDraft = await call("get_scene_draft", { sceneId: qwenSceneId });
   await call("update_scene_draft", { sceneId: qwenSceneId, revision: fixedDraft.revision, workflow: { ...fixedDraft.workflow, inputs: [...fixedDraft.workflow.inputs, { key: "draft_only", label: "仅草稿", type: "text", required: false }] } });
-  assert.deepEqual(Object.keys((await call("get_scene", { sceneId: qwenSceneId, versionId: qwenVersionId })).inputSchema.properties), ["reference_images", "prompt", "seed", "ratio", "mp"]);
+  assert.deepEqual(Object.keys((await call("get_scene", { sceneId: qwenSceneId, versionId: qwenVersionId })).inputSchema.properties), ["reference_images", "prompt", "ratio", "mp"]);
   assert.equal((await client.callTool({ name: "list_scenes", arguments: { cursor: qwenPage.nextCursor } })).structuredContent.error.code, "SCENE_PAGE_CHANGED");
   const qwenCurrent = await call("get_scene_draft", { sceneId: qwenSceneId });
   const qwenConcurrent = await Promise.all(["A", "B"].map(suffix => fetch(base + "/api/v1/scenes/" + qwenSceneId + "/draft", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: qwenCurrent.revision, scene: { ...qwenCurrent.scene, summary: "并发方言配置" + suffix } }) })));
@@ -288,7 +289,7 @@ try {
   assert.deepEqual((await call("get_scene", { sceneId: qwenSceneId, versionId: previousQwenVersionId })).workflow, oldQwen.workflow);
   assert.equal((await call("list_runs", { sceneId: qwenSceneId })).runs.length, 0);
   await call("delete_scene", { sceneId: qwenSceneId, revision: qwenFinal.revision });
-  console.log("Qwen Image 2.1 Writer MCP acceptance passed: five input fields + writer-to-aixg references + ordered references + shared HTTP draft + validation + stale/concurrent revision + lost receipts + fixed publication + pagination; no models called.");
+  console.log("Qwen Image 2.1 Writer MCP acceptance passed: four declared fields + passthrough seed/extra inputs + writer-to-aixg references + ordered references + shared HTTP draft + validation + stale/concurrent revision + lost receipts + fixed publication + pagination; no models called.");
   // New media-role fields cross real stdio MCP into the same authoritative scene service.
   const longPackage = JSON.parse(await readFile(path.join(root, "examples/scenes/long-text-to-video.json"), "utf8"));
   const longId = longPackage.scene.id;
@@ -330,6 +331,37 @@ try {
   assert.equal((await call("list_runs", { sceneId: longId })).runs.length, 0);
   await call("delete_scene", { sceneId: longId, revision: longFinal.revision });
   console.log("Categorized asset + long-video MCP acceptance passed: shared create/read/update + role validation + Writer-to-AIXG prompts + stale/concurrent revision + lost write/publication receipts + pagination + immutable published input roles; no models called.");
+  // Repeatable object-array form metadata crosses real stdio MCP into the shared HTTP service.
+  const objectArraySceneId = "ai-object-array-form-smoke";
+  const objectArrayWorkflow = { sceneId: objectArraySceneId, name: "规格表单", inputs: [{ key: "specs", label: "规格数组", type: "json", required: true, inputMode: "object_array", itemFields: [
+    { key: "size", label: "尺寸", type: "select", required: true, options: ["S", "M", "L"] },
+    { key: "type", label: "类型", type: "select", required: true, options: ["圆领", "V领"] },
+    { key: "stock", label: "库存", type: "number", required: false },
+  ] }], steps: [], outputs: [] };
+  const objectArrayCreated = await call("create_scene", { scene: { id: objectArraySceneId, title: "对象数组表单" }, workflow: objectArrayWorkflow });
+  assert.equal((await call("validate_scene_draft", { sceneId: objectArraySceneId, revision: objectArrayCreated.revision })).valid, true);
+  const objectArrayPublicationId = randomUUID();
+  const objectArrayPublication = await call("publish_scene", { sceneId: objectArraySceneId, revision: objectArrayCreated.revision, publicationId: objectArrayPublicationId });
+  const objectArrayScene = await call("get_scene", { sceneId: objectArraySceneId, versionId: objectArrayPublicationId });
+  const objectArraySchema = objectArrayScene.inputSchema.properties.specs;
+  assert.equal(objectArraySchema["x-input-mode"], "object_array");
+  assert.deepEqual(objectArraySchema.items.required, ["size", "type"]);
+  assert.deepEqual(objectArrayScene.inputRequirements.find(field => field.key === "specs").itemFields.map(field => field.key), ["size", "type", "stock"]);
+  const objectArrayValues = { specs: [{ size: "S", type: "圆领", stock: 12 }, { size: "M", type: "V领" }] };
+  const objectArrayPrepared = await call("prepare_scene", { sceneId: objectArraySceneId, versionId: objectArrayPublicationId, inputValues: objectArrayValues });
+  assert.deepEqual(objectArrayPrepared.inputValues.specs, objectArrayValues.specs);
+  for (const [inputValues, code] of [
+    [{ specs: [{ size: "XL", type: "圆领" }] }, "INVALID_INPUT_OPTION"],
+    [{ specs: [{ size: "S" }] }, "REQUIRED_INPUT_MISSING"],
+    [{ specs: [{ size: "S", type: "圆领", unexpected: true }] }, "INPUT_TYPE_MISMATCH"],
+  ]) {
+    const invalid = await client.callTool({ name: "prepare_scene", arguments: { sceneId: objectArraySceneId, versionId: objectArrayPublicationId, inputValues } });
+    assert.equal(invalid.structuredContent.error.code, code);
+  }
+  assert.equal(objectArrayPublication.versionId, objectArrayPublicationId);
+  const objectArrayFinalDraft = await call("get_scene_draft", { sceneId: objectArraySceneId });
+  await call("delete_scene", { sceneId: objectArraySceneId, revision: objectArrayFinalDraft.revision });
+  console.log("Object-array scene input MCP acceptance passed: row field schema + immutable publication + typed preparation + required/option/unknown-field validation; no models called.");
   // The installation doctor itself is also exercised against this isolated backend.
   let doctorLog = ""; doctor = spawn(process.execPath, [path.join(root, "scripts/check-ai-access.mjs")], { cwd: root, windowsHide: true, env: { ...process.env, ZANE_BASE_URL: base }, stdio: ["ignore", "pipe", "pipe"] }); doctor.stdout.on("data", chunk => { doctorLog += chunk; }); doctor.stderr.on("data", chunk => { doctorLog += chunk; });
   doctorExited = new Promise((resolve, reject) => { doctor.once("error", reject); doctor.once("exit", resolve); });

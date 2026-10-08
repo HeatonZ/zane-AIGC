@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Activity, AlertCircle, Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, ClipboardCheck, Copy, Download, FileText, Layers3, LoaderCircle, PackageOpen, RefreshCw, RotateCcw, Square } from "lucide-react";
 import { accessApi, accessMedia, type OwnRun } from "../lib/accessApi";
 import { resultPath, mergeResultPage, type ResultContext, type ResultOutput, type ResultPage } from "../lib/userPortal";
-import { activityLabel, mergeResultSlice, previousValueOffset, runDate, runStatusLabels } from "../lib/runDetails";
+import { activityLabel, mergeResultSlice, previousValueOffset, runDate, runStatusLabels, stepDurationLabel } from "../lib/runDetails";
 import RunOverview from "./RunOverview";
 import RunValueView from "./RunValueView";
 
@@ -62,7 +62,7 @@ function OutputCard({ output, onSlice, busy, userId }: { output: ResultOutput; o
         return /video/.test(output.type) ? <figure key={item.url}><video src={item.url} controls preload="metadata" aria-label={output.label + " " + number} /><figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
           : /audio/.test(output.type) ? <figure key={item.url}><audio src={item.url} controls preload="metadata" aria-label={output.label} /><figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
             : <OutputImage key={item.url} url={item.url} alt={output.label + " " + number} userId={userId} number={number} />;
-      })}</div> : <RunValueView value={output.value} type={output.type} mediaUserId={userId} className={`business-value ${output.type === "text" ? "text" : ""}`} />}
+      })}</div> : <RunValueView value={output.value} type={output.type} source={output.source} mediaUserId={userId} className={`business-value ${output.type === "text" ? "text" : ""}`} />}
     {segmented && <footer className="run-value-pager"><span>{output.valuePage.kind === "string" ? "字符" : "项"} {offset + 1}–{offset + (output.valuePage.count ?? size)} / {output.valuePage.total}{output.valueOmitted ? "（未读取）" : ""}</span>
       <button className="run-icon-button" disabled={busy || offset === 0} onClick={() => onSlice(previousValueOffset(output.valuePage, size))}><ChevronLeft size={14} />上一段</button>
       <button className="run-icon-button" disabled={busy || !output.valuePage.hasMore || output.valueOmitted} onClick={() => onSlice(output.valuePage.nextValueOffset!)}>下一段<ChevronRight size={14} /></button></footer>}
@@ -82,8 +82,16 @@ export default function UserRunDetail({ run, userId, busy, submissionPending, on
   const [activity, setActivity] = useState<ActivityPage>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(Date.now);
   const sequence = useRef(0);
   const alive = useRef(true);
+  const liveRun = ["running", "cancelling"].includes(run.status);
+  const hasRunningSteps = liveRun && run.steps.some(item => item.status === "running");
+  useEffect(() => {
+    if (!hasRunningSteps) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasRunningSteps]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++; }; }, []);
   const step = run.steps.find(item => item.stepId === selectedStep);
   const runPath = "/api/v1/self/runs/" + encodeURIComponent(run.runId);
@@ -163,15 +171,15 @@ export default function UserRunDetail({ run, userId, busy, submissionPending, on
       <button className={!selectedStep ? "active final-result" : "final-result"} onClick={() => select()}><PackageOpen size={19} /><span><strong>最终结果</strong><small>{run.outputCount} / {run.expectedOutputCount} 个输出字段</small></span></button>
       <h3>执行步骤 <span>{run.steps.length}</span></h3><ol>{run.steps.map(item => <li key={item.stepId}><button className={selectedStep === item.stepId ? "active" : ""} onClick={() => select(item.stepId)} aria-current={selectedStep === item.stepId ? "step" : undefined}>
         <span className={`business-step-marker ${item.status}`}>{item.status === "completed" ? <CheckCircle2 size={17} /> : item.status === "running" ? <LoaderCircle size={17} className="spin" /> : item.status === "failed" ? <AlertCircle size={17} /> : <Circle size={17} />}</span>
-        <span><strong>{item.order + 1}. {item.name}</strong><small>{item.reviewStatus === "pending" ? "等待确认" : runStatusLabels[item.status]}{item.reused ? " · 复用结果" : ""}{item.replaced ? " · 已替换" : ""}{item.warningCount ? ` · ⚠ ${item.warningCount} 条提示` : ""}</small>{item.itemProgress && <small>{item.itemProgress.completed} 完成 / {item.itemProgress.total} 项{item.itemProgress.failed ? ` · ${item.itemProgress.failed} 失败` : ""}</small>}</span>
+        <span><strong>{item.order + 1}. {item.name}</strong><small>{item.reviewStatus === "pending" ? "等待确认" : runStatusLabels[item.status]}{item.reused ? " · 复用结果" : ""}{item.replaced ? " · 已替换" : ""}{item.warningCount ? ` · ⚠ ${item.warningCount} 条提示` : ""}</small><small>用时 {stepDurationLabel(item, now, liveRun)}</small>{item.itemProgress && <small>{item.itemProgress.completed} 完成 / {item.itemProgress.total} 项{item.itemProgress.failed ? ` · ${item.itemProgress.failed} 失败` : ""}</small>}</span>
       </button></li>)}</ol></aside><section className="business-result-pane" aria-label="当前结果">
         <header className="result-pane-heading"><div><span className="run-eyebrow">{step ? "STEP RESULT" : "FINAL OUTPUT"}</span><h3>{step?.name || "最终结果"}</h3></div><span className={`business-status ${step?.status ?? run.status}`}>{runStatusLabels[step?.status ?? run.status]}</span></header>
-        {step && <p className="access-muted">{step.inputCount} 个输入 · {step.outputCount} / {step.expectedOutputCount} 个输出{step.reviewStatus === "pending" ? " · 当前结果等待确认" : ""}</p>}
+        {step && <p className="access-muted">用时 {stepDurationLabel(step, now, liveRun)} · {step.inputCount} 个输入 · {step.outputCount} / {step.expectedOutputCount} 个输出{step.reviewStatus === "pending" ? " · 当前结果等待确认" : ""}</p>}
         {!results?.outputs?.length && !results?.items?.length && !loading && <div className="run-empty-state"><PackageOpen size={32} /><strong>{step?.status === "pending" ? "此步骤尚未执行" : "当前没有可展示的结果"}</strong><p>{step?.status === "skipped" ? "流程根据条件跳过了此步骤，不会产生输出。" : selectedStep ? "步骤完成并保存结果后将在这里展示。" : run.status === "completed" ? "此流程没有保存最终输出，可查看各步骤的中间结果。" : "最终结果尚未生成，可以先查看左侧已完成步骤。"}</p></div>}
         <RunWarnings warnings={results?.warnings} />
         {["completed", "failed", "cancelled", "stale"].includes(run.status) && results?.outputs?.filter(output => /^(image|video|audio)(_list)?$/.test(output.type) && (output.valuePage.total ?? 0) > 0).map(output => <RunMediaDownloadButton key={output.key} runId={run.runId} outputKey={output.key} stepId={selectedStep} own userId={userId} />)}
         {results?.outputs?.map(output => <OutputCard key={output.key} output={output} busy={loading} userId={userId} onSlice={(offset, narrow) => readOutput(output, undefined, offset, narrow)} />)}
-        {!!results?.items?.length && <div className="business-iterations"><h4>逐项结果 <span>共 {results.itemCount ?? results.items.length} 项</span></h4>{results.items.map(item => <details key={item.index} open={item.status === "failed" || results.items!.length < 4}><summary><span>第 {item.index + 1} 项{item.warnings?.length ? ` · ⚠ ${item.warnings.length} 条提示` : ""}</span><span className={`business-status ${item.status}`}>{runStatusLabels[item.status]}</span><ChevronRight size={15} /></summary>{item.error && <p className="access-error">{item.error}</p>}<RunWarnings warnings={item.warnings} />{item.outputs.map(output => <OutputCard key={output.key} output={output} busy={loading} userId={userId} onSlice={(offset, narrow) => readOutput(output, item.index, offset, narrow)} />)}{!item.outputs.length && <p className="access-muted">此项尚无结果。</p>}</details>)}</div>}
+        {!!results?.items?.length && <div className="business-iterations"><h4>逐项结果 <span>共 {results.itemCount ?? results.items.length} 项</span></h4>{results.items.map(item => <details key={item.index} open={item.status === "failed" || results.items!.length < 4}><summary><span>第 {item.index + 1} 项{item.warnings?.length ? ` · ⚠ ${item.warnings.length} 条提示` : ""} · 用时 {stepDurationLabel(item, now, liveRun)}</span><span className={`business-status ${item.status}`}>{runStatusLabels[item.status]}</span><ChevronRight size={15} /></summary>{item.error && <p className="access-error">{item.error}</p>}<RunWarnings warnings={item.warnings} />{item.outputs.map(output => <OutputCard key={output.key} output={output} busy={loading} userId={userId} onSlice={(offset, narrow) => readOutput(output, item.index, offset, narrow)} />)}{!item.outputs.length && <p className="access-muted">此项尚无结果。</p>}</details>)}</div>}
         {results?.nextCursor && <button className="button button-outline run-load-more" disabled={loading} onClick={() => void read("results", { cursor: results.nextCursor })}>加载更多{selectedStep ? "逐项结果" : "输出"}<ChevronRight size={14} /></button>}
       </section></div>}
     {tab === "inputs" && <section className="business-inputs"><div className="run-section-intro"><h3>本次任务的原始输入</h3><p>固定在创建任务时的快照，不受场景后续修改影响。媒体显示固定素材引用，不展示服务器路径。</p></div>{inputs?.inputs.map(inputCard)}{inputs && !inputs.inputs.length && <p className="run-empty-state">此流程没有输入字段。</p>}{inputs?.nextCursor && <button className="button button-outline" disabled={loading} onClick={() => void read("inputs", { cursor: inputs.nextCursor })}>加载更多输入字段</button>}

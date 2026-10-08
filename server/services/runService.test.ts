@@ -13,6 +13,13 @@ import { RunService } from "./runService.js";
 import { ExecutorRegistry } from "../execution/executorRegistry.js";
 import { HttpError } from "../errors.js";
 
+function assertStepTiming(step: { status: string; startedAt?: string; finishedAt?: string; durationMs?: number }, status: string) {
+  assert.equal(step.status, status);
+  assert.ok(step.startedAt && Number.isFinite(Date.parse(step.startedAt)), "应保存实际开始时间");
+  assert.ok(step.finishedAt && Number.isFinite(Date.parse(step.finishedAt)), "结束步骤应保存实际结束时间");
+  assert.ok(Number.isFinite(step.durationMs) && step.durationMs! >= 0, "结束步骤应保存非负用时");
+}
+
 test("后台执行成功：事件与 JSON 归档在 wait 返回前完成", async (t) => {
   const { service, settings, store } = await harness(t);
   await service.start();
@@ -23,6 +30,11 @@ test("后台执行成功：事件与 JSON 归档在 wait 返回前完成", async
   assert.equal(result.outputs[0].value, "ok");
   assert.equal(JSON.parse(await readFile(result.artifacts.runtime, "utf8")).status, "completed");
   assert.equal(JSON.parse(await readFile(result.artifacts.output, "utf8")).status, "completed");
+  assertStepTiming(result.steps[0]!, "completed");
+  const persisted = store.getRun(settings.projectDirectory, run.runId)!;
+  assert.equal(persisted.steps[0]?.startedAt, result.steps[0]?.startedAt);
+  assert.equal(persisted.steps[0]?.finishedAt, result.steps[0]?.finishedAt);
+  assert.equal(persisted.steps[0]?.durationMs, result.steps[0]?.durationMs);
   const events = store.events(settings.projectDirectory, run.runId);
   assert.deepEqual(events.map((event) => event.sequence), events.map((_, index) => index + 1));
   assert.ok(events.some((event) => event.type === "step.completed"));
@@ -43,6 +55,8 @@ test("失败后断点续跑只调用未完成步骤", async (t) => {
   const failed = await service.wait(settings.projectDirectory, id("failure"));
   assert.equal(failed.status, "failed");
   assert.match(failed.error!, /模拟上游失败/);
+  assertStepTiming(failed.steps[0]!, "completed");
+  assertStepTiming(failed.steps[1]!, "failed");
   fail = false;
   await service.submit({ ...submission(id("continued"), definition), resumeFromRunId: id("failure") });
   const continued = await service.wait(settings.projectDirectory, id("continued"));
@@ -66,7 +80,9 @@ test("取消排队和执行中任务，不突破 worker 并发上限", async (t)
   assert.equal(service.metrics().active, 1);
   assert.equal((await service.cancel(settings.projectDirectory, id("pending"))).status, "cancelled");
   await service.cancel(settings.projectDirectory, id("active"));
-  assert.equal((await service.wait(settings.projectDirectory, id("active"))).status, "cancelled");
+  const cancelled = await service.wait(settings.projectDirectory, id("active"));
+  assert.equal(cancelled.status, "cancelled");
+  assertStepTiming(cancelled.steps[0]!, "cancelled");
   assert.equal((await service.getRun(settings.projectDirectory, id("pending")))?.status, "cancelled");
   assert.equal(calls, 1);
 });
@@ -136,6 +152,8 @@ test("逐项执行保留失败项并按 continue 聚合结果", async (t) => {
   await service.submit(submission(id("iteration"), definition, { items: [1, 2, 3] }));
   const result = await service.wait(settings.projectDirectory, id("iteration"));
   assert.deepEqual(result.steps[0].items?.map((item) => item.status), ["completed", "failed", "completed"]);
+  assertStepTiming(result.steps[0]!, "failed");
+  for (const item of result.steps[0]!.items!) assertStepTiming(item, item.status);
   assert.deepEqual(result.steps[0].outputs?.value, [1, null, 3]);
 
   failSecond = false;
