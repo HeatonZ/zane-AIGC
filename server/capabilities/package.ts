@@ -10,6 +10,8 @@ export interface CapabilityRuntime {
   hermes(context: StepExecutionContext): Promise<Record<string, JsonValue>>;
   condition(context: StepExecutionContext): Promise<Record<string, JsonValue>>;
   comfyui(context: StepExecutionContext, transform?: ComfyPromptTransform): Promise<Record<string, JsonValue>>;
+  /** Optional for package-only catalogs; the production runtime injects the guarded HTTPS transport. */
+  thirdPartyRequest?(context: StepExecutionContext): Promise<Record<string, JsonValue>>;
 }
 export interface ComfyPromptState { graph: Record<string, Record<string, unknown>>; workflow: unknown; context: StepExecutionContext; baseUrl: string; timeoutMs: number; request(route: string, init?: RequestInit, signal?: AbortSignal): Promise<unknown> }
 export type ComfyPromptTransform = (state: ComfyPromptState) => Promise<{ graph?: Record<string, Record<string, unknown>>; outputs?: Record<string, JsonValue> }>;

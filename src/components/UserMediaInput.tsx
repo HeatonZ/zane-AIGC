@@ -37,7 +37,19 @@ function mediaName(value: unknown, kind: UserMediaKind, index: number): string {
   return `已上传${kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"} ${index + 1}`;
 }
 
-export function ProtectedMediaPreview({ url, kind, userId, label }: { url?: string; kind: UserMediaKind; userId: string; label: string }) {
+/** Same-origin API media is private and cannot be used as a bare img/video/audio URL. */
+export function isProtectedMediaUrl(url: string) {
+  if (url.startsWith("/api/")) return true;
+  if (typeof window === "undefined") return false;
+  try {
+    const parsed = new URL(url, window.location.href);
+    return parsed.origin === window.location.origin && parsed.pathname.startsWith("/api/");
+  } catch {
+    return false;
+  }
+}
+
+export function ProtectedMediaPreview({ url, kind, userId, label }: { url?: string; kind: UserMediaKind; userId?: string; label: string }) {
   const [source, setSource] = useState("");
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -47,7 +59,7 @@ export function ProtectedMediaPreview({ url, kind, userId, label }: { url?: stri
     setSource("");
     setError("");
     if (url) {
-      void accessMedia(url, userId, controller.signal).then(blob => {
+      void accessMedia(url, userId || undefined, controller.signal).then(blob => {
         if (!blob.type.toLowerCase().startsWith(`${kind}/`)) throw new Error("返回内容不是可预览的媒体文件");
         if (controller.signal.aborted) return;
         objectUrl = URL.createObjectURL(blob);

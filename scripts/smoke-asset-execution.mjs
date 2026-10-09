@@ -134,6 +134,7 @@ try {
     source: "same_authorized_fixed_version_private_run_copy",
     hermes: "private_image_bytes_to_inline_data_url",
     comfyui: "private_image_bytes_to_upload_in_reference_order",
+    thirdPartyHttp: "current_run_private_image_bytes_to_multipart_in_reference_order_no_preview_fallback",
     hermesSizePolicy: "existing_inline_budget_may_resize_without_reselecting_asset_version",
   });
   const openapiResponse = await http("/api/v1/ai/openapi.json", adminToken); assert.equal(openapiResponse.status, 200);

@@ -17,7 +17,8 @@ import { changes, id, runId, runStatuses, scenePreparation, sceneSubmission, sou
 export { COMFY_STATIC_SWITCH_CONTRACT } from "../comfyuiStaticSwitches.js";
 export { COMFY_UI_ROUTING_CONTRACT } from "../comfyuiReroutes.js";
 export { HTTP_SECURITY_CONTRACT } from "../security/contracts.js";
-export const AI_CONTRACT_VERSION = "1.5.27";
+export { THIRD_PARTY_JSON_REQUEST_CONTRACT } from "../execution/thirdPartyJsonRequest.js";
+export const AI_CONTRACT_VERSION = "1.5.29";
 export interface AiOperation {
   name: string; path: string; method: "GET" | "POST" | "PATCH" | "DELETE"; description: string;
   schema: z.ZodObject; success: number; effect: "read" | "write" | "execute";
@@ -80,7 +81,7 @@ export const aiOperations: AiOperation[] = [
   self("create_own_token", "/api/v1/self/tokens", "POST", "保存tokenId后创建90天本人AI凭证；继承实时角色和场景授权。token明文只返回一次，立即安全保存；丢失回执先对账并显式吊销，不重放。", credentialCreate,"write",201),
   self("revoke_own_token", "/api/v1/self/tokens/{tokenId}/revoke", "POST", "用当前revision吊销本人凭证；不可吊销他人凭证。", credentialRevoke,"write"),
   self("get_workbench", "/api/v1/ai", "GET", "同时返回security契约版本、entryMode和登录限流策略；用户专用入口仅接受普通用户，拒绝管理路径/管理员凭证，429遵守Retry-After且不自动重放。首先读取工作台契约版本、当前身份与可用操作入口。管理员包含项目配置和worker管理摘要；普通用户仅就绪/接受状态，不返回项目路径或全局运行数量。不会执行外部生成。正式后台就绪后MCP可保留stdio连接并更新适配子进程；接到目录变化通知后重读此入口核对契约，不能重放写入。", empty),
-  operation("list_capabilities", "/api/v1/capabilities", "GET", "分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。", capabilityQuery),
+  operation("list_capabilities", "/api/v1/capabilities", "GET", "分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。core.http_request支持JSON或multipart授权图片上传、base64响应映射为images；服务端环境变量鉴权，配置不请求，固定发布后显式执行才可能计费，返回response/status及可选images，不自动重试。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。", capabilityQuery),
   operation("get_workspace_status", "/api/workspace/status", "GET", "轻量读取SQLite权威工作区revision、初始化状态与视图边界；与浏览器相同来源。revision变化后重读目录/对象，不能用本地缓存覆盖。不会发布或生成。", empty),
   operation("get_workspace", "/api/workspace", "GET", "读取权威工作区和 revision，包括草稿与发布版本。日常生产优先使用场景工具。", empty),
   operation("initialize_workspace", "/api/workspace/initialize", "POST", "仅在服务端尚无工作区时初始化；已有工作区返回 created:false，不覆盖。必须提供完整快照；空初始化使用空scenes/workflows/optionPresets/drafts/sceneVersions。网页不读取旧浏览器场景用于初始化；显式批量导入才传入已核对的业务数据。", workspace, "write"),

@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -6,6 +7,7 @@ import { writeFile } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { aiHarness } from "../testing/aiSupport.js";
+import { createThirdPartyJsonRequester } from "../execution/thirdPartyJsonRequest.js";
 import { id } from "../testing/testSupport.js";
 import { aiOperations } from "../ai/operations.js";
 import type { ApiResult } from "./httpClient.js";
@@ -93,4 +95,122 @@ test("真实stdio MCP：单场景创建编辑校验发布、输入契约和指�
   const page = (await call("list_option_presets", { q: "mcp-options" })).payload.data as any; assert.equal(page.presets[0].id, "mcp-options");
   assert.equal((await call("delete_option_preset", { presetId: "mcp-options", revision: page.presets[0].revision })).payload.ok, true);
   assert.equal(h.store.listRuns(h.settings.projectDirectory).runs.length, 1);
+});
+
+test("真实stdio MCP：第三方请求分页发现、固定发布、冲突保护和原ID对账", async t => {
+  const received: Array<{ url: string; method: string; authorization?: string; body: unknown }> = [];
+  const previousKey = process.env.TEST_MCP_IMAGE_KEY;
+  process.env.TEST_MCP_IMAGE_KEY = "mcp-only-fixture-key";
+  t.after(() => { if (previousKey === undefined) delete process.env.TEST_MCP_IMAGE_KEY; else process.env.TEST_MCP_IMAGE_KEY = previousKey; });
+  const h = await aiHarness(t, { thirdPartyRequest: createThirdPartyJsonRequester({
+    async resolve() { return [{ address: "93.184.216.34", family: 4 }]; },
+    async send(request) {
+      received.push({ url: request.url.href, method: request.method, authorization: request.headers.Authorization, body: JSON.parse(request.body!.toString()) });
+      return { status: 202, contentType: "application/json", body: Buffer.from('{"task_id":"third-party-job-1","status":"queued"}') };
+    },
+  }) });
+  const { call } = await connect(t, h.base);
+  const catalog: any[] = []; let cursor: string | undefined;
+  do {
+    const page = (await call("list_capabilities", { tier: "basic", limit: 2, ...(cursor ? { cursor } : {}) })).payload.data as any;
+    assert.ok(page.capabilities.length <= 2); catalog.push(...page.capabilities);
+    cursor = page.hasMore ? page.nextCursor : undefined;
+    if (page.hasMore) assert.ok(cursor);
+  } while (cursor);
+  assert.equal(new Set(catalog.map(item => item.id)).size, catalog.length);
+  const capability = catalog.find(item => item.id === "core.http_request");
+  assert.ok(capability); assert.equal(capability.legacy.kind, "capability"); assert.ok(capability.config.some((field: any) => field.key === "apiKeyEnv"));
+  const original = (await call("get_scene_draft", { sceneId: "demo" })).payload.data as any;
+  const workflow = {
+    name: "第三方请求闭环",
+    inputs: [{ key: "prompt", label: "提示词", type: "text", required: true }],
+    steps: [{ id: "submit_image", name: "提交生图", kind: "capability", capabilityId: "core.http_request", capabilityVersion: capability.version,
+      capabilityConfig: { url: "https://images.example.net/v1/generations", method: "POST", apiKeyEnv: "TEST_MCP_IMAGE_KEY", bodyTemplate: { prompt: "{{prompt}}", size: "1024x1024" }, timeoutSeconds: 60 },
+      inputs: [{ key: "prompt", label: "提示词", sourceRef: "input.prompt" }],
+      outputs: [{ key: "response", label: "第三方任务", type: "json" }, { key: "status", label: "HTTP状态", type: "number" }] }],
+    outputs: [{ key: "job", label: "任务回执", type: "json", sourceRef: "step.submit_image.outputs.response" }],
+  };
+  const invalid = structuredClone(workflow); invalid.steps[0]!.capabilityConfig.url = "http://127.0.0.1/private";
+  const invalidSaved = await call("update_scene_draft", { sceneId: "demo", revision: original.revision, workflow: invalid });
+  assert.equal(invalidSaved.payload.ok, true);
+  const invalidRevision = (invalidSaved.payload.data as any).revision;
+  const validation = (await call("validate_scene_draft", { sceneId: "demo", revision: invalidRevision })).payload;
+  assert.equal(validation.ok, false); assert.equal(validation.error?.code, "INVALID_HTTP_REQUEST_CONFIG");
+  assert.equal((await call("publish_scene", { sceneId: "demo", revision: invalidRevision, publicationId: randomUUID() })).payload.ok, false);
+  const updated = await call("update_scene_draft", { sceneId: "demo", revision: invalidRevision, workflow });
+  assert.equal(updated.payload.ok, true); const draft = updated.payload.data as any;
+  const stale = await call("update_scene_draft", { sceneId: "demo", revision: invalidRevision, workflow: invalid });
+  assert.equal(stale.payload.error?.status, 409);
+  const validated = await call("validate_scene_draft", { sceneId: "demo", revision: draft.revision });
+  assert.equal(validated.payload.ok, true); assert.equal((validated.payload.data as any).valid, true);
+  // Discard publication acknowledgement and reconcile only the preselected ID.
+  const publicationId = randomUUID(); await call("publish_scene", { sceneId: "demo", revision: draft.revision, publicationId });
+  const published = await call("get_scene", { sceneId: "demo", versionId: publicationId }); assert.equal(published.payload.ok, true);
+  const prepared = await call("prepare_scene", { sceneId: "demo", versionId: publicationId, inputValues: { prompt: "A red fox in watercolor" } });
+  assert.equal(prepared.payload.ok, true); assert.equal(received.length, 0);
+  assert.ok(((published.payload.data as any).boundaries.externalSteps as any[]).some(step => step.capabilityId === "core.http_request" && step.mayCostMoney));
+  const edited = structuredClone(workflow); edited.steps[0]!.capabilityConfig.url = "https://edited.example.net/never-called";
+  const current = (await call("get_scene_draft", { sceneId: "demo" })).payload.data as any;
+  assert.equal((await call("update_scene_draft", { sceneId: "demo", revision: current.revision, workflow: edited })).payload.ok, true);
+  // Simulate an unavailable submit acknowledgement: no new ID and no automatic resubmission.
+  const runId = randomUUID(); const submission = { sceneId: "demo", versionId: publicationId, runId, inputValues: { prompt: "A red fox in watercolor" } };
+  await call("submit_scene", submission);
+  assert.equal((await call("get_run", { runId })).payload.ok, true);
+  const done = (await call("wait_run", { runId, timeoutSeconds: 2 })).payload.data as any; assert.equal(done.status, "completed");
+  const duplicate = await call("submit_scene", submission); assert.equal(duplicate.payload.error?.status, 409);
+  const stepResult = await call("get_step_result", { runId, stepId: "submit_image" }); assert.equal(stepResult.payload.ok, true);
+  assert.match(JSON.stringify(stepResult.payload.data), /third-party-job-1/);
+  assert.doesNotMatch(JSON.stringify((await call("get_run", { runId })).payload.data), /mcp-only-fixture-key/);
+  assert.deepEqual(received, [{ url: "https://images.example.net/v1/generations", method: "POST", authorization: "Bearer mcp-only-fixture-key", body: { prompt: "A red fox in watercolor", size: "1024x1024" } }]);
+  assert.equal(h.store.listRuns(h.settings.projectDirectory).runs.length, 1);
+});
+
+
+test("真实stdio MCP：第三方multipart图片从固定素材到真实执行器、图片分页与原ID对账", async t => {
+  const source = await sharp({ create: { width: 8, height: 8, channels: 3, background: "blue" } }).png().toBuffer();
+  const output = await sharp({ create: { width: 12, height: 12, channels: 3, background: "green" } }).png().toBuffer();
+  let sends = 0;
+  const h = await aiHarness(t, { thirdPartyRequest: createThirdPartyJsonRequester({
+    async resolve() { return [{ address: "93.184.216.34", family: 4 }]; },
+    async send(request) {
+      sends++; const form = await new Response(new Uint8Array(request.body!), { headers: { "content-type": request.headers["content-type"]! } }).formData();
+      assert.equal(form.get("model"), "test-image-model"); assert.equal(form.get("prompt"), "preserve product");
+      const upload = form.get("image[]") as File; assert.deepEqual(Buffer.from(await upload.arrayBuffer()), source);
+      assert.equal(request.headers.cookie, undefined);
+      return { status: 200, contentType: "application/json", body: Buffer.from(JSON.stringify({ data: [{ b64_json: output.toString("base64") }, { b64_json: output.toString("base64") }] })) };
+    },
+  }) });
+  const { call } = await connect(t, h.base); const filename = path.join(h.root, "product.png"); await writeFile(filename, source);
+  const upload = await call("upload_asset", { createId: randomUUID(), filePath: filename, kind: "image", name: "product fixture" }); assert.equal(upload.payload.ok, true);
+  const reference = (upload.payload.data as any).reference;
+  const sceneId = "mcp-http-images";
+  const workflow = { name: "multipart image fixture", inputs: [{ key: "product_images", type: "image_list", required: true }, { key: "prompt", type: "text", required: true }], steps: [{ id: "image", name: "第三方图片", kind: "capability", capabilityId: "core.http_request", capabilityVersion: "2", capabilityConfig: { url: "https://images.example.net/v1/images/edits", bodyFormat: "multipart", bodyTemplate: { model: "test-image-model", prompt: "{{prompt}}" }, multipartImages: [{ inputKey: "product_images", fieldName: "image[]" }], responseImages: { path: "data", base64Field: "b64_json", expectedCount: 2 } }, inputs: [{ key: "product_images", sourceRef: "input.product_images" }, { key: "prompt", sourceRef: "input.prompt" }], outputs: [{ key: "response", type: "json" }, { key: "status", type: "number" }, { key: "images", type: "image_list" }] }], outputs: [{ key: "images", label: "结果", type: "image_list", sourceRef: "step.image.outputs.images" }] };
+  const created = await call("create_scene", { scene: { id: sceneId, title: "multipart fixture" }, workflow }); assert.equal(created.payload.ok, true);
+  const draft = created.payload.data as any;
+  assert.equal((await call("validate_scene_draft", { sceneId, revision: draft.revision })).payload.ok, true);
+  const versionId = randomUUID(); await call("publish_scene", { sceneId, revision: draft.revision, publicationId: versionId });
+  const inputValues = { product_images: [reference], prompt: "preserve product" };
+  const preflight = await call("prepare_scene", { sceneId, versionId, inputValues }); assert.equal(preflight.payload.ok, true); assert.equal(sends, 0);
+  const changed = structuredClone(workflow); changed.steps[0]!.capabilityConfig.bodyTemplate.model = "draft-not-published";
+  const current = (await call("get_scene_draft", { sceneId })).payload.data as any;
+  assert.equal((await call("update_scene_draft", { sceneId, revision: current.revision, workflow: changed })).payload.ok, true);
+  assert.equal((await call("update_scene_draft", { sceneId, revision: current.revision, workflow })).payload.error?.status, 409);
+  const runId = randomUUID(); await call("submit_scene", { sceneId, versionId, runId, inputValues });
+  assert.equal((await call("get_run", { runId })).payload.ok, true);
+  const done = (await call("wait_run", { runId, timeoutSeconds: 2 })).payload.data as any; assert.equal(done.status, "completed", JSON.stringify(done));
+  assert.equal((await call("submit_scene", { sceneId, versionId, runId, inputValues })).payload.error?.status, 409); assert.equal(sends, 1);
+  const details = await call("get_step_result", { runId, stepId: "image", outputKey: "response" }); assert.match(JSON.stringify(details.payload.data), /decoded_to_images/); assert.doesNotMatch(JSON.stringify(details.payload.data), new RegExp(output.toString("base64")));
+  const first = (await call("get_step_result", { runId, stepId: "image", outputKey: "images", valueLimit: 1 })).payload; assert.equal(first.ok, true);
+  assert.equal((first.data as any).outputs[0].value.length, 1);
+  assert.equal((first.data as any).outputs[0].valuePage.complete, false);
+  const second = (await call("get_step_result", { runId, stepId: "image", outputKey: "images", valueLimit: 1, valueOffset: 1 })).payload.data as any;
+  assert.equal(second.outputs[0].value.length, 1); assert.equal(second.outputs[0].valuePage.hasMore, false);
+  assert.notDeepEqual(second.outputs[0].value, (first.data as any).outputs[0].value);
+  const mediaUrl = (first.data as any).outputs[0].mediaReferences[0].url;
+  const head = await fetch(h.base + mediaUrl, { method: "HEAD" }); assert.equal(head.status, 200);
+  const range = await fetch(h.base + mediaUrl, { headers: { Range: "bytes=0-7" } }); assert.equal(range.status, 206); assert.deepEqual(Buffer.from(await range.arrayBuffer()), output.subarray(0, 8));
+  const mediaExport = await call("get_run_media_export", { runId, outputKey: "images" }); assert.equal(mediaExport.payload.ok, true);
+  assert.equal((mediaExport.payload.data as any).fileCount, 2);
+  const run = (await call("get_run", { runId })).payload.data as any;
+  assert.equal(run.outputs[0].value.length, 2);
 });

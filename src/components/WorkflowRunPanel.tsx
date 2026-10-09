@@ -8,6 +8,7 @@ import ReviewPanel from "./ReviewPanel";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../types";
 import SaveAssetButton from "./SaveAssetButton";
 import RunValueView from "./RunValueView";
+import { isProtectedMediaUrl, ProtectedMediaPreview, type UserMediaKind } from "./UserMediaInput";
 import type { AssetSource } from "../../server/domain/productionContracts";
 import { runOutputMediaItems } from "../lib/runMedia";
 import { useCapabilities } from "../hooks/useCapabilities";
@@ -17,7 +18,7 @@ import { stepDurationLabel } from "../lib/runDetails";
 function StepValue({ value, type, source }: { value: JsonValue; type?: string; source?: Omit<AssetSource,"mediaIndex"> }) {
   const media = runOutputMediaItems(value, type, source);
   if (media.length) return <div className="workflow-run-step-media">{media.map((item, index) => <div className="production-media-item" key={item.url + index}>
-    {item.isVideo ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : item.isAudio ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}
+    {isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(item.isVideo ? "video" : item.isAudio ? "audio" : "image") as UserMediaKind} label={item.filename} /> : item.isVideo ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : item.isAudio ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}
     {source && <SaveAssetButton kind={item.isVideo ? "video" : item.isAudio ? "audio" : "image"} source={{ ...source, mediaIndex: item.mediaIndex }} />}
   </div>)}</div>;
   return <RunValueView value={value} type={type} source={source} />;
@@ -54,7 +55,7 @@ function RunOutput({ output, runId, className = "workflow-run-output", renderer 
   const media = renderType === "image" || renderType === "image_list" || isVideoOutput || isAudioOutput ? runOutputMediaItems(output.value, renderType, runId ? {runId, outputKey: output.key} : undefined) : [];
   return <article className={className}>
     <div className="workflow-run-output-heading"><strong>{output.label}</strong><small>{output.type}</small></div>
-    {media.length ? <div className="workflow-run-media">{media.map((item,index) => <div className="production-media-item" key={item.url + index}>{isVideoOutput ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : isAudioOutput ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}{runId && <SaveAssetButton kind={isVideoOutput ? "video" : isAudioOutput ? "audio" : "image"} source={{ runId, outputKey: output.key, mediaIndex: item.mediaIndex }} />}</div>)}</div>
+    {media.length ? <div className="workflow-run-media">{media.map((item,index) => <div className="production-media-item" key={item.url + index}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(isVideoOutput ? "video" : isAudioOutput ? "audio" : "image") as UserMediaKind} label={item.filename} /> : isVideoOutput ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : isAudioOutput ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}{runId && <SaveAssetButton kind={isVideoOutput ? "video" : isAudioOutput ? "audio" : "image"} source={{ runId, outputKey: output.key, mediaIndex: item.mediaIndex }} />}</div>)}</div>
       : <RunValueView value={output.value} type={renderType} source={runId ? { runId, outputKey: output.key } : undefined} />}
   </article>;
 }

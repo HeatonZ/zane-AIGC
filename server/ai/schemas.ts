@@ -13,7 +13,7 @@ export const values = z.record(z.string(), z.json());
 export const source = assetSourceSchema;
 export const selection = z.object({ mode: z.enum(["all", "item", "for_each"]), index: z.int().nonnegative().optional() }).strict();
 export const stepInput = z.object({ key: id, label: z.string().optional(), sourceRef: z.string().optional(), valueSource: z.enum(["literal", "reference"]).optional(), literalValue: z.string().optional(), literalType: z.string().optional(), referenceType: z.enum(["image_list", "video_list", "audio_list"]).describe("引用JSON字段中的媒体时显式声明列表类型；恢复/审核后同样作为真实附件，非媒体JSON不要声明。省略保留旧行为，不生成媒体").optional(), selection: selection.optional() }).strict();
-export const stepChanges = z.object({ promptTemplate: z.string().optional(), hermesProfile: z.string().optional(), capabilityConfig: values.optional(), inputs: z.array(stepInput).optional(), comfyui: values.optional() }).strict();
+export const stepChanges = z.object({ promptTemplate: z.string().optional(), hermesProfile: z.string().optional(), capabilityConfig: values.describe("能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds字段契约，密钥值不得写入配置").optional(), inputs: z.array(stepInput).optional(), comfyui: values.optional() }).strict();
 export const feedbackMessage = z.string().trim().min(1).max(feedbackMessageMaxLength);
 export const changes = z.object({
   feedback: z.array(z.object({ stepId: id, itemIndex: z.int().nonnegative().optional(), message: feedbackMessage }).strict()).optional(),

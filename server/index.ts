@@ -62,6 +62,7 @@ import {
 import { createPublicUserApp, publicEntryGuard, validatePublicListener } from "./security/publicEntry.js";
 import { createErrorHandler, redactErrorText } from "./security/errorHandler.js";
 import { HttpError } from "./errors.js";
+import { executeThirdPartyJsonRequest } from "./execution/thirdPartyJsonRequest.js";
 import { LoginLimiter } from "./security/loginLimiter.js";
 import { publicUserPort, publicUserHost, loginLimitOptions, trustProxySetting } from "./config.js";
 
@@ -82,6 +83,7 @@ const executors = await loadCapabilityPackages({
   },
   hermes: ({ step, inputValues, stepValues, types, settings, signal, feedback, captureAgentPrompt, captureAgentResponse }) => runHermesStep(step, inputValues, stepValues, types, settings, signal, feedback, captureAgentPrompt, captureAgentResponse),
   comfyui: (context, transform) => comfyuiQueues.run(context.settings.comfyuiBaseUrl, () => runComfyUIStep(context.step, context.inputValues, context.stepValues, context.settings.comfyuiBaseUrl, context.signal, context.inputFields, context.types, workflowTimeoutMs(context.settings.workflowTimeoutMinutes), context, transform), context.signal, context.step.execution?.mode === "for_each" ? context.step.execution.maxConcurrency ?? 1 : 1),
+  thirdPartyRequest: executeThirdPartyJsonRequest,
 });
 const assetService: AssetService = new AssetService(metadataStore, readSettings, (project, id) => runService.getRun(project, id), () => {
   const address = server.address();

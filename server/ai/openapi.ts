@@ -11,6 +11,7 @@ import { sceneDiffPageSchema, sceneDiffValuePageSchema } from "./sceneDiffSchema
 import { ASSET_MEDIA_EXECUTION_CONTRACT } from "../domain/assetMediaReference.js";
 import { H3_PROMPT_SECTIONS_CONTRACT } from "../execution/longTextVideo.js";
 import { HERMES_OUTPUT_JSON_CONTRACT } from "../execution/hermesOutput.js";
+import { THIRD_PARTY_JSON_REQUEST_CONTRACT } from "../execution/thirdPartyJsonRequest.js";
 import { AI_MCP_TRANSPORT_CONTRACT } from "./mcpRuntimeContract.js";
 import { ASSET_RESPONSE_SCHEMAS, ASSET_OUTPUT_TYPES } from "./assetContracts.js";
 import { adminSetup, authLogin } from "./accessSchemas.js";
@@ -169,5 +170,5 @@ export function createAiOpenApi(options: { userOnly?: boolean } = {}) {
     for (const method of Object.keys(methods)) if (!publicRequestAllowed(method.toUpperCase(), path.replace(/\{[^}]+\}/g, "1"))) delete methods[method];
     if (!Object.keys(methods).length) delete paths[path];
   }
-  return { openapi: "3.1.0", "x-comfy-ui-routing": COMFY_UI_ROUTING_CONTRACT, "x-comfy-static-switch": COMFY_STATIC_SWITCH_CONTRACT, "x-for-each-carry": ITERATION_CARRY_CONTRACT, "x-http-security": HTTP_SECURITY_CONTRACT, "x-entry-mode": options.userOnly ? "user-only" : "full", "x-h3-prompt-sections": H3_PROMPT_SECTIONS_CONTRACT, "x-hermes-output-json": HERMES_OUTPUT_JSON_CONTRACT, "x-mcp-transport": AI_MCP_TRANSPORT_CONTRACT, "x-asset-media-execution": ASSET_MEDIA_EXECUTION_CONTRACT, info: { title: "Zane Workbench AI API", version: AI_CONTRACT_VERSION, description: "AI操作面契约，不是所有旧版设置/连接器接口的全集。工具参数与文档同源；只读/预检不生成，执行可能计费。MCP响应包装与原HTTP对象不同。" }, servers: [{ url: "/", description: "以实际工作台后台地址为基址" }], paths, security: [{BearerAuth:[]},{SessionCookie:[]}], components: { schemas, securitySchemes:{BearerAuth:{type:"http",scheme:"bearer",description:"ZANE_API_TOKEN，继承本人实时角色和场景授权"},SessionCookie:{type:"apiKey",in:"cookie",name:"zane_session"}} } };
+  return { openapi: "3.1.0", "x-comfy-ui-routing": COMFY_UI_ROUTING_CONTRACT, "x-comfy-static-switch": COMFY_STATIC_SWITCH_CONTRACT, "x-for-each-carry": ITERATION_CARRY_CONTRACT, "x-http-security": HTTP_SECURITY_CONTRACT, "x-third-party-json-request": THIRD_PARTY_JSON_REQUEST_CONTRACT, "x-entry-mode": options.userOnly ? "user-only" : "full", "x-h3-prompt-sections": H3_PROMPT_SECTIONS_CONTRACT, "x-hermes-output-json": HERMES_OUTPUT_JSON_CONTRACT, "x-mcp-transport": AI_MCP_TRANSPORT_CONTRACT, "x-asset-media-execution": ASSET_MEDIA_EXECUTION_CONTRACT, info: { title: "Zane Workbench AI API", version: AI_CONTRACT_VERSION, description: "AI操作面契约，不是所有旧版设置/连接器接口的全集。工具参数与文档同源；只读/预检不生成，执行可能计费。MCP响应包装与原HTTP对象不同。" }, servers: [{ url: "/", description: "以实际工作台后台地址为基址" }], paths, security: [{BearerAuth:[]},{SessionCookie:[]}], components: { schemas, securitySchemes:{BearerAuth:{type:"http",scheme:"bearer",description:"ZANE_API_TOKEN，继承本人实时角色和场景授权"},SessionCookie:{type:"apiKey",in:"cookie",name:"zane_session"}} } };
 }

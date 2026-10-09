@@ -1,8 +1,30 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.5.27。当前 92 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.5.29。当前 92 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
+
+### third-party-json-request
+
+通用第三方JSON HTTPS请求基础步骤：固定公网HTTPS地址、服务端环境变量鉴权、声明输入模板、超时和响应大小边界；DNS解析结果固定并拒绝本机/内网地址、重定向、敏感URL参数和本地媒体路径；配置/预检不调用第三方，发布快照固定后执行才发出一次请求，状态码/JSON或文本响应按步骤结果读取，不自动重试。普通ComfyUI生图优先core.comfyui；multipart扩展按声明映射上传当前运行授权图片，拒绝任意路径/预览URL；可解码base64响应为可选images并沿用归档/鉴权/分页，原base64明确标记省略。保留JSON旧模式，不做异步轮询、不保存第三方密钥。
+
+| 工具 | HTTP | 副作用 |
+| --- | --- | --- |
+| `list_capabilities` | `GET /api/v1/capabilities` | read |
+| `create_scene` | `POST /api/v1/scenes` | write |
+| `get_scene_draft` | `GET /api/v1/scenes/{sceneId}/draft` | read |
+| `update_scene_draft` | `PATCH /api/v1/scenes/{sceneId}/draft` | write |
+| `validate_scene_draft` | `POST /api/v1/scenes/{sceneId}/validate` | read |
+| `publish_scene` | `POST /api/v1/scenes/{sceneId}/publish` | write |
+| `get_scene` | `GET /api/v1/scenes/{sceneId}` | read |
+| `prepare_scene` | `POST /api/v1/scenes/{sceneId}/prepare` | read |
+| `submit_scene` | `POST /api/v1/scenes/{sceneId}/runs` | execute |
+| `get_step_result` | `GET /api/v1/runs/{runId}/steps/{stepId}/result` | read |
+| `resume_run` | `POST /api/v1/runs/{sourceRunId}/resume` | execute |
+| `rerun` | `POST /api/v1/runs/{sourceRunId}/rerun` | execute |
+| `submit_own_scene` | `POST /api/v1/self/scenes/{sceneId}/runs` | execute |
+| `get_own_step_result` | `GET /api/v1/self/runs/{runId}/steps/{stepId}` | read |
+| `resume_own_run` | `POST /api/v1/self/runs/{runId}/resume` | execute |
 
 ### comfy-static-switch
 

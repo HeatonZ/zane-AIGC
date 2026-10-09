@@ -1,3 +1,10 @@
+## 第三方请求与GPT图片编辑（1.5.29）
+基础能力core.http_request通过固定公网HTTPS域名发送一次请求，拒绝内网/DNS重绑定/重定向、敏感URL参数与手填鉴权头。默认bodyFormat=json兼容既有场景；bodyFormat=multipart支持标量表单bodyTemplate与multipartImages图片映射。接口配置复用list_capabilities、revision草稿编辑、固定发布和普通/本人运行工具；不新增任意HTTP代理。
+multipartImages示例[{inputKey:product_images,fieldName:image[]}]：按输入顺序上传当前运行内已授权归档的PNG/JPEG/WebP原字节；不读取任意路径、其他运行文件、符号链接逃逸路径或previewUrl，不向供应商转发工作台凭据。最多16张、每张20MB、总正文64MB；JSON或表单文本最多256KB。配置/预检/发布均不上传，只有显式执行才向供应商发送图片并可能计费。
+responseImages示例{path:data,base64Field:b64_json,expectedCount:1}：按JSON路径读取数组并验证数量、base64与真实图片内容，归档后输出可选images:image_list；response中原base64替换为omitted/decoded_to_images/outputKey/index标记，不静默截断。该模式响应上限64MB；普通JSON仍为4MB。不下载响应中的远程图片URL。图片沿用既有按对象/步骤/逐项分页、鉴权预览和HEAD/Range机制。
+GPT官方图片编辑配置：url=https://api.openai.com/v1/images/edits，method=POST，bodyFormat=multipart；apiKeyEnv=OPENAI_API_KEY（工作台服务进程环境，不是工作台登录凭据），默认Authorization与Bearer空格前缀；bodyTemplate填写model、prompt、size、quality、n等标量字段，product_images映射为image[]。当前官方示例模型为gpt-image-2.5-sunburst，账号可用性须另行核验；此文档不代替实际供应商协议。官方依据：https://developers.openai.com/api/docs/guides/image-generation 。
+apiKeyEnv仅保存变量名，密钥不主动写入场景/运行输入/日志。请求超时1–300秒，只接受2xx；图片解析错误为INVALID_THIRD_PARTY_IMAGE。固定发布versionId后prepare_scene不调用供应商；提交前保存runId，响应丢失按原ID对账，不自动重试。外部请求已接受但未checkpoint时无法保证恰好一次，恢复/重做需先核对供应商任务；异步轮询仍需显式编排。既有发布快照不自动替换；新增multipart配置须在草稿中核对、校验后显式发布。
+
 ## 固定音色的基础ComfyUI上传（1.5.23）
 基础audio_list绑定支持已由权威素材服务授权并归档的固定音色私有路径，含media.select_references.bundle/data.zip/for_each中间JSON。提交器读取同一版本原始音频字节，按引用顺序经ComfyUI /upload/image的image表单上传为input附件，再连接LoadAudio及普通/命名autogrow AUDIO端口；每文件最多100MB。私有path优先，不回退到previewUrl或未经授权的显示元数据，不向上游转发工作台token/cookie；普通用户仍只可提交本人固定引用。已有合法ComfyUI input附件不重复上传；读取、超限、上传失败在提交prompt前停止，不自动重试、不重新调用已完成Writer/AIXG。旧失败快照不改写；上线修复后仍须按原runId核对，再经用户明确确认用新runId断点续跑，可能计费。机器契约x-asset-media-execution.audioConsumers与固定发布inputRequirements.mediaExecution；配置、预检、读取不上传或生成。
 
@@ -20,7 +27,7 @@ ZANE_PUBLIC_USER_PORT留空不开启；显式开启第二监听入口时管理AP
 
 # AI 工作台操作手册
 
-契约版本：1.5.27。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
+契约版本：1.5.29。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
 本手册与 MCP 的 zane://guide、HTTP /api/v1/ai/guide 同源。
 
 ## 系统任务并发（1.5.15）

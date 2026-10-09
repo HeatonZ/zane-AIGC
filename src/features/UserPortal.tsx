@@ -196,6 +196,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   function handleDraftFieldBlur(event: FocusEvent<HTMLElement>) {
     const relatedTarget = event.relatedTarget;
     if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+    if (relatedTarget instanceof HTMLButtonElement) return;
     autosaveDraftOnBlur();
   }
   function inputs(sourceValues = values, sourceScene = scene, validateRequired = false) {
@@ -460,7 +461,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
       </section>}
       {page === "scenes" && <>
         <div className="access-inline">
-          <button className="button button-outline" onClick={() => void attempt(() => loadScenes())}>刷新可用场景</button>
+          <button className="button button-outline" onClick={() => void attempt(async () => { if (scene) await flushDraftAutosave(); await loadScenes(); })}>刷新可用场景</button>
           {scene && <button className="button button-outline" disabled={lockedForm} onClick={() => void attempt(backToSceneList)}>返回场景列表</button>}
         </div>
         {!scene && <div className="access-grid">
@@ -521,7 +522,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
               <button className="button button-outline" type="submit" disabled={lockedForm}>保存我的草稿</button>
               <button className="button button-dark" type="button" disabled={lockedForm || !!pendingRun} onClick={() => void submit()}>{busy ? "处理中…" : "提交任务"}</button>
               <small>草稿 {draftId} · r{draftRevision}</small>
-              <small className="access-muted" role="status" aria-live="polite">{draftAutoSaveStatus === "pending" ? "输入已修改，失焦后自动保存" : draftAutoSaveStatus === "saving" ? "正在自动保存到服务端…" : draftAutoSaveStatus === "saved" ? "已自动保存到服务端" : draftAutoSaveStatus === "error" ? "自动保存未完成；修正输入后会重试" : draftAutoSaveStatus === "reconcile" ? "保存回执待核对" : draftAutoSaveStatus === "review" ? "服务端内容已变化，请核对后手动保存" : ""}</small>
+              <small className="access-muted" role="status" aria-live="polite">{draftAutoSaveStatus === "pending" ? "输入已修改，失焦后自动保存" : draftAutoSaveStatus === "saving" ? "正在自动保存到服务端…" : draftAutoSaveStatus === "saved" ? "已自动保存到服务端" : draftAutoSaveStatus === "error" ? "自动保存未完成；修正输入并失焦后会重试" : draftAutoSaveStatus === "reconcile" ? "保存回执待核对" : draftAutoSaveStatus === "review" ? "服务端内容已变化，请核对后手动保存" : ""}</small>
             </div>
             {draftUnknown && <button type="button" className="button button-outline" onClick={() => void attempt(reconcileDraft)}>读取原草稿ID对账</button>}
             <p className="access-muted">配置、保存草稿和预检不会调用模型。提交及后续审核可能产生费用。</p>

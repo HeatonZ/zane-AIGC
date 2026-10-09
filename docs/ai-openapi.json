@@ -141,6 +141,134 @@
       "agent_execution_isolation"
     ]
   },
+  "x-third-party-json-request": {
+    "version": "2",
+    "capabilityId": "core.http_request",
+    "request": {
+      "url": {
+        "type": "string",
+        "required": true,
+        "protocol": "https",
+        "port": 443,
+        "publicHostOnly": true,
+        "redirects": "rejected",
+        "queryCredentials": "rejected"
+      },
+      "method": {
+        "type": "string",
+        "required": false,
+        "default": "POST",
+        "enum": [
+          "GET",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE"
+        ]
+      },
+      "headers": {
+        "type": "object",
+        "required": false,
+        "default": {},
+        "values": "non-sensitive strings",
+        "maximumEntries": 32
+      },
+      "apiKeyEnv": {
+        "type": "string",
+        "required": false,
+        "format": "^[A-Z][A-Z0-9_]{0,127}$",
+        "secretValueSource": "workbench_process_environment"
+      },
+      "apiKeyHeader": {
+        "type": "string",
+        "required": false,
+        "default": "Authorization"
+      },
+      "apiKeyPrefix": {
+        "type": "string",
+        "required": false,
+        "default": "Bearer "
+      },
+      "bodyFormat": {
+        "type": "string",
+        "default": "json",
+        "enum": [
+          "json",
+          "multipart"
+        ]
+      },
+      "multipartImages": {
+        "type": "array",
+        "default": [],
+        "items": {
+          "inputKey": "declared image input",
+          "fieldName": "multipart file field; repeated in source order"
+        },
+        "localFiles": "authorized current-run private copies only; no URL/preview fallback",
+        "limits": {
+          "imageBytes": 20971520,
+          "images": 16,
+          "requestBytes": 67108864,
+          "responseBytes": 67108864
+        }
+      },
+      "responseImages": {
+        "type": "object",
+        "required": false,
+        "fields": {
+          "path": "JSON path to array; default data",
+          "base64Field": "default b64_json",
+          "expectedCount": "optional integer 1..16"
+        },
+        "output": "images:image_list; validated local PNG/JPEG/WebP; base64 replaced with explicit omission marker",
+        "responseMaximumBytes": 67108864
+      },
+      "bodyTemplate": {
+        "type": "object|array",
+        "required": false,
+        "placeholder": "{{declaredInputKey}}",
+        "maximumBytes": 262144,
+        "getBody": "rejected"
+      },
+      "timeoutSeconds": {
+        "type": "integer",
+        "required": false,
+        "default": 120,
+        "minimum": 1,
+        "maximum": 300
+      }
+    },
+    "response": {
+      "status": "2xx required",
+      "outputs": {
+        "response": "JSON value, or UTF-8 text for non-JSON; null for empty; mapped base64 explicitly omitted",
+        "status": "HTTP status number",
+        "images": "optional image_list when responseImages configured"
+      },
+      "maximumBytes": 4194304
+    },
+    "errors": [
+      "INVALID_HTTP_REQUEST_CONFIG",
+      "INVALID_HTTP_REQUEST_INPUT",
+      "HTTP_REQUEST_MEDIA_UNSUPPORTED",
+      "HTTP_REQUEST_BODY_TOO_LARGE",
+      "THIRD_PARTY_HOST_NOT_PUBLIC",
+      "THIRD_PARTY_CREDENTIAL_MISSING",
+      "THIRD_PARTY_CREDENTIAL_INVALID",
+      "THIRD_PARTY_REQUEST_TIMEOUT",
+      "THIRD_PARTY_HTTP_ERROR",
+      "THIRD_PARTY_REQUEST_FAILED",
+      "THIRD_PARTY_RESPONSE_TOO_LARGE",
+      "INVALID_THIRD_PARTY_JSON",
+      "INVALID_THIRD_PARTY_IMAGE"
+    ],
+    "sideEffects": {
+      "prepare": "none",
+      "publish": "none",
+      "execute": "one request; may incur third-party cost or mutate third-party state",
+      "automaticRetries": false
+    }
+  },
   "x-entry-mode": "full",
   "x-h3-prompt-sections": {
     "version": "2",
@@ -232,6 +360,7 @@
       "source": "same_authorized_fixed_version_private_run_copy",
       "hermes": "private_image_bytes_to_inline_data_url",
       "comfyui": "private_image_bytes_to_upload_in_reference_order",
+      "thirdPartyHttp": "current_run_private_image_bytes_to_multipart_in_reference_order_no_preview_fallback",
       "hermesSizePolicy": "existing_inline_budget_may_resize_without_reselecting_asset_version"
     },
     "audioConsumers": {
@@ -264,7 +393,7 @@
   },
   "info": {
     "title": "Zane Workbench AI API",
-    "version": "1.5.27",
+    "version": "1.5.29",
     "description": "AI操作面契约，不是所有旧版设置/连接器接口的全集。工具参数与文档同源；只读/预检不生成，执行可能计费。MCP响应包装与原HTTP对象不同。"
   },
   "servers": [
@@ -12119,7 +12248,7 @@
     "/api/v1/capabilities": {
       "get": {
         "operationId": "list_capabilities",
-        "description": "分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。",
+        "description": "分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。core.http_request支持JSON或multipart授权图片上传、base64响应映射为images；服务端环境变量鉴权，配置不请求，固定发布后显式执行才可能计费，返回response/status及可选images，不自动重试。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。",
         "x-ai-effect": "read",
         "x-access-role": "admin",
         "security": [
@@ -34301,6 +34430,7 @@
             "source": "same_authorized_fixed_version_private_run_copy",
             "hermes": "private_image_bytes_to_inline_data_url",
             "comfyui": "private_image_bytes_to_upload_in_reference_order",
+            "thirdPartyHttp": "current_run_private_image_bytes_to_multipart_in_reference_order_no_preview_fallback",
             "hermesSizePolicy": "existing_inline_budget_may_resize_without_reselecting_asset_version"
           },
           "audioConsumers": {
@@ -40697,7 +40827,8 @@
                       },
                       "additionalProperties": {
                         "$ref": "#/components/schemas/preview_rerunInput/$defs/__schema0"
-                      }
+                      },
+                      "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds字段契约，密钥值不得写入配置"
                     },
                     "inputs": {
                       "type": "array",
@@ -40967,7 +41098,8 @@
                       },
                       "additionalProperties": {
                         "$ref": "#/components/schemas/rerunInput/$defs/__schema0"
-                      }
+                      },
+                      "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds字段契约，密钥值不得写入配置"
                     },
                     "inputs": {
                       "type": "array",
@@ -41213,7 +41345,8 @@
                 },
                 "additionalProperties": {
                   "$ref": "#/components/schemas/review_runInput/$defs/__schema0"
-                }
+                },
+                "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds字段契约，密钥值不得写入配置"
               },
               "inputs": {
                 "type": "array",

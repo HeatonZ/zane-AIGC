@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { AssetSource } from "../../server/domain/productionContracts";
 import type { JsonValue } from "../types";
 import { isRunMediaRecord, runOutputMediaItems } from "../lib/runMedia";
-import { ProtectedMediaPreview, type UserMediaKind } from "./UserMediaInput";
+import { isProtectedMediaUrl, ProtectedMediaPreview, type UserMediaKind } from "./UserMediaInput";
 
 const keyLabels: Record<string, string> = {
   assetId: "素材 ID", assetVersion: "素材版本", assetName: "素材名称", filename: "文件名", file: "文件",
@@ -28,22 +28,11 @@ function isMediaType(type?: string) {
   return /^(image|video|audio)(_list)?$/.test(type ?? "");
 }
 
-function isProtectedMediaUrl(url: string) {
-  if (url.startsWith("/api/")) return true;
-  if (typeof window === "undefined") return false;
-  try {
-    const parsed = new URL(url, window.location.href);
-    return parsed.origin === window.location.origin && parsed.pathname.startsWith("/api/");
-  } catch {
-    return false;
-  }
-}
-
 function MediaValue({ value, type, source, mediaUserId }: { value: unknown; type?: string; source?: Omit<AssetSource, "mediaIndex">; mediaUserId?: string }): ReactNode {
   const media = runOutputMediaItems(value as JsonValue, isMediaType(type) ? type : undefined, source);
   if (!media.length) return isMediaType(type) ? <span className="run-value-empty">暂无可预览媒体</span> : null;
   return <div className="run-value-media">{media.map((item, index) => <figure key={`${item.url}:${item.mediaIndex}:${index}`}>
-    {mediaUserId && isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(item.isVideo ? "video" : item.isAudio ? "audio" : "image") as UserMediaKind} userId={mediaUserId} label={item.filename || `${item.isVideo ? "视频" : item.isAudio ? "音频" : "图片"} ${index + 1}`} />
+    {isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(item.isVideo ? "video" : item.isAudio ? "audio" : "image") as UserMediaKind} userId={mediaUserId} label={item.filename || `${item.isVideo ? "视频" : item.isAudio ? "音频" : "图片"} ${index + 1}`} />
       : item.isVideo ? <video src={item.url} controls preload="metadata" aria-label={item.filename || `视频 ${index + 1}`} /> : item.isAudio ? <audio src={item.url} controls preload="metadata" aria-label={item.filename || `音频 ${index + 1}`} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename || `图片 ${index + 1}`} loading="lazy" /></a>}
     {item.filename && <figcaption>{item.filename}</figcaption>}
   </figure>)}</div>;

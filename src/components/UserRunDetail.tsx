@@ -7,6 +7,7 @@ import { resultPath, mergeResultPage, type ResultContext, type ResultOutput, typ
 import { activityLabel, mergeResultSlice, previousValueOffset, runDate, runStatusLabels, stepDurationLabel } from "../lib/runDetails";
 import RunOverview from "./RunOverview";
 import RunValueView from "./RunValueView";
+import { isProtectedMediaUrl, ProtectedMediaPreview } from "./UserMediaInput";
 
 type InputPage = ReturnType<typeof import("../../server/services/runDetailService").businessRunInputs>;
 type InputValue = InputPage["inputs"][number];
@@ -59,8 +60,8 @@ function OutputCard({ output, onSlice, busy, userId }: { output: ResultOutput; o
     {output.valueOmitted ? <div className="run-empty-state"><AlertCircle size={22} /><strong>内容未返回，不是空结果</strong><p>{output.omissionReason === "metadata_only" ? "当前只读取了元数据。" : "当前片段超过响应预算，请按更小片段读取。"}</p><button className="button button-outline" disabled={busy} onClick={() => onSlice(offset, true)}>读取较小片段</button></div>
       : media.length ? <div className="business-media-grid">{media.map((item, index) => {
         const number = (item.source?.mediaIndex ?? offset + index) + 1;
-        return /video/.test(output.type) ? <figure key={item.url}><video src={item.url} controls preload="metadata" aria-label={output.label + " " + number} /><figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
-          : /audio/.test(output.type) ? <figure key={item.url}><audio src={item.url} controls preload="metadata" aria-label={output.label} /><figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
+        return /video/.test(output.type) ? <figure key={item.url}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind="video" userId={userId} label={output.label + " " + number} /> : <video src={item.url} controls preload="metadata" aria-label={output.label + " " + number} />}<figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
+          : /audio/.test(output.type) ? <figure key={item.url}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind="audio" userId={userId} label={output.label} /> : <audio src={item.url} controls preload="metadata" aria-label={output.label} />}<figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
             : <OutputImage key={item.url} url={item.url} alt={output.label + " " + number} userId={userId} number={number} />;
       })}</div> : <RunValueView value={output.value} type={output.type} source={output.source} mediaUserId={userId} className={`business-value ${output.type === "text" ? "text" : ""}`} />}
     {segmented && <footer className="run-value-pager"><span>{output.valuePage.kind === "string" ? "字符" : "项"} {offset + 1}–{offset + (output.valuePage.count ?? size)} / {output.valuePage.total}{output.valueOmitted ? "（未读取）" : ""}</span>
