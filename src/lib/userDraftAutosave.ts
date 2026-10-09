@@ -4,14 +4,15 @@ export interface OwnDraftSaveSession {
   sceneId: string;
   versionId: string;
   title: string;
+  runTitle?: string;
   hasServerDraft: boolean;
   editVersion: number;
   savedEditVersion: number;
   enqueuedEditVersion: number;
   reconcileRequired: boolean;
   reviewRequired: boolean;
-  failedWrite?: { editVersion: number; inputValues: Record<string, unknown> };
-  lastSaved?: { editVersion: number; inputValues: Record<string, unknown> };
+  failedWrite?: { editVersion: number; inputValues: Record<string, unknown>; runTitle?: string };
+  lastSaved?: { editVersion: number; inputValues: Record<string, unknown>; runTitle?: string };
   pendingWrite?: Promise<{ id: string; revision: number; inputValues: Record<string, unknown> }>;
 }
 
@@ -21,6 +22,7 @@ export interface OwnDraftSaveRequest {
   sceneId: string;
   versionId: string;
   title: string;
+  runTitle?: string;
   inputValues: Record<string, unknown>;
 }
 
@@ -49,6 +51,10 @@ export function sameDraftInputs(left: Record<string, unknown>, right: Record<str
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
+export function sameDraftSnapshot(left: { inputValues: Record<string, unknown>; runTitle?: string }, right: { inputValues: Record<string, unknown>; runTitle?: string }): boolean {
+  return sameDraftInputs(left.inputValues, right.inputValues) && (left.runTitle ?? "") === (right.runTitle ?? "");
+}
+
 export class OwnDraftSaveQueue {
   private tail: Promise<void> = Promise.resolve();
 
@@ -66,17 +72,18 @@ export class OwnDraftSaveQueue {
         sceneId: session.sceneId,
         versionId: session.versionId,
         title: session.title,
+        ...(session.runTitle ? { runTitle: session.runTitle } : {}),
         inputValues: snapshot,
       });
       session.revision = result.draft.revision;
       session.hasServerDraft = true;
       session.savedEditVersion = Math.max(session.savedEditVersion, editVersion);
-      session.lastSaved = { editVersion, inputValues: snapshot };
+      session.lastSaved = { editVersion, inputValues: snapshot, ...(session.runTitle ? { runTitle: session.runTitle } : {}) };
       return result.draft;
     }).catch(error => {
       if (!session.reconcileRequired && draftSaveNeedsReconciliation(error)) {
         session.reconcileRequired = true;
-        session.failedWrite = { editVersion, inputValues: snapshot };
+        session.failedWrite = { editVersion, inputValues: snapshot, ...(session.runTitle ? { runTitle: session.runTitle } : {}) };
       }
       throw error;
     });

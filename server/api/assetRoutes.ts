@@ -73,7 +73,7 @@ export function createAssetRouter(service: AssetService) {
   });
   router.get("/api/v1/runs/:runId/output-media", async (req,res,next) => {
     const { projectDirectory } = await service.loadSettings();
-    const selected = await service.source(projectDirectory, { runId:req.params.runId, stepId:req.query.stepId, itemIndex:req.query.itemIndex === undefined ? undefined : Number(req.query.itemIndex), outputKey:req.query.outputKey, mediaIndex:Number(req.query.mediaIndex ?? 0) });
+    const selected = await service.source(projectDirectory, { runId:req.params.runId, stepId:req.query.stepId, itemIndex:req.query.itemIndex === undefined ? undefined : Number(req.query.itemIndex), outputKey:req.query.outputKey, mediaIndex:Number(req.query.mediaIndex ?? 0), allowIncompleteStep:true });
     enablePrivateMediaRevalidation(res);
     res.sendFile(service.localMediaFile(projectDirectory, selected.value), { dotfiles:"allow", cacheControl:false, etag:true, lastModified:true }, error => { if (error) next(error); });
   });

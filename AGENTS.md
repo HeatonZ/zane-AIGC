@@ -34,7 +34,7 @@
 ## 本机工作台 AI 接入定位
 
 - 本机 Codex 工作台连接固定配置在 `C:\Users\Windows11\.codex\config.toml` 的 `[mcp_servers.zane-workbench]` 与 `[mcp_servers.zane-workbench.env]`；先检查已连接的工作台 MCP，未连接时按此位置检查，不反复要求用户在聊天里提供密钥。此路径是本机约定，不是所有开发机器的通用路径。
-- 正式服务地址为 `http://127.0.0.1:8799`，MCP 入口为 `F:\code\zane-drama\dist-server\mcp\index.js`。`ZANE_API_TOKEN` 必须是本人“账户与AI接入”创建的有效工作台凭证；管理场景需管理员身份，不把模型供应商 Key 当作工作台凭证。
+- 正式服务地址为 `http://127.0.0.1:8799`，MCP 入口为 `F:\code\zane-drama\dist-server\mcp\index.js`。`ZANE_API_TOKEN` 必须是管理后台“用户管理 → 本人 AI 凭证”创建的有效工作台凭证（用户端已不再提供 AI 接入入口）；管理场景需管理员身份，不把模型供应商 Key 当作工作台凭证。
 - 当前 MCP 入口与 `npm run ai:doctor` 只读取启动环境，不自动加载项目 `.env*`；Codex 的 `.env` 配置表只传给它启动的 MCP 子进程，不会自动传给终端命令。独立执行 doctor 时需显式传入同一配置的环境，禁止输出密钥或使用任意文件执行代理。
 - 配置模板为空密钥且 `enabled = false` 时表示尚未完成接入；填入有效凭证后设为 `true`，需客户端重新加载连接配置。先用 `get_workbench`、`get_current_user` 只读核验身份与契约，再操作服务端场景；不因此重启工作台、Hermes Gateway 或 ComfyUI。
 - 不将密钥写入仓库、日志、回复、AGENTS.md 或示例文件。检查配置时只输出是否存在、是否启用、地址与错误类别，不输出文件全量。401 表示鉴权未通过，403 表示权限不足；不要绕过身份验证或读取生产 SQLite 寻找凭证。

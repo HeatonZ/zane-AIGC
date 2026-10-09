@@ -36,7 +36,11 @@ const mock = createServer(async (request, response) => {
         : content.includes("CASE:wrong-type") ? '{"storyboard":"完整"},"shots":"不是JSON"}'
         : content.includes("CASE:whitespace-extra") ? whitespaceSource + "附加说明"
         : content.includes("CASE:whitespace-duplicate") ? whitespaceSource.replace(',"shots":', ',"storyboard":"overwrite","shots":')
-        : content.includes("CASE:whitespace") ? whitespaceSource : broken;
+        : content.includes("CASE:whitespace") ? whitespaceSource
+        : content.includes("CASE:prose-braces") ? '格式如 {"storyboard":"demo"}，正式内容：\n' + JSON.stringify(expected)
+        : content.includes("CASE:prose-two") ? "第一个对象：\n" + JSON.stringify(expected) + "\n第二个对象：" + JSON.stringify({ storyboard: "other", shots: shots.slice(0, 3) })
+        : content.includes("CASE:prose") ? "复核：15镜齐全，现在输出最终 JSON。\n" + JSON.stringify(expected) + "\n导出路径 out.json，转义无误。"
+        : broken;
       upstream.set(runId, output);
       response.end(JSON.stringify({ run_id: runId, status: "queued" })); return;
     }
@@ -131,18 +135,26 @@ try {
   assert.deepEqual(fullShots.outputs[0].value, whitespaceExpected.shots);
   assert.deepEqual((await call("get_run", { runId: whitespace.runId })).steps[0].outputs, whitespaceExpected);
   assert.equal(admissions, beforeWhitespaceReads, "same-ID reconciliation and pagination never replay model calls");
-  for (const testcase of ["whitespace-extra", "whitespace-duplicate"]) {
+  // Brace-free prose around one complete object is recovered; prose that hides structure is not.
+  const prose = await submit("prose");
+  assert.equal(prose.status, "completed"); assert.deepEqual(prose.steps[0].outputs, expected);
+  const proseWhitespace = await submit("whitespace-extra");
+  assert.equal(proseWhitespace.status, "completed"); assert.deepEqual(proseWhitespace.steps[0].outputs, whitespaceExpected);
+  for (const testcase of ["whitespace-duplicate", "prose-braces", "prose-two"]) {
     const rejected = await submit(testcase);
     assert.equal(rejected.status, "failed"); assert.match(rejected.error, /Hermes 输出 JSON 格式无效/); assert.equal(rejected.steps[0].outputs, undefined);
   }
-  assert.equal(admissions, 6, "each explicit isolated submission calls mock Hermes once, including failures");
+  assert.equal(admissions, 9, "each explicit isolated submission calls mock Hermes once, including failures");
   const openapi = await (await fetch(base + "/api/v1/ai/openapi.json")).json();
   assert.equal(openapi["x-hermes-output-json"].modelRetry, "none");
-  assert.equal(openapi["x-hermes-output-json"].version, "2");
+  assert.equal(openapi["x-hermes-output-json"].version, "3");
   assert.ok(openapi["x-hermes-output-json"].recovery.includes("escape_literal_lf_cr_tab_inside_json_strings"));
-  assert.equal(openapi["x-hermes-output-json"].recoveryComposition, "one_recovery_family_only");
+  assert.ok(openapi["x-hermes-output-json"].recovery.includes("locate_the_single_complete_root_object_when_every_other_response_character_is_brace_free"));
+  assert.ok(openapi["x-hermes-output-json"].acceptedWrapper.includes("brace_free_prose_around_exactly_one_complete_root_object"));
+  assert.equal(openapi["x-hermes-output-json"].recoveryComposition, "one_object_repair_family_only");
+  assert.equal(openapi["x-hermes-output-json"].recoveryGuards.includes("no_braces_outside_the_accepted_object"), true);
   assert.match(logs, /hermes.output_json_repaired/);
-  console.log("Hermes JSON smoke passed: real stdio MCP, published snapshot, 15-shot/linebreak recovery without value changes, malformed/duplicate/type failure, stale revision, parallel runs, lost-receipt reconciliation, pagination; no real generation.");
+  console.log("Hermes JSON smoke passed: real stdio MCP, published snapshot, 15-shot/linebreak recovery without value changes, malformed/duplicate/type failure, prose-wrapped and structure-hiding cases, stale revision, parallel runs, lost-receipt reconciliation, pagination; no real generation.");
 } finally {
   await client.close().catch(() => undefined);
   if (child?.exitCode === null && child.signalCode === null) {

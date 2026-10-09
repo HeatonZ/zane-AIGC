@@ -26,6 +26,20 @@ test("能力目录自动发现内置与新增包，旧适配器映射不丢失",
   assert.throws(() => registry.prepareStep({ id: "bad", name: "bad", kind: "comfyui", comfyui: { workflowFile: "", adapter: "missing" } }), /未安装此能力/);
 });
 
+test("第三方请求能力：response/status/images均为可选声明，生图场景可只声明images", async () => {
+  const registry = await loadCapabilityPackages(runtime);
+  const definition = registry.definitions().find(item => item.id === "core.http_request");
+  assert.ok(definition);
+  for (const key of ["response", "status", "images"]) assert.equal(definition!.outputs.find(output => output.key === key)?.required, false, key);
+  const step = { id: "image", name: "生图", kind: "capability", capabilityId: "core.http_request", capabilityVersion: "2",
+    capabilityConfig: { url: "https://images.example.net/v1/images/edits", bodyFormat: "multipart", bodyTemplate: { model: "fixture-model", prompt: "{{prompt}}" }, multipartImages: [{ inputKey: "product_images", fieldName: "image[]" }], responseImages: { path: "data", base64Field: "b64_json", expectedCount: 1 } },
+    inputs: [{ key: "product_images", sourceRef: "input.product_images" }, { key: "prompt", sourceRef: "input.prompt" }],
+    outputs: [{ key: "images", label: "返回图片", type: "image_list" }] };
+  const prepared = registry.prepareStep(step);
+  assert.deepEqual(prepared.outputs, [{ key: "images", label: "返回图片", type: "image_list" }]);
+  assert.equal(prepared.capabilityVersion, "2");
+});
+
 test("能力契约冻结默认配置、拒绝重复注册/版本不匹配/无效配置", async () => {
   const registry = new ExecutorRegistry().registerCapability(await template());
   const step = { id: "template", name: "模板", kind: "capability", capabilityId: "text.template", inputs: [], outputs: [{ key: "text", type: "text" }] };

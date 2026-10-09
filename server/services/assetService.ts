@@ -77,7 +77,9 @@ export class AssetService {
     if (body.stepId !== undefined) {
       if (typeof body.stepId !== "string") throw new HttpError(400, "来源步骤无效");
       const step = run.steps.find(step => step.stepId === body.stepId);
-      if (!step || (body.itemIndex === undefined && step.status !== "completed")) throw new HttpError(400, "只能收藏已完成步骤的结果");
+      // Reading run media may target a step that failed mid-run: the archived media still exists and
+      // stays behind the same authorization. Collecting into the asset library keeps the completed rule.
+      if (!step || (body.itemIndex === undefined && step.status !== "completed" && body.allowIncompleteStep !== true)) throw new HttpError(400, "只能收藏已完成步骤的结果");
       let target = step;
       if (body.itemIndex !== undefined) {
         if (!Number.isSafeInteger(body.itemIndex) || Number(body.itemIndex) < 0) throw new HttpError(400, "来源镜头序号无效");

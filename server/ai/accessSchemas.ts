@@ -10,7 +10,7 @@ export const passwordReset = z.object({ userId: id, revision: z.int().positive()
 export const ownScene = z.object({ sceneId: id }).strict();
 export const ownPreparation = ownScene.extend({ versionId: id, inputValues: values }).strict();
 export const ownSubmission = ownPreparation.extend({ runId, runTitle: z.string().trim().max(120).optional() }).strict();
-export const ownDraft = ownPreparation.extend({ draftId: id, revision: z.int().nonnegative(), title: z.string().trim().min(1).max(120) }).strict();
+export const ownDraft = ownPreparation.extend({ draftId: id, revision: z.int().nonnegative(), title: z.string().trim().min(1).max(120), runTitle: z.string().trim().max(120).optional() }).strict();
 export const credentialCreate = z.object({ tokenId: id, name: z.string().trim().min(1).max(100) }).strict();
 export const credentialRevoke = z.object({ tokenId: id, revision: z.int().positive() }).strict();
 

@@ -1087,6 +1087,8 @@ fieldset.rerun-dialog-body { border: 0; margin: 0; min-width: 0; }
 .access-media-field { margin: 20px 0; }
 .access-media-field-label { margin-bottom: 9px; color: #344238; font-size: 14px; font-weight: 650; }
 .access-media-field-label > span { color: #b45c4c; }
+.access-run-title-field { max-width: 520px; }
+.access-run-title-field > .text-input { max-width: 520px; }
 .user-media-uploader { display: grid; gap: 11px; min-width: 0; }
 .user-media-file-input { display: none; }
 .user-media-picker-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; border: 1px dashed #b9c9b1; border-radius: 13px; background: linear-gradient(120deg, #f5f9f1, #fbfcf9); }

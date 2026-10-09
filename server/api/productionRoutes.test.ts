@@ -48,6 +48,13 @@ test("运行output-media读取本地/祖先归档、HEAD与Range，外部地址�
   }
   const externalId = id("output-media-external");
   h.store.importRun(h.settings.projectDirectory, { ...original, runId: externalId, outputs: [{ key: "image", label: "外部地址", type: "image_list", value: ["https://example.invalid/cover.jpg"] }] });
+  // A step that failed mid-run keeps its already archived media readable; collecting it still requires completion.
+  const partialId = id("output-media-partial");
+  h.store.importRun(h.settings.projectDirectory, { ...original, runId: partialId, status: "failed", steps: original.steps.map(step => ({ ...step, status: "failed" })) });
+  const partialUrl = base + "/api/v1/runs/" + partialId + "/output-media?outputKey=image&mediaIndex=0&stepId=image";
+  const partialResponse = await fetch(partialUrl); assert.equal(partialResponse.status, 200); assert.equal(await partialResponse.text(), bytes);
+  const collect = await fetch(base + "/api/v1/assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "未完成步骤结果", createId: id("partial-collect"), source: { runId: partialId, stepId: "image", outputKey: "image" } }) });
+  assert.equal(collect.status, 400);
   assert.equal((await fetch(base + "/api/v1/runs/" + externalId + "/output-media?outputKey=image")).status, 400);
   assert.throws(() => h.assets.localMediaFile(h.settings.projectDirectory, "/api/comfyui/view?filename=cover.jpg"), HttpError);
 });

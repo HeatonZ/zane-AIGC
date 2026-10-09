@@ -13,7 +13,7 @@ import { businessRun, businessRunInputs, BUSINESS_EVENT_TYPES, scrubBusinessValu
 import type { RunInputQuery } from "../ai/accessSchemas.js";
 import { isRunId } from "../artifacts/runArtifacts.js";
 
-interface UserDraft { id: string; revision: number; userId: string; sceneId: string; versionId: string; title: string; inputValues: Record<string, JsonValue>; updatedAt: string; isFavorite?: boolean }
+interface UserDraft { id: string; revision: number; userId: string; sceneId: string; versionId: string; title: string; runTitle?: string; inputValues: Record<string, JsonValue>; updatedAt: string; isFavorite?: boolean }
 export const userRun = businessRun;
 export class UserPortalService {
   constructor(readonly access: AccessService, readonly scenes: AiSceneService, readonly runs: RunService) {}
@@ -165,12 +165,13 @@ export class UserPortalService {
     const resumed = await this.runs.submit({ workflow: run.workflow, inputValues: run.inputValues, resumeFromRunId: runId, runId: input.newRunId }, { ownerUserId: identity.id, submitter: runSubmitter(identity), authorize: () => this.checkSubmission(identity, run.sceneId) });
     return this.viewRun(project, resumed);
   }
-  async saveDraft(identity: Identity, input: { draftId: string; revision: number; sceneId: string; versionId: string; title: string; inputValues: Record<string, JsonValue> }) {
+  async saveDraft(identity: Identity, input: { draftId: string; revision: number; sceneId: string; versionId: string; title: string; runTitle?: string; inputValues: Record<string, JsonValue> }) {
+    const runTitle = typeof input.runTitle === "string" ? input.runTitle.trim() : "";
     await this.safeInputs(identity, input.sceneId, input.versionId, input.inputValues); const project = await this.project();
     const current = this.access.store.getDocument<UserDraft>(project, "user-drafts", input.draftId);
     if (current && current.userId !== identity.id) throw new HttpError(404, "草稿不存在", "OBJECT_NOT_FOUND");
     this.access.authorizeScene(identity, input.sceneId);
-    try { return { draft: this.access.store.putDocumentChecked<UserDraft>(project, "user-drafts", { id: input.draftId, revision: input.revision, userId: identity.id, sceneId: input.sceneId, versionId: input.versionId, title: input.title, inputValues: input.inputValues, isFavorite: current?.isFavorite === true, updatedAt: new Date().toISOString() }, input.revision, () => { this.access.authorizeScene(identity, input.sceneId); }), nextAction: "get_own_draft" }; } catch (error) { if ((error as Error).message === "DOCUMENT_CONFLICT") throw new HttpError(409, "草稿版本冲突，请读取同一ID对账", "DRAFT_REVISION_CONFLICT"); throw error; }
+    try { return { draft: this.access.store.putDocumentChecked<UserDraft>(project, "user-drafts", { id: input.draftId, revision: input.revision, userId: identity.id, sceneId: input.sceneId, versionId: input.versionId, title: input.title, ...(runTitle ? { runTitle } : {}), inputValues: input.inputValues, isFavorite: current?.isFavorite === true, updatedAt: new Date().toISOString() }, input.revision, () => { this.access.authorizeScene(identity, input.sceneId); }), nextAction: "get_own_draft" }; } catch (error) { if ((error as Error).message === "DOCUMENT_CONFLICT") throw new HttpError(409, "草稿版本冲突，请读取同一ID对账", "DRAFT_REVISION_CONFLICT"); throw error; }
   }
   async getDraft(identity: Identity, id: string) { this.access.refresh(identity); const draft = this.access.store.getDocument<UserDraft>(await this.project(), "user-drafts", id); if (!draft || draft.userId !== identity.id) throw new HttpError(404, "草稿不存在", "OBJECT_NOT_FOUND"); return { draft: { ...draft, isFavorite: draft.isFavorite === true } }; }
   async listDrafts(identity: Identity, query: { limit?: number; cursor?: string }) { this.access.refresh(identity); return accessPagination(this.access.store.listDocuments<UserDraft>(await this.project(), "user-drafts").filter(draft => draft.userId === identity.id).sort((left, right) => compareDrafts(left, right, "updatedAt")).map(({ inputValues: _values, ...draft }) => ({ ...draft, isFavorite: draft.isFavorite === true, inputValuesOmitted: true })), query, "drafts:" + identity.id); }

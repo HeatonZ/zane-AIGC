@@ -27,7 +27,7 @@ export type TaskDraftEnvelope = z.output<typeof taskDraftEnvelopeSchema>;
 export const ownDraftEnvelopeSchema = z.object({
   draft: z.object({
     id: z.string().min(1), revision: z.int().positive(), userId: z.string().min(1), sceneId: z.string(), versionId: z.string(),
-    title: z.string(), updatedAt: z.string(), isFavorite: z.boolean(), inputValues: values,
+    title: z.string(), runTitle: z.string().optional(), updatedAt: z.string(), isFavorite: z.boolean(), inputValues: values,
   }).strict(),
   nextAction: z.string().optional(),
 }).strict();

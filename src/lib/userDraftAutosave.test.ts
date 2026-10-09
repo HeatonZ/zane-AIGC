@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OwnDraftSaveQueue, sameDraftInputs, type OwnDraftSaveRequest, type OwnDraftSaveSession } from "./userDraftAutosave.js";
+import { OwnDraftSaveQueue, sameDraftInputs, sameDraftSnapshot, type OwnDraftSaveRequest, type OwnDraftSaveSession } from "./userDraftAutosave.js";
 
 function session(): OwnDraftSaveSession {
   return {
@@ -82,3 +82,33 @@ test("草稿回执对账比较JSON对象时忽略键顺序", () => {
   assert.equal(sameDraftInputs({ nested: { b: 2, a: 1 }, list: [1, 2] }, { list: [1, 2], nested: { a: 1, b: 2 } }), true);
   assert.equal(sameDraftInputs({ value: 1 }, { value: "1" }), false);
 });
+test("可选运行标题随草稿一起写入，并在确认与失败快照中保留", async () => {
+  const writes: OwnDraftSaveRequest[] = [];
+  const queue = new OwnDraftSaveQueue(async request => {
+    writes.push(request);
+    return { draft: { id: request.draftId, revision: request.revision + 1, inputValues: request.inputValues } };
+  });
+  const current = session();
+  current.runTitle = "第一版";
+  await queue.save(current, { text: "内容" }, 1);
+  assert.equal(writes[0].runTitle, "第一版");
+  assert.deepEqual(current.lastSaved, { editVersion: 1, inputValues: { text: "内容" }, runTitle: "第一版" });
+  const clearing = session();
+  clearing.revision = 1;
+  await queue.save(clearing, { text: "内容" }, 1);
+  assert.equal("runTitle" in writes[1], false);
+  const failing = new OwnDraftSaveQueue(async () => { throw { status: 409 }; });
+  const conflicted = session();
+  conflicted.runTitle = "待核对";
+  await assert.rejects(failing.save(conflicted, { text: "内容" }, 1));
+  assert.deepEqual(conflicted.failedWrite, { editVersion: 1, inputValues: { text: "内容" }, runTitle: "待核对" });
+});
+
+test("草稿回执对账同时比较输入与可选运行标题，标题不同不视为已确认", () => {
+  assert.equal(sameDraftSnapshot({ inputValues: { a: 1 }, runTitle: "第一版" }, { inputValues: { a: 1 }, runTitle: "第一版" }), true);
+  assert.equal(sameDraftSnapshot({ inputValues: { a: 1 }, runTitle: "第一版" }, { inputValues: { a: 1 } }), false);
+  assert.equal(sameDraftSnapshot({ inputValues: { a: 1 } }, { inputValues: { a: 1 }, runTitle: "第一版" }), false);
+  assert.equal(sameDraftSnapshot({ inputValues: { a: 1 }, runTitle: "第一版" }, { inputValues: { a: 2 }, runTitle: "第一版" }), false);
+  assert.equal(sameDraftSnapshot({ inputValues: { a: 1 } }, { inputValues: { a: 1 } }), true);
+});
+

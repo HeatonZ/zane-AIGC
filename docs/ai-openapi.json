@@ -148,11 +148,12 @@
       "url": {
         "type": "string",
         "required": true,
-        "protocol": "https",
-        "port": 443,
-        "publicHostOnly": true,
+        "protocol": "http|https",
+        "port": "any",
+        "addressPolicy": "public addresses only; loopback, private, link-local and reserved literals or DNS results are rejected",
         "redirects": "rejected",
-        "queryCredentials": "rejected"
+        "queryCredentials": "rejected",
+        "plaintextHttp": "allowed but sends credentials unencrypted; prefer HTTPS when available"
       },
       "method": {
         "type": "string",
@@ -235,15 +236,31 @@
         "required": false,
         "default": 120,
         "minimum": 1,
-        "maximum": 300
+        "maximum": 600
+      },
+      "retries": {
+        "type": "integer",
+        "required": false,
+        "default": 0,
+        "minimum": 0,
+        "maximum": 5,
+        "description": "additional attempts after the first failure; omitted or 0 keeps exactly one request"
+      },
+      "retryDelaySeconds": {
+        "type": "integer",
+        "required": false,
+        "default": 2,
+        "minimum": 0,
+        "maximum": 30,
+        "description": "base delay before each retry; exponential backoff doubling per retry and capped at 60 seconds"
       }
     },
     "response": {
       "status": "2xx required",
       "outputs": {
-        "response": "JSON value, or UTF-8 text for non-JSON; null for empty; mapped base64 explicitly omitted",
-        "status": "HTTP status number",
-        "images": "optional image_list when responseImages configured"
+        "response": "optional declared output; JSON value, or UTF-8 text for non-JSON; null for empty; mapped base64 explicitly omitted",
+        "status": "optional declared output; HTTP status number",
+        "images": "optional image_list when responseImages configured; declare it alone for image-only scenes"
       },
       "maximumBytes": 4194304
     },
@@ -265,8 +282,62 @@
     "sideEffects": {
       "prepare": "none",
       "publish": "none",
-      "execute": "one request; may incur third-party cost or mutate third-party state",
-      "automaticRetries": false
+      "execute": "one request per attempt; may incur third-party cost or mutate third-party state",
+      "automaticRetries": "opt-in through retries; resends the identical request only after network failures, timeouts or HTTP 408/429/500/502/503/504, so a lost acknowledgement can repeat third-party billing or state changes"
+    }
+  },
+  "x-code-step": {
+    "version": "1",
+    "capabilityId": "core.code",
+    "language": "javascript",
+    "entry": "async function body evaluated once; return an object keyed by the declared output ports",
+    "sandbox": {
+      "isolation": "worker_thread + node:vm; one single-use worker per execution",
+      "sharedGlobals": "none; only ECMAScript built-ins and console",
+      "nodeBuiltins": false,
+      "network": false,
+      "filesystem": false,
+      "process": false,
+      "environment": false,
+      "timers": false,
+      "webAssembly": "engine-level only; bounded by timeout and memory"
+    },
+    "code": {
+      "maximumBytes": 65536,
+      "inputAccess": "inputs keyed by the declared input port keys; media inputs enter as a read-only [{filename}] projection with no path, URL or bytes",
+      "inputMaximumBytes": 4194304,
+      "output": "must return an object containing every declared output port with the declared type; extra keys are rejected"
+    },
+    "limits": {
+      "timeoutMs": {
+        "default": 5000,
+        "minimum": 200,
+        "maximum": 60000
+      },
+      "memoryMb": 128,
+      "outputMaximumBytes": 1048576,
+      "logs": {
+        "maximumLines": 200,
+        "maximumBytes": 32768
+      }
+    },
+    "determinism": "pure data transformation expected; Date/Math.random are available but recorded results stay the authority",
+    "errors": [
+      "INVALID_CODE_CONFIG",
+      "INVALID_CODE_INPUT",
+      "INVALID_CODE_OUTPUT",
+      "CODE_SYNTAX_ERROR",
+      "CODE_TIMEOUT",
+      "CODE_OUTPUT_NOT_SERIALIZABLE",
+      "CODE_OUTPUT_TOO_LARGE",
+      "CODE_EXECUTION_FAILED"
+    ],
+    "sideEffects": {
+      "prepare": "none",
+      "publish": "none",
+      "execute": "local CPU and memory only; no external service, no provider cost",
+      "automaticRetries": false,
+      "cancellable": true
     }
   },
   "x-entry-mode": "full",
@@ -296,21 +367,27 @@
     "execution": "no_additional_model_request_resume_reuses_completed_writer_and_aixg"
   },
   "x-hermes-output-json": {
-    "version": "2",
+    "version": "3",
     "input": "one_json_object_matching_declared_output_keys",
-    "acceptedWrapper": "optional_full_json_markdown_fence",
+    "acceptedWrapper": [
+      "optional_full_json_markdown_fence",
+      "brace_free_prose_around_exactly_one_complete_root_object"
+    ],
     "recovery": [
       "remove_one_premature_root_closing_brace_before_another_object_member",
-      "escape_literal_lf_cr_tab_inside_json_strings"
+      "escape_literal_lf_cr_tab_inside_json_strings",
+      "locate_the_single_complete_root_object_when_every_other_response_character_is_brace_free"
     ],
-    "recoveryComposition": "one_recovery_family_only",
+    "recoveryComposition": "one_object_repair_family_only",
     "recoveryGuards": [
-      "entire_response_parses",
+      "accepted_object_parses_in_full",
       "all_declared_keys_present",
       "no_undeclared_keys",
-      "no_duplicate_root_keys"
+      "no_duplicate_root_keys",
+      "exactly_one_accepted_object",
+      "no_braces_outside_the_accepted_object"
     ],
-    "contentPolicy": "never_truncate_extract_first_object_or_rewrite_values",
+    "contentPolicy": "never_truncate_rewrite_or_concatenate; locating_one_complete_root_object_never_drops_a_declared_field_or_a_second_object",
     "modelRetry": "none",
     "diagnostics": "hermes.output_json_repaired_log_with_step_profile_kind_and_offset_no_content",
     "failure": "run_or_step_failed_with_Hermes_output_JSON_message_no_automatic_resubmit"
@@ -393,7 +470,7 @@
   },
   "info": {
     "title": "Zane Workbench AI API",
-    "version": "1.5.29",
+    "version": "1.5.31",
     "description": "AI操作面契约，不是所有旧版设置/连接器接口的全集。工具参数与文档同源；只读/预检不生成，执行可能计费。MCP响应包装与原HTTP对象不同。"
   },
   "servers": [
@@ -6214,7 +6291,7 @@
     "/api/v1/self/scenes/{sceneId}/runs": {
       "post": {
         "operationId": "submit_own_scene",
-        "description": "可能付费。允许额外输入键透传并保存在运行输入中，已声明字段照常校验。先保存runId；服务端由发布快照构造流程和归属。图片固定版本归档后，Hermes/AIXG读取为inline图片，ComfyUI上传同一来源；不使用previewUrl作凭证。版本/授权变化拒绝；响应丢失查询同一runId。",
+        "description": "可能付费。可选runTitle（≤120字符）作为运行标题；省略或空字符串时运行记录不写标题，界面回退场景标题。允许额外输入键透传并保存在运行输入中，已声明字段照常校验。先保存runId；服务端由发布快照构造流程和归属。图片固定版本归档后，Hermes/AIXG读取为inline图片，ComfyUI上传同一来源；不使用previewUrl作凭证。版本/授权变化拒绝；响应丢失查询同一runId。",
         "x-ai-effect": "execute",
         "x-access-role": "authenticated",
         "security": [
@@ -6756,7 +6833,7 @@
       },
       "post": {
         "operationId": "save_own_draft",
-        "description": "保存本人输入草稿。新对象revision:0；更新用读取到的revision。先保存draftId；响应丢失按同一ID对账。输入最大512KB；更新保留收藏状态，收藏通过set_own_draft_favorite显式修改。",
+        "description": "保存本人输入草稿。新对象revision:0；更新用读取到的revision。先保存draftId；响应丢失按同一ID对账。输入最大512KB；更新保留收藏状态，收藏通过set_own_draft_favorite显式修改。可选runTitle（≤120字符）是提交时的任务标题，与title（场景标题）分开保存；保存请求是完整替换，省略或留空即清除已保存标题，与客户端当前表单一致。",
         "x-ai-effect": "write",
         "x-access-role": "authenticated",
         "security": [
@@ -6792,6 +6869,9 @@
                   },
                   "title": {
                     "$ref": "#/components/schemas/save_own_draftInput/properties/title"
+                  },
+                  "runTitle": {
+                    "$ref": "#/components/schemas/save_own_draftInput/properties/runTitle"
                   }
                 },
                 "required": [
@@ -12248,7 +12328,7 @@
     "/api/v1/capabilities": {
       "get": {
         "operationId": "list_capabilities",
-        "description": "分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。core.http_request支持JSON或multipart授权图片上传、base64响应映射为images；服务端环境变量鉴权，配置不请求，固定发布后显式执行才可能计费，返回response/status及可选images，不自动重试。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。",
+        "description": "分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。core.http_request支持JSON或multipart授权图片上传、base64响应映射为images；服务端环境变量鉴权，配置不请求，固定发布后显式执行才可能计费，返回response/status与可选images，三者都是可选声明——生图场景可只声明images；默认一次请求，显式retries(0–5)只重试网络失败、超时和HTTP 408/429/5xx。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。core.code在隔离沙箱执行本地JavaScript做数据变换/控制流（无文件/网络/Node模块/计时器，128MB内存与200–60000毫秒超时，死循环与失控强制终止），输入按声明端口取JSON（媒体为只读[{filename}]投影），return对象键对应声明的text/number/boolean/json输出端口，配置与预检不执行代码；确定性数据处理优先text.template/data.zip/data.select/core.condition。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。",
         "x-ai-effect": "read",
         "x-access-role": "admin",
         "security": [
@@ -36090,6 +36170,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          },
+          "runTitle": {
+            "type": "string",
+            "maxLength": 120
           }
         },
         "required": [
@@ -40828,7 +40912,7 @@
                       "additionalProperties": {
                         "$ref": "#/components/schemas/preview_rerunInput/$defs/__schema0"
                       },
-                      "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds字段契约，密钥值不得写入配置"
+                      "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/apiKeyHeader/apiKeyPrefix/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds/retries/retryDelaySeconds字段契约（密钥值不得写入配置；retries默认0保持单次请求，只重试网络失败、超时和408/429/5xx，重试会重发同一请求，可能重复计费），密钥值不得写入配置；core.code使用code（本地沙箱JavaScript，return输出对象）与timeoutMs（200–60000毫秒，默认5000）字段，输出端口与类型在步骤outputs声明，契约x-code-step"
                     },
                     "inputs": {
                       "type": "array",
@@ -41099,7 +41183,7 @@
                       "additionalProperties": {
                         "$ref": "#/components/schemas/rerunInput/$defs/__schema0"
                       },
-                      "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds字段契约，密钥值不得写入配置"
+                      "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/apiKeyHeader/apiKeyPrefix/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds/retries/retryDelaySeconds字段契约（密钥值不得写入配置；retries默认0保持单次请求，只重试网络失败、超时和408/429/5xx，重试会重发同一请求，可能重复计费），密钥值不得写入配置；core.code使用code（本地沙箱JavaScript，return输出对象）与timeoutMs（200–60000毫秒，默认5000）字段，输出端口与类型在步骤outputs声明，契约x-code-step"
                     },
                     "inputs": {
                       "type": "array",
@@ -41346,7 +41430,7 @@
                 "additionalProperties": {
                   "$ref": "#/components/schemas/review_runInput/$defs/__schema0"
                 },
-                "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds字段契约，密钥值不得写入配置"
+                "description": "能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/apiKeyHeader/apiKeyPrefix/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds/retries/retryDelaySeconds字段契约（密钥值不得写入配置；retries默认0保持单次请求，只重试网络失败、超时和408/429/5xx，重试会重发同一请求，可能重复计费），密钥值不得写入配置；core.code使用code（本地沙箱JavaScript，return输出对象）与timeoutMs（200–60000毫秒，默认5000）字段，输出端口与类型在步骤outputs声明，契约x-code-step"
               },
               "inputs": {
                 "type": "array",

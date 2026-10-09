@@ -207,7 +207,7 @@ AI 提交必须先保存 UUID runId 与 versionId；响应丢失只查询原 ID�
 - 系统反馈（契约1.5.8）：普通用户移除直接向 Agent 提交退回意见的入口，HTTP/MCP 同样拒绝 feedback 字段；保留确认和无意见退回。用户在“系统反馈”提交问题/建议并查看本人处理进度，管理员在后台“系统反馈”读取完整内容、回复及更新待处理/处理中/已解决/不采纳状态。已结束反馈须显式重新处理。反馈使用现有 SQLite 权威服务，不自动注入 Agent、evolution 或工作流，也不触发生成；提交先保存 feedbackId，处理带 revision，未知回执读取原ID对账，不自动重放。
 - 媒体：本人上传时先保存 assetId，使用 assetId + assetVersion 固定引用；不接受服务器本地路径。媒体与HEAD/Range也检查归属。
 - 历史：旧场景/任务/素材原地保留；没有可靠归属的历史资源仅管理员可见，不自动发给新用户。旧浏览器无归属 outbox 保留，管理页可下载备份但不会自动恢复。
-- AI：本人“账户与AI接入”创建 token（明文仅显示一次，90天有效），stdio/HTTP配置 ZANE_API_TOKEN。comfyui-dev 若需管理业务，使用管理员本人的 token；profile 名称不能提权。示例配置不包含真实凭证，不提交密钥到仓库。旧后台1.3.0与新MCP1.4.0不兼容，先安排工作台正式升级再启用。
+- AI：token 由管理员在管理后台“用户管理 → 本人 AI 凭证”创建（用户端已不再提供 AI 接入入口；HTTP/MCP 仍保留 list_own_tokens / create_own_token / revoke_own_token）。明文仅显示一次，90天有效，stdio/HTTP配置 ZANE_API_TOKEN。comfyui-dev 若需管理业务，使用管理员本人的 token；profile 名称不能提权。示例配置不包含真实凭证，不提交密钥到仓库。旧后台1.3.0与新MCP1.4.0不兼容，先安排工作台正式升级再启用。
 
 本次代码不等于正式服务已切换，正式账户和 Hermes token 仍需在正常升级后显式配置。完整实现范围、启用和限制见 [管理员/用户设计与实施](docs/admin-user-design.md)。临时验收避免影响当前网页：
 

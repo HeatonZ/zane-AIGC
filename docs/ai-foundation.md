@@ -1,12 +1,34 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.5.29。当前 92 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.5.31。当前 92 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
 
+### custom-code-step
+
+通用自定义代码基础步骤core.code：在隔离沙箱（worker_thread + node:vm，每次执行单worker；128MB内存上限、200–60000毫秒超时、同步死循环由vm超时终止、失控Promise与外部取消强制终止）执行本地JavaScript，只做数据变换与控制，不读写文件、不联网、不调用模型、不计费。用户代码以async function体书写，顶层return对象键对应声明的输出端口；输入按声明端口以JSON进入沙箱，媒体值以只读[{filename}]投影进入（只暴露数量/顺序/文件名）；输出必须齐声明端口与text/number/boolean/json类型，缺失、额外、不可序列化和超大返回都是明确失败；console日志仅失败时作为错误上下文。代码/端口/超时通过草稿编辑，发布快照固定后才在提交执行时运行，取消即终止沙箱；配置和预检不执行代码。复杂确定性数据处理仍优先text.template/data.zip/data.select/core.condition等基础步骤组合；既有发布快照不自动替换。机器契约x-code-step v1。
+
+| 工具 | HTTP | 副作用 |
+| --- | --- | --- |
+| `list_capabilities` | `GET /api/v1/capabilities` | read |
+| `create_scene` | `POST /api/v1/scenes` | write |
+| `get_scene_draft` | `GET /api/v1/scenes/{sceneId}/draft` | read |
+| `update_scene_draft` | `PATCH /api/v1/scenes/{sceneId}/draft` | write |
+| `validate_scene_draft` | `POST /api/v1/scenes/{sceneId}/validate` | read |
+| `publish_scene` | `POST /api/v1/scenes/{sceneId}/publish` | write |
+| `get_scene` | `GET /api/v1/scenes/{sceneId}` | read |
+| `prepare_scene` | `POST /api/v1/scenes/{sceneId}/prepare` | read |
+| `submit_scene` | `POST /api/v1/scenes/{sceneId}/runs` | execute |
+| `get_step_result` | `GET /api/v1/runs/{runId}/steps/{stepId}/result` | read |
+| `resume_run` | `POST /api/v1/runs/{sourceRunId}/resume` | execute |
+| `rerun` | `POST /api/v1/runs/{sourceRunId}/rerun` | execute |
+| `submit_own_scene` | `POST /api/v1/self/scenes/{sceneId}/runs` | execute |
+| `get_own_step_result` | `GET /api/v1/self/runs/{runId}/steps/{stepId}` | read |
+| `resume_own_run` | `POST /api/v1/self/runs/{runId}/resume` | execute |
+
 ### third-party-json-request
 
-通用第三方JSON HTTPS请求基础步骤：固定公网HTTPS地址、服务端环境变量鉴权、声明输入模板、超时和响应大小边界；DNS解析结果固定并拒绝本机/内网地址、重定向、敏感URL参数和本地媒体路径；配置/预检不调用第三方，发布快照固定后执行才发出一次请求，状态码/JSON或文本响应按步骤结果读取，不自动重试。普通ComfyUI生图优先core.comfyui；multipart扩展按声明映射上传当前运行授权图片，拒绝任意路径/预览URL；可解码base64响应为可选images并沿用归档/鉴权/分页，原base64明确标记省略。保留JSON旧模式，不做异步轮询、不保存第三方密钥。
+通用第三方JSON HTTP/HTTPS请求基础步骤：固定公网地址（HTTP/HTTPS、任意端口，支持公网IP字面量；拒绝本机/内网/回环/链路本地/保留IP和本机/内网域名）、服务端环境变量鉴权、声明输入模板、超时和响应大小边界；DNS解析结果固定并拒绝非公网地址、重定向、敏感URL参数和本地媒体路径；HTTP为明文传输，密钥不经TLS保护，能使用HTTPS时优先；配置/预检不调用第三方，发布快照固定后执行才发出一次请求，状态码/JSON或文本响应按步骤结果读取（可按场景只声明images输出）；默认一次请求，显式retries(0–5)与retryDelaySeconds(0–30)按指数退避只重试网络失败、超时和HTTP 408/429/500/502/503/504，重试会重发同一请求、可能重复计费或重复变更第三方状态，确定性错误（4xx、无效JSON、响应过大、图片解码失败、非公网地址、凭证缺失、配置/输入错误）立即失败不重试，取消运行中断等待；最终失败返回最后一次原始错误码，并以步骤warnings记录一次非阻断提示。普通ComfyUI生图优先core.comfyui；multipart扩展按声明映射上传当前运行授权图片，拒绝任意路径/预览URL；可解码base64响应为可选images并沿用归档/鉴权/分页，原base64明确标记省略。保留JSON旧模式，不做异步轮询、不保存第三方密钥。
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -416,7 +438,7 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 ## 最小使用闭环
 
 - 已有场景：get_workbench → list_scenes → get_scene（固定版本的输入schema/默认值/示例）→ prepare_scene → submit_scene（先保存UUID runId）→ wait_run → get_run_outputs/get_step_result。
-- 能力选型：list_capabilities({tier:basic})优先复用；通用素材映射/图片排版使用media.select_references / media.image_layout；逐项计划/素材/提示词严格对齐用data.zip（rows/first/rest）；精确JSON值schema随目录返回。基础缺口先补强，专用仅做定制节点适配；compatibilityOnly:true只保留旧流程。
+- 能力选型：list_capabilities({tier:basic})优先复用；通用素材映射/图片排版使用media.select_references / media.image_layout；逐项计划/素材/提示词严格对齐用data.zip（rows/first/rest）；复杂数据变换与控制流用core.code本地沙箱执行（不联网、不计费，契约x-code-step）；精确JSON值schema随目录返回。基础缺口先补强，专用仅做定制节点适配；compatibilityOnly:true只保留旧流程。
 - 新业务：create_scene（先保存scene.id）→ get_scene_draft → update_scene_draft（当前revision）→ validate_scene_draft → publish_scene（先保存UUID publicationId）→ get_scene读取真实发布版；发布不执行生成。
 - 共享选项：list_option_presets查看revision/使用场景 → save_option_preset；恢复旧发布版时共享选项冲突会克隆，已发布快照不变。
 - 局部修订：preview_rerun确认影响范围 → rerun（先保存新runId）；审核用最新reviewId，不绕过waiting。

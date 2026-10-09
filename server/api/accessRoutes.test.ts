@@ -141,6 +141,23 @@ test("本人草稿：同ID对账、revision保护、分页明确省略输入、�
   const page=(await h.api("/api/v1/self/drafts",a.token)).data;assert.equal(page.items[0].inputValuesOmitted,true);assert.ok(!("inputValues" in page.items[0]));
   assert.equal((await h.api("/api/v1/self/drafts",a.token,{...body,draftId:randomUUID(),userId:b.user.id})).response.status,400);
 });
+test("本人草稿与提交：可选运行标题与场景标题分开，完整替换保存，留空即清除",async t=>{
+  const h=await harness(t);const a=await h.create("alpha");await h.access.setScenes({userId:a.user.id,revision:1,sceneIds:["demo"]});const draftId=randomUUID();const base={draftId,revision:0,sceneId:"demo",versionId:"version-a",title:"我的草稿",inputValues:{flag:true}};
+  assert.equal((await h.api("/api/v1/self/drafts",a.token,{...base,runTitle:"第一版"})).response.status,200);
+  const saved=(await h.api("/api/v1/self/drafts/"+draftId,a.token)).data.draft;assert.equal(saved.title,"我的草稿");assert.equal(saved.runTitle,"第一版");
+  assert.equal((await h.api("/api/v1/self/drafts",a.token,{...base,revision:saved.revision,runTitle:"  第二版  "})).response.status,200);
+  assert.equal((await h.api("/api/v1/self/drafts/"+draftId,a.token)).data.draft.runTitle,"第二版");
+  assert.equal((await h.api("/api/v1/self/drafts",a.token,{...base,revision:2,runTitle:""})).response.status,200);
+  assert.equal((await h.api("/api/v1/self/drafts/"+draftId,a.token)).data.draft.runTitle,undefined);
+  assert.equal((await h.api("/api/v1/self/drafts",a.token,{...base,revision:3,runTitle:"x".repeat(121)})).data.code,"INVALID_ACCESS_REQUEST");
+  const runId=randomUUID();
+  await h.api("/api/v1/self/scenes/demo/runs",a.token,{versionId:"version-a",runId,inputValues:{flag:true},runTitle:"带标题的任务"});
+  await until(()=>h.store.getRun(h.settings.projectDirectory,runId)?.status==="completed");
+  const record=h.store.getRun(h.settings.projectDirectory,runId)!;assert.equal(record.runTitle,"带标题的任务");assert.notEqual(record.runTitle,record.workflowName);
+  assert.equal((await h.api("/api/v1/self/runs/"+runId,a.token)).data.runTitle,"带标题的任务");
+  assert.equal((await h.api("/api/v1/self/scenes/demo/runs",a.token,{versionId:"version-a",runId:randomUUID(),inputValues:{flag:true},runTitle:"y".repeat(121)})).data.code,"INVALID_ACCESS_REQUEST");
+});
+
 test("本人执行：归属与发布快照在SQLite保存，响应丢失查原ID，任务/输出/媒体不串读",async t=>{
   const h=await harness(t);const a=await h.create("alpha");const b=await h.create("beta");const admin=await h.create("admin","admin");await h.access.setScenes({userId:a.user.id,revision:1,sceneIds:["demo"]});const runId=randomUUID();const body={versionId:"version-a",runId,inputValues:{flag:true}};
   assert.equal((await h.api("/api/v1/self/scenes/demo/runs",a.token,{...body,workflow:{steps:[]}})).response.status,400);

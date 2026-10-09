@@ -1,7 +1,7 @@
 import SystemFeedback from "./SystemFeedback";
 import { sortOwnDrafts } from "../lib/drafts";
 import { getOwnDraft, setOwnDraftFavorite } from "../lib/taskDraftApi";
-import { OwnDraftSaveQueue, sameDraftInputs, type OwnDraftSaveSession } from "../lib/userDraftAutosave";
+import { OwnDraftSaveQueue, sameDraftSnapshot, type OwnDraftSaveSession } from "../lib/userDraftAutosave";
 import { Star } from "lucide-react";
 import UserMediaInput, { type UserMediaKind } from "../components/UserMediaInput";
 import ObjectArrayInput from "../components/ObjectArrayInput";
@@ -19,7 +19,6 @@ import UserRunDetail from "../components/UserRunDetail";
 import { runDate, runStatusLabels } from "../lib/runDetails";
 import { parseObjectArrayFormValue } from "../lib/objectArrayInput";
 import type { WorkflowInputField } from "../types";
-import AccountTokens from "./AccountTokens";
 
 type PendingUpload = { id: string; key: string; type: string; sceneId: string };
 
@@ -27,11 +26,12 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   user: Account; onLogout: () => void; onAdmin?: () => void;
 }) {
   const api = <T,>(path: string, options?: RequestInit) => accessApi<T>(path, options, user.id);
-  const [page, setPage] = useState<"scenes" | "drafts" | "runs" | "account" | "feedback">("scenes");
+  const [page, setPage] = useState<"scenes" | "drafts" | "runs" | "feedback">("scenes");
   const [scenes, setScenes] = useState<AvailableScene[]>([]);
   const [sceneCursor, setSceneCursor] = useState<string>();
   const [scene, setScene] = useState<UserScene>();
   const [values, setValues] = useState<Record<string, unknown>>({});
+  const [runTitle, setRunTitle] = useState("");
   const valuesRef = useRef(values);
   valuesRef.current = values;
   const [busy, setBusy] = useState(false);
@@ -167,13 +167,14 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     const nextDraftId = draft?.id ?? crypto.randomUUID();
     const nextValues = draft?.inputValues ?? selected.inputDefaults;
     draftSessionRef.current = {
-      id: nextDraftId, revision: draft?.revision ?? 0, sceneId: selected.sceneId, versionId: selected.versionId, title: selected.title, hasServerDraft: Boolean(draft),
+      id: nextDraftId, revision: draft?.revision ?? 0, sceneId: selected.sceneId, versionId: selected.versionId, title: selected.title, runTitle: draft?.runTitle, hasServerDraft: Boolean(draft),
       editVersion: 0, savedEditVersion: 0, enqueuedEditVersion: 0, reconcileRequired: false, reviewRequired: false,
     };
     setScene(selected);
     valuesRef.current = nextValues;
     setValues(nextValues);
     setDraftId(nextDraftId);
+    setRunTitle(draft?.runTitle ?? "");
     setDraftRevision(draft?.revision ?? 0);
     setDraftUnknown(false);
     setDraftAutoSaveStatus(draft ? "saved" : "idle");
@@ -189,6 +190,14 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     const next = update(valuesRef.current);
     valuesRef.current = next;
     setValues(next);
+  }
+  function updateRunTitle(next: string) {
+    const session = draftSessionRef.current;
+    if (session) { session.runTitle = next; session.editVersion += 1; session.reviewRequired = false; }
+    setDraftAutoSaveStatus(session ? "pending" : "idle");
+    setError("");
+    setNotice("");
+    setRunTitle(next);
   }
   function autosaveDraftOnBlur() {
     void flushDraftAutosave().catch(() => undefined);
@@ -294,8 +303,8 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     if (!session) throw new Error("当前草稿表单尚未就绪");
     const data = await api<{ draft: OwnDraft }>("/api/v1/self/drafts/" + encodeURIComponent(session.id));
     const failed = session.failedWrite;
-    const matchesFailed = Boolean(failed && sameDraftInputs(data.draft.inputValues, failed.inputValues));
-    const matchesLastSaved = Boolean(session.lastSaved && sameDraftInputs(data.draft.inputValues, session.lastSaved.inputValues));
+    const matchesFailed = Boolean(failed && sameDraftSnapshot(data.draft, failed));
+    const matchesLastSaved = Boolean(session.lastSaved && sameDraftSnapshot(data.draft, session.lastSaved));
     session.revision = data.draft.revision;
     session.reconcileRequired = false;
     session.enqueuedEditVersion = session.savedEditVersion;
@@ -344,7 +353,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
       id = crypto.randomUUID();
       retainRunId(id);
       const accepted = await api<OwnRun>("/api/v1/self/scenes/" + scene.sceneId + "/runs", jsonBody({
-        versionId: scene.versionId, inputValues, runId: id, runTitle: scene.title,
+        versionId: scene.versionId, inputValues, runId: id, runTitle: runTitle.trim() || scene.title,
       }));
       clearRunId(); setRun(accepted); setPage("runs");
       await loadRuns();
@@ -439,15 +448,15 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   return <div className="access-shell">
     <aside className="access-sidebar">
       <h2>Zane Studio</h2><p>创作中心</p><strong>{user.displayName}</strong>
-      {([['scenes', '可用场景'], ['drafts', '我的草稿'], ['runs', '我的任务'], ['feedback', '系统反馈'], ['account', '账户与AI接入']] as const).map(([id, label]) =>
+      {([['scenes', '可用场景'], ['drafts', '我的草稿'], ['runs', '我的任务'], ['feedback', '系统反馈']] as const).map(([id, label]) =>
         <button key={id} disabled={busy || draftSaving || draftUnknown} className={page === id ? "active" : ""} onClick={() => void attempt(() => navigateToPage(id))}>{label}</button>)}
       {onAdmin && <button disabled={busy || draftSaving || draftUnknown} onClick={() => void attempt(returnToAdmin)}>返回管理后台</button>}
       <button disabled={busy || draftSaving || draftUnknown} onClick={() => void attempt(logout)}>退出登录</button>
     </aside>
     <main className="access-main">
       <header className="access-heading"><div>
-        <h1>{page === "scenes" ? "可用场景" : page === "drafts" ? "我的草稿" : page === "runs" ? "我的任务" : page === "feedback" ? "系统反馈" : "账户与AI接入"}</h1>
-        <p>{page === "feedback" ? "提交使用问题或改进建议，由管理员处理；不会自动影响 Agent。" : page === "runs" ? "跟踪任务进度、核对原始输入、查看结果；历史与详情以服务端运行快照为准。" : page === "drafts" ? "收藏常用输入草稿并置顶，快速继续填写和复用；所有确认保存的数据都在服务端。" : page === "account" ? "查看账户信息，为 AI 配置本人接入凭证。" : scene ? "输入框失焦后会自动保存到服务端，离开表单前也会先保存。" : "只展示你可以使用的已发布场景；所有已保存数据以服务端为准。"}</p>
+        <h1>{page === "scenes" ? "可用场景" : page === "drafts" ? "我的草稿" : page === "runs" ? "我的任务" : "系统反馈"}</h1>
+        <p>{page === "feedback" ? "提交使用问题或改进建议，由管理员处理；不会自动影响 Agent。" : page === "runs" ? "跟踪任务进度、核对原始输入、查看结果；历史与详情以服务端运行快照为准。" : page === "drafts" ? "收藏常用输入草稿并置顶，快速继续填写和复用；所有确认保存的数据都在服务端。" : scene ? "输入框失焦后会自动保存到服务端，离开表单前也会先保存。" : "只展示你可以使用的已发布场景；所有已保存数据以服务端为准。"}</p>
       </div></header>
       {error && <p className="access-error" role="alert">{error}</p>}
       {notice && <p className="access-success" role="status">{notice}</p>}
@@ -518,6 +527,12 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
                   : values[field.key] === undefined || values[field.key] === null ? "" : field.type === "json" ? JSON.stringify(values[field.key], null, 2) : String(values[field.key])}
                   placeholder={field.placeholder} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))} />}
             </label>)}
+            <label className="access-run-title-field" onBlur={handleDraftFieldBlur}>任务标题（可选）
+              <input className="text-input" type="text" maxLength={120} value={runTitle}
+                onChange={event => updateRunTitle(event.target.value)}
+                placeholder="留空则任务记录使用场景标题" aria-label="任务标题（可选）" />
+              <small className="access-muted">最多120个字符；保存在本场景的输入草稿中，提交时作为任务标题。</small>
+            </label>
             <div className="access-inline">
               <button className="button button-outline" type="submit" disabled={lockedForm}>保存我的草稿</button>
               <button className="button button-dark" type="button" disabled={lockedForm || !!pendingRun} onClick={() => void submit()}>{busy ? "处理中…" : "提交任务"}</button>
@@ -533,7 +548,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
         <div className="user-run-history-heading"><h2>我的草稿</h2><button className="run-icon-button" disabled={favoriteBusy} onClick={() => void attempt(reconcileFavorites)}>{favoriteUnknownId ? "读取原草稿ID对账" : "刷新草稿"}</button></div>
         <p className="access-muted">收藏置顶 · 同组最近保存优先</p>
         <ul className="access-list">{drafts.map(draft => <li key={draft.id}>
-          <span>{draft.title}<small>{draft.id} · r{draft.revision}</small></span>
+          <span>{draft.runTitle || draft.title}<small>{draft.id} · r{draft.revision}{draft.runTitle ? " · " + draft.title : ""}</small></span>
           <div className="draft-row-actions">
             <button className={`draft-favorite-button${draft.isFavorite ? " is-favorite" : ""}`} type="button" aria-pressed={Boolean(draft.isFavorite)} aria-label={`${draft.isFavorite ? "取消收藏" : "收藏"}：${draft.title}`} title={draft.isFavorite ? "取消收藏" : "收藏并置顶"} disabled={favoriteBusy || Boolean(favoriteUnknownId) || lockedForm} onClick={() => void attempt(() => favoriteDraft(draft))}><Star size={15} fill={draft.isFavorite ? "currentColor" : "none"} /><span>{draft.isFavorite ? "已收藏" : "收藏"}</span></button>
             <button className="button button-outline" disabled={lockedForm || favoriteBusy} onClick={() => void attempt(async () => {
@@ -565,10 +580,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
         </div>
       </>}
       {page === "feedback" && <SystemFeedback key={user.id} userId={user.id} />}
-      {page === "account" && <>
-        <section className="access-card"><h2>{user.displayName}</h2><p>登录名：{user.username} · 用户ID：{user.id}</p></section>
-        <AccountTokens />
-      </>}
     </main>
   </div>;
 }

@@ -166,6 +166,57 @@ test("真实stdio MCP：第三方请求分页发现、固定发布、冲突保�
 });
 
 
+test("真实stdio MCP：第三方请求重试字段经草稿/发布到真实执行器生效", async t => {
+  const received: Array<{ authorization?: string; body: unknown }> = [];
+  const variable = "TEST_MCP_RETRY_KEY"; const previousKey = process.env[variable];
+  process.env[variable] = "mcp-only-retry-key";
+  t.after(() => { if (previousKey === undefined) delete process.env[variable]; else process.env[variable] = previousKey; });
+  let attempts = 0;
+  const h = await aiHarness(t, { thirdPartyRequest: createThirdPartyJsonRequester({
+    async resolve() { return [{ address: "93.184.216.34", family: 4 }]; },
+    async send(request) {
+      attempts += 1;
+      received.push({ authorization: request.headers.Authorization, body: JSON.parse(request.body!.toString()) });
+      if (attempts === 1) return { status: 503, contentType: "application/json", body: Buffer.from('{"error":"busy"}') };
+      return { status: 200, contentType: "application/json", body: Buffer.from('{"task_id":"third-party-retry-job-1"}') };
+    },
+  }) });
+  const { call } = await connect(t, h.base);
+  const catalog = (await call("list_capabilities", { tier: "basic", limit: 100 })).payload.data as any;
+  const capability = catalog.capabilities.find((item: any) => item.id === "core.http_request");
+  assert.ok(capability); assert.ok(capability.config.some((field: any) => field.key === "retries"));
+  assert.ok(capability.config.some((field: any) => field.key === "retryDelaySeconds"));
+  const config: Record<string, unknown> = { url: "https://images.example.net/v1/generations", method: "POST", apiKeyEnv: variable, bodyTemplate: { prompt: "{{prompt}}", size: "1024x1024" }, timeoutSeconds: 30, retries: 2, retryDelaySeconds: 0 };
+  const workflow = { name: "第三方请求重试闭环", inputs: [{ key: "prompt", label: "提示词", type: "text", required: true }], steps: [{ id: "submit", name: "提交生图", kind: "capability", capabilityId: "core.http_request", capabilityVersion: capability.version, capabilityConfig: config, inputs: [{ key: "prompt", label: "提示词", sourceRef: "input.prompt" }], outputs: [{ key: "response", label: "第三方任务", type: "json" }, { key: "status", label: "HTTP状态", type: "number" }] }], outputs: [{ key: "job", label: "任务回执", type: "json", sourceRef: "step.submit.outputs.response" }] };
+  const created = await call("create_scene", { scene: { id: "mcp-http-retry", title: "重试夹具" }, workflow }); assert.equal(created.payload.ok, true);
+  const draft = (created.payload.data as any).revision;
+  assert.equal((await call("validate_scene_draft", { sceneId: "mcp-http-retry", revision: draft })).payload.ok, true);
+  const retryPublication = randomUUID();
+  assert.equal((await call("publish_scene", { sceneId: "mcp-http-retry", revision: draft, publicationId: retryPublication })).payload.ok, true);
+  assert.equal((await call("prepare_scene", { sceneId: "mcp-http-retry", versionId: retryPublication, inputValues: { prompt: "A red fox in watercolor" } })).payload.ok, true);
+  const runId = randomUUID();
+  assert.equal((await call("submit_scene", { sceneId: "mcp-http-retry", versionId: retryPublication, runId, inputValues: { prompt: "A red fox in watercolor" } })).payload.ok, true);
+  assert.equal(((await call("wait_run", { runId, timeoutSeconds: 5 })).payload.data as any).status, "completed");
+  assert.equal(received.length, 2); assert.deepEqual(received[0], received[1]);
+  assert.equal(received[0]!.authorization, "Bearer mcp-only-retry-key");
+  assert.deepEqual(received[0]!.body, { prompt: "A red fox in watercolor", size: "1024x1024" });
+  assert.match(JSON.stringify((await call("get_step_result", { runId, stepId: "submit" })).payload.data), /third-party-retry-job-1/);
+  // The same published flow without the retry fields keeps exactly one request.
+  const current = (await call("get_scene_draft", { sceneId: "mcp-http-retry" })).payload.data as any;
+  const single = structuredClone(workflow); delete (single.steps[0]!.capabilityConfig as Record<string, unknown>).retries; delete (single.steps[0]!.capabilityConfig as Record<string, unknown>).retryDelaySeconds;
+  assert.equal((await call("update_scene_draft", { sceneId: "mcp-http-retry", revision: current.revision, workflow: single })).payload.ok, true);
+  const singleDraft = ((await call("get_scene_draft", { sceneId: "mcp-http-retry" })).payload.data as any).revision;
+  assert.equal((await call("validate_scene_draft", { sceneId: "mcp-http-retry", revision: singleDraft })).payload.ok, true);
+  const singlePublication = randomUUID();
+  assert.equal((await call("publish_scene", { sceneId: "mcp-http-retry", revision: singleDraft, publicationId: singlePublication })).payload.ok, true);
+  const singleRun = randomUUID();
+  assert.equal((await call("submit_scene", { sceneId: "mcp-http-retry", versionId: singlePublication, runId: singleRun, inputValues: { prompt: "A blue owl" } })).payload.ok, true);
+  assert.equal(((await call("wait_run", { runId: singleRun, timeoutSeconds: 5 })).payload.data as any).status, "completed");
+  assert.equal(received.length, 3);
+  assert.equal(h.store.listRuns(h.settings.projectDirectory).runs.length, 2);
+});
+
+
 test("真实stdio MCP：第三方multipart图片从固定素材到真实执行器、图片分页与原ID对账", async t => {
   const source = await sharp({ create: { width: 8, height: 8, channels: 3, background: "blue" } }).png().toBuffer();
   const output = await sharp({ create: { width: 12, height: 12, channels: 3, background: "green" } }).png().toBuffer();
@@ -188,6 +239,18 @@ test("真实stdio MCP：第三方multipart图片从固定素材到真实执行�
   const created = await call("create_scene", { scene: { id: sceneId, title: "multipart fixture" }, workflow }); assert.equal(created.payload.ok, true);
   const draft = created.payload.data as any;
   assert.equal((await call("validate_scene_draft", { sceneId, revision: draft.revision })).payload.ok, true);
+  // Plain HTTP public endpoints (any port, public IP literal) validate; loopback stays rejected.
+  const http = structuredClone(workflow); http.steps[0]!.capabilityConfig.url = "http://93.184.216.34:3001/v1/images/edits";
+  const httpBase = (await call("get_scene_draft", { sceneId })).payload.data as any;
+  assert.equal((await call("update_scene_draft", { sceneId, revision: httpBase.revision, workflow: http })).payload.ok, true);
+  const httpRevision = ((await call("get_scene_draft", { sceneId })).payload.data as any).revision;
+  assert.equal((await call("validate_scene_draft", { sceneId, revision: httpRevision })).payload.ok, true);
+  const loopback = structuredClone(http); loopback.steps[0]!.capabilityConfig.url = "http://127.0.0.1:3001/v1/images/edits";
+  assert.equal((await call("update_scene_draft", { sceneId, revision: httpRevision, workflow: loopback })).payload.ok, true);
+  const loopbackRevision = ((await call("get_scene_draft", { sceneId })).payload.data as any).revision;
+  const loopbackValidation = (await call("validate_scene_draft", { sceneId, revision: loopbackRevision })).payload;
+  assert.equal(loopbackValidation.ok, false); assert.equal(loopbackValidation.error?.code, "INVALID_HTTP_REQUEST_CONFIG");
+  assert.equal((await call("update_scene_draft", { sceneId, revision: loopbackRevision, workflow })).payload.ok, true);
   const versionId = randomUUID(); await call("publish_scene", { sceneId, revision: draft.revision, publicationId: versionId });
   const inputValues = { product_images: [reference], prompt: "preserve product" };
   const preflight = await call("prepare_scene", { sceneId, versionId, inputValues }); assert.equal(preflight.payload.ok, true); assert.equal(sends, 0);

@@ -184,7 +184,7 @@ POST /api/v1/self/scenes/{sceneId}/runs
 
 副作用：execute
 
-可能付费。允许额外输入键透传并保存在运行输入中，已声明字段照常校验。先保存runId；服务端由发布快照构造流程和归属。图片固定版本归档后，Hermes/AIXG读取为inline图片，ComfyUI上传同一来源；不使用previewUrl作凭证。版本/授权变化拒绝；响应丢失查询同一runId。
+可能付费。可选runTitle（≤120字符）作为运行标题；省略或空字符串时运行记录不写标题，界面回退场景标题。允许额外输入键透传并保存在运行输入中，已声明字段照常校验。先保存runId；服务端由发布快照构造流程和归属。图片固定版本归档后，Hermes/AIXG读取为inline图片，ComfyUI上传同一来源；不使用previewUrl作凭证。版本/授权变化拒绝；响应丢失查询同一runId。
 
 ## list_own_drafts
 
@@ -216,7 +216,7 @@ POST /api/v1/self/drafts
 
 副作用：write
 
-保存本人输入草稿。新对象revision:0；更新用读取到的revision。先保存draftId；响应丢失按同一ID对账。输入最大512KB；更新保留收藏状态，收藏通过set_own_draft_favorite显式修改。
+保存本人输入草稿。新对象revision:0；更新用读取到的revision。先保存draftId；响应丢失按同一ID对账。输入最大512KB；更新保留收藏状态，收藏通过set_own_draft_favorite显式修改。可选runTitle（≤120字符）是提交时的任务标题，与title（场景标题）分开保存；保存请求是完整替换，省略或留空即清除已保存标题，与客户端当前表单一致。
 
 ## list_own_runs
 
@@ -360,7 +360,7 @@ GET /api/v1/capabilities
 
 副作用：read
 
-分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。core.http_request支持JSON或multipart授权图片上传、base64响应映射为images；服务端环境变量鉴权，配置不请求，固定发布后显式执行才可能计费，返回response/status及可选images，不自动重试。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。
+分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。core.http_request支持JSON或multipart授权图片上传、base64响应映射为images；服务端环境变量鉴权，配置不请求，固定发布后显式执行才可能计费，返回response/status与可选images，三者都是可选声明——生图场景可只声明images；默认一次请求，显式retries(0–5)只重试网络失败、超时和HTTP 408/429/5xx。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。core.code在隔离沙箱执行本地JavaScript做数据变换/控制流（无文件/网络/Node模块/计时器，128MB内存与200–60000毫秒超时，死循环与失控强制终止），输入按声明端口取JSON（媒体为只读[{filename}]投影），return对象键对应声明的text/number/boolean/json输出端口，配置与预检不执行代码；确定性数据处理优先text.template/data.zip/data.select/core.condition。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。
 
 ## get_workspace_status
 

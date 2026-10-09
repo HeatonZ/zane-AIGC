@@ -205,6 +205,62 @@ try {
   assert.deepEqual(await call("get_run", { runId: carryRunId }), carryRun);
   console.log("for_each carry real stdio MCP passed: schema -> revision/lost receipt -> fixed publication -> local execution -> item pagination -> replacement suffix rerun; no models/media.");
 
+  // Custom code step: local sandbox execution through the same compiled HTTP + stdio MCP services.
+  const codeCapability = capabilities.find(item => item.id === "core.code");
+  assert.ok(codeCapability && codeCapability.usage.tier === "basic" && codeCapability.editor.editableOutputs === true && codeCapability.config.some(field => field.key === "code" && field.type === "textarea"));
+  const codeSceneId = "isolated-code-step";
+  const codeFlow = { sceneId: codeSceneId, name: "自定义代码隔离验收", inputs: [{ key: "rows", type: "json", required: true }, { key: "prefix", type: "text", required: true }],
+    steps: [{ id: "aggregate", name: "汇总代码", kind: "capability", capabilityId: "core.code", capabilityVersion: codeCapability.version,
+      capabilityConfig: { code: "const rows = inputs.rows ?? [];\nconst total = rows.reduce((sum, row) => sum + row.amount, 0);\nreturn { count: rows.length, total, summary: inputs.prefix + ':' + rows.length + '/' + total, names: rows.map((row) => row.name) };", timeoutMs: 5000 },
+      inputs: [{ key: "rows", sourceRef: "input.rows" }, { key: "prefix", sourceRef: "input.prefix" }],
+      outputs: [{ key: "count", type: "number" }, { key: "total", type: "number" }, { key: "summary", type: "text" }, { key: "names", type: "json" }] }],
+    outputs: [{ key: "count", type: "number", sourceRef: "step.aggregate.outputs.count" }, { key: "total", type: "number", sourceRef: "step.aggregate.outputs.total" }, { key: "summary", type: "text", sourceRef: "step.aggregate.outputs.summary" }, { key: "names", type: "json", sourceRef: "step.aggregate.outputs.names" }] };
+  let codeDraft = await call("create_scene", { scene: { id: codeSceneId, title: "隔离代码步骤" }, workflow: codeFlow });
+  // Invalid drafts fail before publication: media output type, bad syntax, out-of-range timeout and empty code.
+  for (const [mutate, expected] of [
+    [(workflow) => { workflow.steps[0].outputs[0].type = "image_list"; }, "INVALID_CODE_CONFIG"],
+    [(workflow) => { workflow.steps[0].capabilityConfig.code = "return {"; }, "INVALID_CODE_CONFIG"],
+    [(workflow) => { workflow.steps[0].capabilityConfig.timeoutMs = 10; }, "INVALID_CODE_CONFIG"],
+    [(workflow) => { workflow.steps[0].capabilityConfig.code = ""; }, "INVALID_CAPABILITY_CONFIG"],
+  ]) {
+    const current = await call("get_scene_draft", { sceneId: codeSceneId });
+    const invalid = structuredClone(current.workflow); mutate(invalid);
+    const updated = await call("update_scene_draft", { sceneId: codeSceneId, revision: current.revision, workflow: invalid });
+    assert.equal((await raw("validate_scene_draft", { sceneId: codeSceneId, revision: updated.revision })).error.code, expected);
+  }
+  codeFlow.name = "确认汇总配置";
+  const staleCodeRevision = (await call("get_scene_draft", { sceneId: codeSceneId })).revision;
+  await call("update_scene_draft", { sceneId: codeSceneId, revision: staleCodeRevision, workflow: codeFlow }); // lost receipt
+  codeDraft = await call("get_scene_draft", { sceneId: codeSceneId });
+  assert.equal(codeDraft.workflow.name, "确认汇总配置");
+  assert.equal((await raw("update_scene_draft", { sceneId: codeSceneId, revision: staleCodeRevision, workflow: codeFlow })).error.code, "RESOURCE_REVISION_CONFLICT");
+  await call("validate_scene_draft", { sceneId: codeSceneId, revision: codeDraft.revision });
+  const codeVersionId = randomUUID(); const codePublication = { sceneId: codeSceneId, revision: codeDraft.revision, publicationId: codeVersionId };
+  await call("publish_scene", codePublication); assert.equal((await call("publish_scene", codePublication)).versionId, codeVersionId);
+  const codeInputs = { rows: [{ name: "a", amount: 2 }, { name: "b", amount: 3 }], prefix: "sum" };
+  const codePrepared = await call("prepare_scene", { sceneId: codeSceneId, versionId: codeVersionId, inputValues: codeInputs });
+  assert.deepEqual(codePrepared.boundaries.externalSteps, []);
+  assert.equal(codePrepared.externalServicesChecked, false);
+  const codeRunId = randomUUID();
+  await call("submit_scene", { sceneId: codeSceneId, versionId: codeVersionId, runId: codeRunId, inputValues: codeInputs }); // lost receipt -> same ID
+  assert.equal((await call("get_run", { runId: codeRunId })).runId, codeRunId);
+  assert.equal((await call("wait_run", { runId: codeRunId, timeoutSeconds: 20 })).status, "completed");
+  assert.deepEqual(await Promise.all(["count", "total", "summary", "names"].map(async key => (await call("get_run_outputs", { runId: codeRunId, outputKey: key, includeValues: true })).outputs[0].value)), [2, 5, "sum:2/5", ["a", "b"]]);
+  const codeRun = await call("get_run", { runId: codeRunId });
+  assert.equal(codeRun.steps[0].capabilityId, "core.code");
+  assert.deepEqual(codeRun.steps[0].outputs, { count: 2, total: 5, summary: "sum:2/5", names: ["a", "b"] });
+  // Execution-time failures stay explicit; the fixed publication snapshot is never rewritten by a failed run.
+  const failFlow = structuredClone(codeFlow); failFlow.steps[0].capabilityConfig.code = "throw new Error(\"sandbox failure\");";
+  const failBase = await call("get_scene_draft", { sceneId: codeSceneId }); // publishing advances the content revision
+  const failDraft = await call("update_scene_draft", { sceneId: codeSceneId, revision: failBase.revision, workflow: failFlow });
+  await call("validate_scene_draft", { sceneId: codeSceneId, revision: failDraft.revision });
+  const failVersionId = randomUUID(); await call("publish_scene", { sceneId: codeSceneId, revision: failDraft.revision, publicationId: failVersionId });
+  const failRunId = randomUUID(); await call("submit_scene", { sceneId: codeSceneId, versionId: failVersionId, runId: failRunId, inputValues: codeInputs });
+  assert.equal((await call("wait_run", { runId: failRunId, timeoutSeconds: 20 })).status, "failed");
+  assert.equal((await call("get_run", { runId: failRunId })).error.includes("sandbox failure"), true);
+  assert.equal((await raw("submit_scene", { sceneId: codeSceneId, versionId: codeVersionId, runId: codeRunId, inputValues: codeInputs })).error.code, "RUN_ALREADY_EXISTS");
+  assert.equal((await call("get_scene", { sceneId: codeSceneId, versionId: codeVersionId })).workflow.steps[0].capabilityConfig.code, codeFlow.steps[0].capabilityConfig.code);
+  console.log("Custom code step real stdio MCP passed: basic tier -> invalid config rejected -> fixed publication -> sandbox execution -> typed outputs -> explicit failure -> snapshot isolation; no models/media.");
   const report = { status: "passed", compiledBackend: true, realStdioMcp: true, isolated: true, baseUrl: base, temporary, sceneId: pkg.scene.id, versionId, runId, rerunId, imageCount: media.length, media, generationExecuted: false, externalSteps: [], checks: ["basic-tier-pagination-and-schema", "legacy-compatibility-discovery", "HTTP-MCP-shared-catalog", "asset-upload", "draft-revision-conflict", "publish-id-reconciliation", "fixed-publication-preflight", "run-id-reconciliation", "parallel-basic-composition", "output-and-step-pagination", "image-dimensions-sha256-HEAD-Range", "selective-item-rerun", "original-run-and-artifact-immutability"] };
   console.log(JSON.stringify(report, null, 2));
   if (process.argv.includes("--hold-ui")) {

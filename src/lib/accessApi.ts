@@ -44,4 +44,4 @@ export type Account = import("../../server/services/accessService").UserAccount;
 export interface AvailableScene { sceneId:string; title:string; summary:string; versionId:string; version:string }
 export interface UserScene extends AvailableScene { description:string; fields:Array<{key:string;label:string;type:import("../types").WorkflowFieldType;required:boolean;hidden:boolean;minimum?:number;maximum?:number;placeholder?:string;options?:string[];inputMode?:"object_array";itemFields?:import("../types").WorkflowObjectArrayItemField[]}>; inputDefaults:Record<string,unknown>; notices:string[] }
 export type OwnRun = import("../../server/services/runDetailService").BusinessRun;
-export interface OwnDraft { id:string;revision:number;sceneId:string;versionId:string;title:string;inputValues:Record<string,unknown>;updatedAt:string;isFavorite:boolean }
+export interface OwnDraft { id:string;revision:number;sceneId:string;versionId:string;title:string;runTitle?:string;inputValues:Record<string,unknown>;updatedAt:string;isFavorite:boolean }

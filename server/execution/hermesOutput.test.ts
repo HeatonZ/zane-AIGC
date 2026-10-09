@@ -31,8 +31,43 @@ test("Hermes recovery respects escaped quotes, backslashes, braces and nested JS
   assert.deepEqual(parseHermesOutput(source, keys).value, value);
 });
 
-test("Hermes rejects extraction, truncation, ambiguous duplicates and other malformed JSON", () => {
+test("Hermes locates exactly one complete declared object inside brace-free prose", () => {
+  const preamble = '说明：以下是提示词 JSON：\n';
+  for (const source of [
+    preamble + JSON.stringify(expected),
+    JSON.stringify(expected) + '\n\n复核：15镜齐全，导出路径 out.json。',
+    '两个闸门都全绿，现在输出最终 JSON：\n```json\n' + JSON.stringify(expected) + '\n```\n以上。',
+  ]) {
+    const result = parseHermesOutput(source, keys);
+    assert.deepEqual(result.value, expected);
+    assert.equal(result.repair?.kind, "prose_wrapped_json_object");
+    assert.equal(result.value.shots instanceof Array && result.value.shots.length, 15);
+  }
+  assert.deepEqual(parseHermesOutput(preamble + JSON.stringify(expected), keys).repair, { kind: "prose_wrapped_json_object", offset: preamble.length });
+});
+
+test("Hermes keeps one object repair when the located object still needs whitespace escaping", () => {
+  const text = "商品事实\n保持黑色\r\n禁区\t不虚构参数";
+  const object = '{"product_brief":"' + text + '"}';
+  const result = parseHermesOutput('说明：\n' + object + '\n完成。', ["product_brief"]);
+  assert.deepEqual(result.value, { product_brief: text });
+  assert.deepEqual(result.repair, { kind: "prose_wrapped_json_object", offset: 4, inner: { kind: "literal_string_whitespace", offset: object.indexOf("\n"), count: 4 } });
+  const value = { storyboard: text, shots: [{ description: "多行\n\t对白\r\n完整" }] };
+  const source = '{"storyboard":"' + text + '","shots":[{"description":"多行\n\t对白\r\n完整"}]}';
+  const wrapped = parseHermesOutput('复核完成。\n' + source + '\n以上。', keys);
+  assert.deepEqual(wrapped.value, value);
+  assert.deepEqual(wrapped.repair, { kind: "prose_wrapped_json_object", offset: 6, inner: { kind: "literal_string_whitespace", offset: source.indexOf("\n"), count: 8 } });
+});
+
+test("Hermes never locates an object when the remaining text hides structure", () => {
   const invalid = [
+    '格式如 {"storyboard":"demo"}，正式内容：\n' + JSON.stringify(expected),
+    '第一个对象：\n' + JSON.stringify(expected) + '\n第二个对象：' + JSON.stringify({ storyboard: "other", shots: [] }),
+    JSON.stringify(expected) + '\n{"result":"后续小对象"}',
+    JSON.stringify(expected) + '\n```json\n{"result":"围栏内小对象"}\n```',
+    '未完成：\n' + JSON.stringify({ storyboard: expected.storyboard }).slice(0, -1),
+    '未完成：\n' + broken.slice(0, -1),
+    '先说一个输入冲突，必\n' + broken + '\n末镜不丢。',
     broken + "额外说明", broken + JSON.stringify(expected),
     JSON.stringify({ storyboard: "only storyboard" }) + ' , "shots": [',
     '{"storyboard":"missing close", "shots": [}',
@@ -43,7 +78,6 @@ test("Hermes rejects extraction, truncation, ambiguous duplicates and other malf
     '{"storyboard":"only"},"unknown":[]}',
     '{"other":"only"},"shots":[]}',
     '{"storyboard":"only"},"shots":[]},"extra":1}',
-    '说明：' + JSON.stringify(expected),
     '```json\n' + broken + '\n```\n解释',
     JSON.stringify({ storyboard: "only" }) + JSON.stringify({ shots: [] }),
     '[{"storyboard":"only"}],"shots":[]}',
@@ -73,7 +107,7 @@ test("Hermes repairs literal LF/CR/TAB in text without changing decoded content"
 
 test("Hermes string whitespace repair preserves nested arrays, escapes and structural whitespace", () => {
   const value = { storyboard: 'quote " backslash \\ literal \\n\n } [ ] 😺', shots: [{ description: "多行\n\t对白\r\n完整" }, { description: "末镜不丢" }] };
-  const source = JSON.stringify(value, null, 2).replace(/\\n/g, (match, offset, all) => all[offset - 1] === "\\" ? match : "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t");
+  const source = JSON.stringify(value, null, 2).replace(/\\n/g, (match, offset, all) => all[offset - 1] === "\\" ? match : "\n").replace(/\\r/g, "\r").replace(/\t/g, "\t");
   const result = parseHermesOutput(source, keys);
   assert.deepEqual(result.value, value);
   assert.equal(result.repair?.kind, "literal_string_whitespace");
@@ -83,7 +117,7 @@ test("Hermes string whitespace repair preserves nested arrays, escapes and struc
 test("Hermes whitespace repair never accepts ambiguous fields, partial JSON or stacked repairs", () => {
   const source = '{"storyboard":"one\ntwo","shots":[]}';
   const invalid = [
-    source + "附加说明", source + source,
+    source + source,
     source.replace(',"shots":[]', ''),
     source.replace(',"shots":[]', ',"unknown":[],"shots":[]'),
     source.replace(',"shots":[]', ',"storyboard":"second","shots":[]'),
@@ -93,7 +127,7 @@ test("Hermes whitespace repair never accepts ambiguous fields, partial JSON or s
     source.replace("one\ntwo", "one\\\ntwo"),
     source.replace("one\ntwo", "one\u0000two"),
     source.replace("one\ntwo", "one\ntwo\u000bthree"),
-    '说明：' + source,
+    '说明：' + source + '\n补充：{"shots":[]}',
   ];
   for (const candidate of invalid) assert.throws(() => parseHermesOutput(candidate, keys), /Hermes 输出 JSON 格式无效/, candidate);
 });

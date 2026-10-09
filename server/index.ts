@@ -2037,7 +2037,7 @@ async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, s
     const description = typeof item.description === "string" ? item.description.trim() : "";
     return `${index + 1}. ${item.key}（${item.label ?? item.key}，类型：${item.type}）${description ? `；说明：${description}` : ""}`;
   }).join("\n");
-  const executionPrompt = `${appendHermesFeedback(prompt, feedback)}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n字符串内的换行、回车、制表符、双引号和反斜杠必须按 JSON 语法转义，不能直接写入原始控制字符。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
+  const executionPrompt = `${appendHermesFeedback(prompt, feedback)}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n回复的第一个字符必须是 {，最后一个字符必须是 }，除该对象外不得出现任何其他内容（包括复核结论、自检报告、完成说明、文件名或路径）。\n字符串内的换行、回车、制表符、双引号和反斜杠必须按 JSON 语法转义，不能直接写入原始控制字符；数组元素与对象成员之间必须有逗号。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
   await captureAgentPrompt?.(executionPrompt);
   const content = await hermesMessageContent(step, inputs, stepValues, types, executionPrompt, settings, signal);
   const rawResponse = await requestHermesCompletion(profile, connection, content, workflowTimeoutMs(settings.workflowTimeoutMinutes), signal);

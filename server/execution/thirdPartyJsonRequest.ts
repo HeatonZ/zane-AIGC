@@ -1,11 +1,13 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest, type RequestOptions } from "node:https";
 import { thirdPartyMediaConfig, thirdPartyMultipart, thirdPartyResponseImages, THIRD_PARTY_MEDIA_LIMITS } from "./thirdPartyMedia.js";
 import { HttpError } from "../errors.js";
 import type { JsonValue, RunStep } from "../domain/types.js";
 import { resolveStepInputs } from "../domain/workflowValues.js";
 import { isRuntimeMediaValue } from "../runtimeValue.js";
+import { delayWithAbort } from "./cancellation.js";
 import type { StepExecutionContext } from "./workflowExecutor.js";
 
 const MAX_REQUEST_BYTES = 256 * 1024;
@@ -13,12 +15,18 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const blockedHeaders = /^(?:host|content-length|transfer-encoding|connection|proxy-authorization|cookie|set-cookie|authorization|x-api-key|api-key|content-type)$/i;
 const sensitiveQueryKey = /(?:key|token|secret|password|auth|signature|credential)/i;
 const allowedMethods = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+/** Retries are an explicit trade-off: a resend can repeat third-party billing or state changes. */
+const MAX_THIRD_PARTY_RETRIES = 5;
+const MAX_THIRD_PARTY_RETRY_DELAY_SECONDS = 30;
+const MAX_THIRD_PARTY_RETRY_DELAY_MS = 60_000;
+/** Only failures an identical resend can plausibly fix; deterministic business errors never retry. */
+const retryableThirdPartyStatuses = new Set([408, 429, 500, 502, 503, 504]);
 
 export const THIRD_PARTY_JSON_REQUEST_CONTRACT = {
   version: "2",
   capabilityId: "core.http_request",
   request: {
-    url: { type: "string", required: true, protocol: "https", port: 443, publicHostOnly: true, redirects: "rejected", queryCredentials: "rejected" },
+    url: { type: "string", required: true, protocol: "http|https", port: "any", addressPolicy: "public addresses only; loopback, private, link-local and reserved literals or DNS results are rejected", redirects: "rejected", queryCredentials: "rejected", plaintextHttp: "allowed but sends credentials unencrypted; prefer HTTPS when available" },
     method: { type: "string", required: false, default: "POST", enum: allowedMethods },
     headers: { type: "object", required: false, default: {}, values: "non-sensitive strings", maximumEntries: 32 },
     apiKeyEnv: { type: "string", required: false, format: "^[A-Z][A-Z0-9_]{0,127}$", secretValueSource: "workbench_process_environment" },
@@ -28,11 +36,13 @@ export const THIRD_PARTY_JSON_REQUEST_CONTRACT = {
     multipartImages: { type: "array", default: [], items: { inputKey: "declared image input", fieldName: "multipart file field; repeated in source order" }, localFiles: "authorized current-run private copies only; no URL/preview fallback", limits: THIRD_PARTY_MEDIA_LIMITS },
     responseImages: { type: "object", required: false, fields: { path: "JSON path to array; default data", base64Field: "default b64_json", expectedCount: "optional integer 1..16" }, output: "images:image_list; validated local PNG/JPEG/WebP; base64 replaced with explicit omission marker", responseMaximumBytes: THIRD_PARTY_MEDIA_LIMITS.responseBytes },
     bodyTemplate: { type: "object|array", required: false, placeholder: "{{declaredInputKey}}", maximumBytes: MAX_REQUEST_BYTES, getBody: "rejected" },
-    timeoutSeconds: { type: "integer", required: false, default: 120, minimum: 1, maximum: 300 },
+    timeoutSeconds: { type: "integer", required: false, default: 120, minimum: 1, maximum: 600 },
+    retries: { type: "integer", required: false, default: 0, minimum: 0, maximum: MAX_THIRD_PARTY_RETRIES, description: "additional attempts after the first failure; omitted or 0 keeps exactly one request" },
+    retryDelaySeconds: { type: "integer", required: false, default: 2, minimum: 0, maximum: MAX_THIRD_PARTY_RETRY_DELAY_SECONDS, description: "base delay before each retry; exponential backoff doubling per retry and capped at 60 seconds" },
   },
-  response: { status: "2xx required", outputs: { response: "JSON value, or UTF-8 text for non-JSON; null for empty; mapped base64 explicitly omitted", status: "HTTP status number", images: "optional image_list when responseImages configured" }, maximumBytes: MAX_RESPONSE_BYTES },
+  response: { status: "2xx required", outputs: { response: "optional declared output; JSON value, or UTF-8 text for non-JSON; null for empty; mapped base64 explicitly omitted", status: "optional declared output; HTTP status number", images: "optional image_list when responseImages configured; declare it alone for image-only scenes" }, maximumBytes: MAX_RESPONSE_BYTES },
   errors: ["INVALID_HTTP_REQUEST_CONFIG", "INVALID_HTTP_REQUEST_INPUT", "HTTP_REQUEST_MEDIA_UNSUPPORTED", "HTTP_REQUEST_BODY_TOO_LARGE", "THIRD_PARTY_HOST_NOT_PUBLIC", "THIRD_PARTY_CREDENTIAL_MISSING", "THIRD_PARTY_CREDENTIAL_INVALID", "THIRD_PARTY_REQUEST_TIMEOUT", "THIRD_PARTY_HTTP_ERROR", "THIRD_PARTY_REQUEST_FAILED", "THIRD_PARTY_RESPONSE_TOO_LARGE", "INVALID_THIRD_PARTY_JSON", "INVALID_THIRD_PARTY_IMAGE"],
-  sideEffects: { prepare: "none", publish: "none", execute: "one request; may incur third-party cost or mutate third-party state", automaticRetries: false },
+  sideEffects: { prepare: "none", publish: "none", execute: "one request per attempt; may incur third-party cost or mutate third-party state", automaticRetries: "opt-in through retries; resends the identical request only after network failures, timeouts or HTTP 408/429/500/502/503/504, so a lost acknowledgement can repeat third-party billing or state changes" },
 } as const;
 
 type Address = { address: string; family: number };
@@ -80,13 +90,20 @@ function isPublicAddress(value: string, family: number) {
   return true;
 }
 
+/** Fixed endpoint policy: any public HTTP/HTTPS address and port is accepted, but the target must
+ * never be loopback, private, link-local or otherwise reserved. Literal addresses are checked
+ * here; hostnames are re-checked against every resolved address before sending, so a name that
+ * resolves into an internal network is rejected instead of requested. */
 export function validateThirdPartyEndpoint(value: unknown) {
-  if (typeof value !== "string" || !value.trim() || value.length > 2048) invalidConfig("第三方地址必须是有效的HTTPS URL");
+  if (typeof value !== "string" || !value.trim() || value.length > 2048) invalidConfig("第三方地址必须是有效的HTTP/HTTPS URL");
   let url: URL;
-  try { url = new URL(value as string); } catch { return invalidConfig("第三方地址必须是有效的HTTPS URL"); }
+  try { url = new URL(value as string); } catch { return invalidConfig("第三方地址必须是有效的HTTP/HTTPS URL"); }
   const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (url.protocol !== "https:" || url.port && url.port !== "443" || url.username || url.password || url.hash) invalidConfig("第三方地址仅支持无凭据、无片段的HTTPS 443地址");
-  if (!hostname.includes(".") || isIP(hostname) || /(?:^|\.)(?:localhost|local|internal|lan|home|test|invalid|example)$/.test(hostname)) invalidConfig("第三方地址必须使用公网域名，不能使用IP或本机/内网域名");
+  if (url.protocol !== "https:" && url.protocol !== "http:") invalidConfig("第三方地址仅支持HTTP/HTTPS协议");
+  if (url.port && Number(url.port) < 1) invalidConfig("第三方地址端口无效");
+  if (url.username || url.password || url.hash) invalidConfig("第三方地址不能包含凭据或片段");
+  const literal = isIP(hostname);
+  if (literal ? !isPublicAddress(hostname, literal) : !hostname.includes(".") || /(?:^|\.)(?:localhost|local|internal|lan|home|test|invalid|example)$/.test(hostname)) invalidConfig(literal ? "第三方IP不能指向本机、内网或保留地址" : "第三方地址必须使用公网域名或公网IP，不能使用本机/内网域名");
   for (const key of url.searchParams.keys()) if (sensitiveQueryKey.test(key) || /(?:api[-_]?key|access[-_]?token|password|secret|credential)/i.test(key)) invalidConfig("鉴权信息不能放在URL查询参数中");
   return url;
 }
@@ -128,7 +145,8 @@ export function validateThirdPartyRequestStep(step: RunStep) {
   if (config.apiKeyPrefix !== undefined && (typeof config.apiKeyPrefix !== "string" || config.apiKeyPrefix.length > 128 || /[\r\n]/.test(config.apiKeyPrefix))) invalidConfig("API密钥前缀无效");
   if (config.apiKeyEnv && Object.keys(safeHeaders).some(name => name.toLowerCase() === String(config.apiKeyHeader ?? "Authorization").toLowerCase())) invalidConfig("密钥请求头不能重复配置在附加请求头中");
   const timeoutSeconds = config.timeoutSeconds ?? 120;
-  if (typeof timeoutSeconds !== "number" || !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 300) invalidConfig("请求超时必须是1到300秒的整数");
+  if (typeof timeoutSeconds !== "number" || !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 600) invalidConfig("请求超时必须是1到600秒的整数");
+  thirdPartyRetryPlan(config);
   if (config.bodyTemplate !== undefined && config.bodyTemplate !== null) {
     if (!record(config.bodyTemplate) && !Array.isArray(config.bodyTemplate)) invalidConfig("JSON请求正文必须是对象或数组");
     if ((config.method ?? "POST") === "GET") invalidConfig("GET请求不能配置JSON正文");
@@ -170,7 +188,12 @@ function renderTemplate(value: JsonValue, inputs: Record<string, JsonValue>): Js
   return value;
 }
 
-const nodeTransport: ThirdPartyHttpTransport = {
+/** Request options follow the validated URL so plain HTTP endpoints and explicit ports work. */
+export function thirdPartyRequestOptions(url: URL, method: string, headers: Record<string, string>, lookup: NonNullable<RequestOptions["lookup"]>, signal: AbortSignal): RequestOptions {
+  return { hostname: url.hostname, port: Number(url.port || (url.protocol === "https:" ? 443 : 80)), path: url.pathname + url.search, method, headers, lookup, signal };
+}
+
+export const nodeTransport: ThirdPartyHttpTransport = {
   async resolve(hostname) {
     return await dnsLookup(hostname, { all: true, verbatim: true });
   },
@@ -185,12 +208,12 @@ const nodeTransport: ThirdPartyHttpTransport = {
     return await new Promise<ThirdPartyHttpResponse>((resolve, reject) => {
       let settled = false;
       const fail = (error: unknown) => { if (!settled) { settled = true; reject(error); } };
-      const request = httpsRequest({ hostname: url.hostname, port: 443, path: url.pathname + url.search, method, headers, lookup: pinnedLookup, signal }, response => {
+      const onResponse = (response: IncomingMessage) => {
         const chunks: Buffer[] = []; let size = 0;
         response.on("data", (chunk: Buffer | string) => {
           const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           size += bytes.length;
-          if (size > maxResponseBytes) { request.destroy(new HttpError(502, "第三方响应超过配置模式的大小限制", "THIRD_PARTY_RESPONSE_TOO_LARGE")); return; }
+          if (size > maxResponseBytes) { response.destroy(new HttpError(502, "第三方响应超过配置模式的大小限制", "THIRD_PARTY_RESPONSE_TOO_LARGE")); return; }
           chunks.push(bytes);
         });
         response.on("end", () => {
@@ -199,7 +222,9 @@ const nodeTransport: ThirdPartyHttpTransport = {
           resolve({ status: response.statusCode ?? 0, contentType: String(response.headers["content-type"] ?? ""), body: Buffer.concat(chunks) });
         });
         response.on("error", fail);
-      });
+      };
+      const requestOptions = thirdPartyRequestOptions(url, method, headers, pinnedLookup, signal);
+      const request = url.protocol === "https:" ? httpsRequest(requestOptions, onResponse) : httpRequest(requestOptions, onResponse);
       request.on("error", fail);
       if (body) request.write(body);
       request.end();
@@ -220,64 +245,118 @@ function parseResponse(response: ThirdPartyHttpResponse, maxResponseBytes = MAX_
   return text;
 }
 
+/** One attempt: resolve, validate, send and parse. Errors are normalized here so the retry decision
+ * depends only on stable codes, never on transport internals that could leak a URL or credentials. */
+async function sendThirdPartyAttempt(context: StepExecutionContext, transport: ThirdPartyHttpTransport, url: URL, method: string): Promise<Record<string, JsonValue>> {
+  const config = context.step.capabilityConfig ?? {};
+  const timeoutSignal = AbortSignal.timeout(Number(config.timeoutSeconds ?? 120) * 1000);
+  const signal = AbortSignal.any([context.signal, timeoutSignal]);
+  try {
+    if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
+    let abortListener: (() => void) | undefined;
+    const resolved = await Promise.race([
+      transport.resolve(url.hostname),
+      new Promise<never>((_resolve, reject) => {
+        abortListener = () => reject(signal.reason);
+        signal.addEventListener("abort", abortListener, { once: true });
+      }),
+    ]).finally(() => { if (abortListener) signal.removeEventListener("abort", abortListener); });
+    if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
+    if (timeoutSignal.aborted) throw new HttpError(504, "第三方请求超时", "THIRD_PARTY_REQUEST_TIMEOUT");
+    if (isPrivateDnsResult(resolved)) throw new HttpError(400, "第三方地址解析到非公网IP，已拒绝请求", "THIRD_PARTY_HOST_NOT_PUBLIC");
+    const headers: Record<string, string> = { accept: "application/json, text/plain", "content-type": "application/json" };
+    const customHeaders = record(config.headers) ?? {};
+    for (const [name, value] of Object.entries(customHeaders)) headers[name] = String(value);
+    const environmentName = typeof config.apiKeyEnv === "string" ? config.apiKeyEnv : "";
+    if (environmentName) {
+      const secret = process.env[environmentName];
+      if (!secret) throw new HttpError(409, "工作台服务未配置此第三方API密钥环境变量", "THIRD_PARTY_CREDENTIAL_MISSING");
+      if (secret.length > 8192 || /[\r\n]/.test(secret)) throw new HttpError(409, "第三方API密钥环境变量格式无效", "THIRD_PARTY_CREDENTIAL_INVALID");
+      const header = String(config.apiKeyHeader ?? "Authorization");
+      const prefix = String(config.apiKeyPrefix ?? "Bearer ");
+      headers[header] = prefix + secret;
+    }
+    const mediaConfig = thirdPartyMediaConfig(context.step);
+    let body: Buffer | undefined;
+    if (mediaConfig.bodyFormat === "multipart" || config.bodyTemplate != null) {
+      const inputs = resolveStepInputs(context.step, context.inputValues, context.stepValues) as Record<string, JsonValue>;
+      const rendered = renderTemplate((config.bodyTemplate ?? {}) as JsonValue, inputs);
+      if (Buffer.byteLength(JSON.stringify(rendered), "utf8") > MAX_REQUEST_BYTES) throw new HttpError(400, "渲染后的表单字段/JSON正文超过256KB", "HTTP_REQUEST_BODY_TOO_LARGE");
+      if (mediaConfig.bodyFormat === "multipart") {
+        const multipart = await thirdPartyMultipart(context, rendered, inputs, signal);
+        body = multipart.body; headers["content-type"] = multipart.contentType;
+      } else body = Buffer.from(JSON.stringify(rendered), "utf8");
+      headers["content-length"] = String(body.byteLength);
+    }
+    signal.throwIfAborted();
+    const maxResponseBytes = mediaConfig.responseImages ? THIRD_PARTY_MEDIA_LIMITS.responseBytes : MAX_RESPONSE_BYTES;
+    const response = await transport.send({ url, method, headers, ...(body ? { body } : {}), addresses: resolved, signal, maxResponseBytes });
+    if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
+    if (timeoutSignal.aborted) throw new HttpError(504, "第三方请求超时", "THIRD_PARTY_REQUEST_TIMEOUT");
+    if (response.status < 200 || response.status >= 300) throw new HttpError(502, "第三方接口返回HTTP " + response.status, "THIRD_PARTY_HTTP_ERROR", { status: response.status });
+    return { ...await thirdPartyResponseImages(context, parseResponse(response, maxResponseBytes), signal), status: response.status };
+  } catch (error) {
+    if (context.signal.aborted) throw context.signal.reason ?? error;
+    if (timeoutSignal.aborted) throw new HttpError(504, "第三方请求超时", "THIRD_PARTY_REQUEST_TIMEOUT");
+    if (error instanceof HttpError) throw error;
+    // Avoid persisting transport errors that may contain a URL or request details.
+    throw new HttpError(502, "第三方HTTPS请求失败", "THIRD_PARTY_REQUEST_FAILED");
+  }
+}
+
+/** Additional attempts after the first failure; bounded so a run slot cannot be retried forever. */
+function thirdPartyRetries(value: unknown): number {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_THIRD_PARTY_RETRIES) return value;
+  return invalidConfig(`重试次数必须是0到${MAX_THIRD_PARTY_RETRIES}的整数`);
+}
+
+/** Base wait before the first retry; thirdPartyRetryDelayMs doubles and caps later waits. */
+function thirdPartyRetryDelaySeconds(value: unknown): number {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_THIRD_PARTY_RETRY_DELAY_SECONDS) return value;
+  return invalidConfig(`重试间隔必须是0到${MAX_THIRD_PARTY_RETRY_DELAY_SECONDS}秒的整数`);
+}
+
+/** Retries stay opt-in so a published snapshot without them keeps exactly one request. */
+export function thirdPartyRetryPlan(config: Record<string, unknown>) {
+  return { retries: thirdPartyRetries(config.retries ?? 0), delayMs: thirdPartyRetryDelaySeconds(config.retryDelaySeconds ?? 2) * 1000 };
+}
+
+/** Exponential backoff for the 1-based retry number; every wait stays bounded and abortable. */
+export function thirdPartyRetryDelayMs(retry: number, delayMs: number) {
+  return Math.min(MAX_THIRD_PARTY_RETRY_DELAY_MS, Math.max(0, delayMs) * (2 ** Math.max(0, retry - 1)));
+}
+
+/** Network failures, timeouts and transient statuses are retried; anything else fails as-is. */
+export function isRetryableThirdPartyFailure(error: unknown) {
+  if (!(error instanceof HttpError)) return false;
+  if (error.code === "THIRD_PARTY_REQUEST_FAILED" || error.code === "THIRD_PARTY_REQUEST_TIMEOUT") return true;
+  const status = error.details?.status;
+  return typeof status === "number" && retryableThirdPartyStatuses.has(status);
+}
+
 export function createThirdPartyJsonRequester(transport: ThirdPartyHttpTransport = nodeTransport) {
   return async function requestThirdPartyJson(context: StepExecutionContext): Promise<Record<string, JsonValue>> {
     validateThirdPartyRequestStep(context.step);
     const config = context.step.capabilityConfig ?? {};
     const url = validateThirdPartyEndpoint(config.url);
     const method = String(config.method ?? "POST");
-    const timeoutSignal = AbortSignal.timeout(Number(config.timeoutSeconds ?? 120) * 1000);
-    const signal = AbortSignal.any([context.signal, timeoutSignal]);
-    try {
-      if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
-      let abortListener: (() => void) | undefined;
-      const resolved = await Promise.race([
-        transport.resolve(url.hostname),
-        new Promise<never>((_resolve, reject) => {
-          abortListener = () => reject(signal.reason);
-          signal.addEventListener("abort", abortListener, { once: true });
-        }),
-      ]).finally(() => { if (abortListener) signal.removeEventListener("abort", abortListener); });
-      if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
-      if (timeoutSignal.aborted) throw new HttpError(504, "第三方请求超时", "THIRD_PARTY_REQUEST_TIMEOUT");
-      if (isPrivateDnsResult(resolved)) throw new HttpError(400, "第三方地址解析到非公网IP，已拒绝请求", "THIRD_PARTY_HOST_NOT_PUBLIC");
-      const headers: Record<string, string> = { accept: "application/json, text/plain", "content-type": "application/json" };
-      const customHeaders = record(config.headers) ?? {};
-      for (const [name, value] of Object.entries(customHeaders)) headers[name] = String(value);
-      const environmentName = typeof config.apiKeyEnv === "string" ? config.apiKeyEnv : "";
-      if (environmentName) {
-        const secret = process.env[environmentName];
-        if (!secret) throw new HttpError(409, "工作台服务未配置此第三方API密钥环境变量", "THIRD_PARTY_CREDENTIAL_MISSING");
-        if (secret.length > 8192 || /[\r\n]/.test(secret)) throw new HttpError(409, "第三方API密钥环境变量格式无效", "THIRD_PARTY_CREDENTIAL_INVALID");
-        const header = String(config.apiKeyHeader ?? "Authorization");
-        const prefix = String(config.apiKeyPrefix ?? "Bearer ");
-        headers[header] = prefix + secret;
+    const { retries, delayMs } = thirdPartyRetryPlan(config);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
+        if (attempt > 0) await delayWithAbort(thirdPartyRetryDelayMs(attempt, delayMs), context.signal);
+        return await sendThirdPartyAttempt(context, transport, url, method);
+      } catch (error) {
+        // A cancelled user run never retries, and the final failure is reported unchanged.
+        if (context.signal.aborted) throw context.signal.reason ?? error;
+        const retrying = attempt < retries && isRetryableThirdPartyFailure(error);
+        if (retrying) {
+          const waitSeconds = Math.round(thirdPartyRetryDelayMs(attempt + 1, delayMs) / 1000);
+          const reason = error instanceof HttpError ? error.message : "第三方请求失败";
+          await context.warn?.(`第三方接口第${attempt + 1}次请求失败：${reason}；${waitSeconds}秒后重试第${attempt + 2}次请求`);
+        }
+        if (!retrying) throw error;
       }
-      const mediaConfig = thirdPartyMediaConfig(context.step);
-      let body: Buffer | undefined;
-      if (mediaConfig.bodyFormat === "multipart" || config.bodyTemplate != null) {
-        const inputs = resolveStepInputs(context.step, context.inputValues, context.stepValues) as Record<string, JsonValue>;
-        const rendered = renderTemplate((config.bodyTemplate ?? {}) as JsonValue, inputs);
-        if (Buffer.byteLength(JSON.stringify(rendered), "utf8") > MAX_REQUEST_BYTES) throw new HttpError(400, "渲染后的表单字段/JSON正文超过256KB", "HTTP_REQUEST_BODY_TOO_LARGE");
-        if (mediaConfig.bodyFormat === "multipart") {
-          const multipart = await thirdPartyMultipart(context, rendered, inputs, signal);
-          body = multipart.body; headers["content-type"] = multipart.contentType;
-        } else body = Buffer.from(JSON.stringify(rendered), "utf8");
-        headers["content-length"] = String(body.byteLength);
-      }
-      signal.throwIfAborted();
-      const maxResponseBytes = mediaConfig.responseImages ? THIRD_PARTY_MEDIA_LIMITS.responseBytes : MAX_RESPONSE_BYTES;
-      const response = await transport.send({ url, method, headers, ...(body ? { body } : {}), addresses: resolved, signal, maxResponseBytes });
-      if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
-      if (timeoutSignal.aborted) throw new HttpError(504, "第三方请求超时", "THIRD_PARTY_REQUEST_TIMEOUT");
-      if (response.status < 200 || response.status >= 300) throw new HttpError(502, "第三方接口返回HTTP " + response.status, "THIRD_PARTY_HTTP_ERROR", { status: response.status });
-      return { ...await thirdPartyResponseImages(context, parseResponse(response, maxResponseBytes), signal), status: response.status };
-    } catch (error) {
-      if (context.signal.aborted) throw context.signal.reason ?? error;
-      if (timeoutSignal.aborted) throw new HttpError(504, "第三方请求超时", "THIRD_PARTY_REQUEST_TIMEOUT");
-      if (error instanceof HttpError) throw error;
-      // Avoid persisting transport errors that may contain a URL or request details.
-      throw new HttpError(502, "第三方HTTPS请求失败", "THIRD_PARTY_REQUEST_FAILED");
     }
   };
 }
