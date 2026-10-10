@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { HttpError } from "../errors.js";
 import type { JsonValue, RunStep } from "../domain/types.js";
 import { asRecord, resolveStepInputs } from "../domain/workflowValues.js";
-import { isRuntimeMediaValue, type RuntimeMediaItem } from "../runtimeValue.js";
+import { createRuntimeMediaValue, isRuntimeMediaValue, type RuntimeMediaItem } from "../runtimeValue.js";
 import type { StepExecutionContext } from "./workflowExecutor.js";
 import type { CodeSandboxJob, CodeSandboxReply } from "./codeSandboxWorker.js";
 
@@ -20,7 +20,7 @@ export const CODE_STEP_CONTRACT = {
     sharedGlobals: "none; only ECMAScript built-ins and console",
     nodeBuiltins: false, network: false, filesystem: false, process: false, environment: false, timers: false, webAssembly: "engine-level only; bounded by timeout and memory",
   },
-  code: { maximumBytes: 65536, inputAccess: "inputs keyed by the declared input port keys; media inputs enter as a read-only [{filename}] projection with no path, URL or bytes", inputMaximumBytes: 4194304, output: "must return an object containing every declared output port with the declared type; extra keys are rejected" },
+  code: { maximumBytes: 65536, inputAccess: "inputs keyed by the declared input port keys; media inputs enter as a read-only [{filename}] projection with no path, URL or bytes", inputMaximumBytes: 4194304, output: "must return an object containing every declared output port with the declared type; extra keys are rejected", mediaOutputs: { ports: "image_list/video_list/audio_list", value: "ordered array of file names (strings) or {filename} objects; duplicates are allowed and order is preserved", scope: "only media already present on this step's declared input ports, resolved to the same archived items of the current run; the sandbox never creates, moves, renames or exposes media bytes, paths or URLs", mismatch: "an unknown file name or a media kind that does not match the declared port is INVALID_CODE_OUTPUT" } },
   limits: { timeoutMs: { default: 5000, minimum: 200, maximum: 60000 }, memoryMb: 128, outputMaximumBytes: 1048576, logs: { maximumLines: 200, maximumBytes: 32768 } },
   determinism: "pure data transformation expected; Date/Math.random are available but recorded results stay the authority",
   errors: ["INVALID_CODE_CONFIG", "INVALID_CODE_INPUT", "INVALID_CODE_OUTPUT", "CODE_SYNTAX_ERROR", "CODE_TIMEOUT", "CODE_OUTPUT_NOT_SERIALIZABLE", "CODE_OUTPUT_TOO_LARGE", "CODE_EXECUTION_FAILED"],
@@ -38,7 +38,10 @@ const YOUNG_MEMORY_LIMIT_MB = 32;
 const WORKER_SLACK_MS = 2000;
 const MAX_LOG_LINES = 200;
 const MAX_LOG_BYTES = 32 * 1024;
-const PORT_TYPES = ["text", "number", "boolean", "json"];
+const PORT_TYPES = ["text", "number", "boolean", "json", "image_list", "video_list", "audio_list"];
+/** Media output ports select and order media the step already received; code never produces media bytes. */
+const MEDIA_PORT_KINDS = { image_list: "image", video_list: "video", audio_list: "audio" } as const;
+const MEDIA_KIND_LABELS = { image: "图片", video: "视频", audio: "音频" } as const;
 const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 const invalidConfig = (message: string): never => { throw new HttpError(400, message, "INVALID_CODE_CONFIG"); };
@@ -75,7 +78,7 @@ export function validateCodeStep(step: RunStep) {
     if (!identifier.test(output.key)) invalidConfig("输出端口名必须是合法标识符：" + (output.key || "（空）"));
     if (outputKeys.has(output.key)) invalidConfig("输出端口重复：" + output.key);
     outputKeys.add(output.key);
-    if (!PORT_TYPES.includes(output.type)) invalidConfig("输出端口 " + output.key + " 的类型 " + output.type + " 不受支持；只支持 text/number/boolean/json，媒体请改用媒体选择或 ComfyUI 步骤");
+    if (!PORT_TYPES.includes(output.type)) invalidConfig("输出端口 " + output.key + " 的类型 " + output.type + " 不受支持；只支持 text/number/boolean/json 与 image_list/video_list/audio_list（媒体端口按 filename 选择本步骤输入中的媒体）");
   }
   try { new vm.Script(wrapCode(code, "{}"), { filename: "core.code" }); }
   catch (error) { invalidConfig("代码语法错误：" + (error instanceof Error ? error.message : String(error))); }
@@ -109,6 +112,43 @@ function projectRuntimeMedia(value: JsonValue): JsonValue {
   return root.value;
 }
 
+function mediaPortKind(type: string) {
+  return MEDIA_PORT_KINDS[type as keyof typeof MEDIA_PORT_KINDS];
+}
+/** File name the sandbox can see for a media reference returned by user code: a string or {filename}. */
+function referencedMediaFilename(item: unknown): string | undefined {
+  if (typeof item === "string") return item.trim() || undefined;
+  const filename = asRecord(item)?.filename;
+  return typeof filename === "string" && filename.trim() ? filename.trim() : undefined;
+}
+/** Every media item reachable from the resolved step inputs, keyed by the file name visible in the sandbox. */
+function collectInputMedia(value: JsonValue, into: Map<string, RuntimeMediaItem>) {
+  const pending: unknown[] = [value];
+  while (pending.length) {
+    const source = pending.pop();
+    if (isRuntimeMediaValue(source)) {
+      for (const item of source.items) if (typeof item.filename === "string" && item.filename && !into.has(item.filename)) into.set(item.filename, item);
+      continue;
+    }
+    if (Array.isArray(source)) { pending.push(...source); continue; }
+    const record = asRecord(source);
+    if (record) pending.push(...Object.values(record));
+  }
+}
+/** A media output port can only pick and order media the step already received; no paths, URLs or new files. */
+function mediaOutputError(type: string, value: unknown, media: Map<string, RuntimeMediaItem>): string | undefined {
+  const kind = mediaPortKind(type);
+  if (!kind) return "不是受支持的媒体输出端口";
+  if (!Array.isArray(value)) return "必须是媒体文件名数组（字符串或 {filename} 对象）";
+  for (const item of value) {
+    const filename = referencedMediaFilename(item);
+    if (!filename) return "的每一项都必须是媒体文件名（字符串或 {filename} 对象），不接受空值、路径或 URL";
+    const found = media.get(filename);
+    if (!found) return "引用了本步骤输入中不存在的媒体 " + filename + "；只能按 filename 选择声明输入端口里的媒体";
+    if (found.kind !== kind) return "引用的 " + filename + " 是" + MEDIA_KIND_LABELS[found.kind] + "，与声明的 " + type + "（" + MEDIA_KIND_LABELS[kind] + "）不一致";
+  }
+  return undefined;
+}
 function portTypeError(type: string, value: unknown) {
   if (type === "text") return typeof value === "string" ? undefined : "必须是文本";
   if (type === "number") return typeof value === "number" && Number.isFinite(value) ? undefined : "必须是有限数字";
@@ -116,7 +156,7 @@ function portTypeError(type: string, value: unknown) {
   return undefined;
 }
 
-function validateCodeOutputs(step: RunStep, value: unknown): Record<string, JsonValue> {
+function validateCodeOutputs(step: RunStep, value: unknown, media: Map<string, RuntimeMediaItem>): Record<string, JsonValue> {
   const record = asRecord(value);
   if (!record) throw new HttpError(400, "自定义代码必须返回包含各输出端口的对象", "INVALID_CODE_OUTPUT");
   const outputs = step.outputs ?? [];
@@ -125,6 +165,14 @@ function validateCodeOutputs(step: RunStep, value: unknown): Record<string, Json
   const result: Record<string, JsonValue> = {};
   for (const output of outputs) {
     if (!Object.prototype.hasOwnProperty.call(record, output.key)) throw new HttpError(400, "自定义代码缺少输出：" + output.key, "INVALID_CODE_OUTPUT");
+    const kind = mediaPortKind(output.type);
+    if (kind) {
+      const mediaError = mediaOutputError(output.type, record[output.key], media);
+      if (mediaError) throw new HttpError(400, "输出 " + output.key + mediaError + "（声明为 " + output.type + "）", "INVALID_CODE_OUTPUT");
+      const items = (record[output.key] as unknown[]).map((item) => media.get(referencedMediaFilename(item)!)!);
+      result[output.key] = createRuntimeMediaValue(kind, items);
+      continue;
+    }
     const error = portTypeError(output.type, record[output.key]);
     if (error) throw new HttpError(400, "输出 " + output.key + error + "（声明为 " + output.type + "）", "INVALID_CODE_OUTPUT");
     result[output.key] = record[output.key] as JsonValue;
@@ -156,6 +204,8 @@ export async function executeCodeStep(context: StepExecutionContext): Promise<Re
   validateCodeStep(step);
   const timeoutMs = codeTimeoutMs(step);
   const resolved = resolveStepInputs(step, context.inputValues, context.stepValues) as Record<string, JsonValue>;
+  const inputMedia = new Map<string, RuntimeMediaItem>();
+  collectInputMedia(Object.values(resolved), inputMedia);
   const inputs = Object.fromEntries(Object.entries(resolved).map(([key, value]) => [key, projectRuntimeMedia(value)]));
   const inputsLiteral = JSON.stringify(inputs);
   if (Buffer.byteLength(inputsLiteral, "utf8") > MAX_INPUT_BYTES) throw new HttpError(400, "代码输入序列化后超过 " + MAX_INPUT_BYTES / 1024 / 1024 + " MB，请先用基础步骤裁剪数据", "INVALID_CODE_INPUT");
@@ -184,7 +234,7 @@ export async function executeCodeStep(context: StepExecutionContext): Promise<Re
   });
   await worker.terminate().catch(() => undefined);
   if (failure) throw failure;
-  if (reply.ok) return validateCodeOutputs(step, reply.value);
+  if (reply.ok) return validateCodeOutputs(step, reply.value, inputMedia);
   const trail = reply.logs?.length ? "；代码日志尾部：" + reply.logs.slice(-5).join(" | ") : "";
   if (reply.code === "CODE_TIMEOUT") throw new HttpError(504, reply.error + trail, "CODE_TIMEOUT");
   if (reply.code === "CODE_OUTPUT_NOT_SERIALIZABLE" || reply.code === "CODE_OUTPUT_TOO_LARGE") throw new HttpError(400, reply.error + trail, "INVALID_CODE_OUTPUT");

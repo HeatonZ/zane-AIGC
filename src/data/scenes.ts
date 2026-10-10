@@ -4,7 +4,6 @@ import commercePackPackage from "../../examples/scenes/commerce-pack.json";
 import type { SceneModule } from "../types";
 
 export const defaultScenes: SceneModule[] = [
-  basicImageLayoutPackage.scene as SceneModule,
   commerceAiPackage.scene as SceneModule,
   {
     id: "text_to_image",
@@ -53,8 +52,10 @@ export const defaultScenes: SceneModule[] = [
     accent: "coral",
     stages: ["商品理解", "卖点提炼", "镜头脚本", "画面生成"],
   },
+  // 旧版兼容示例：图片选择与多规格排版仍可执行，但 media.select_references / media.image_layout 已标记 compatibilityOnly。
+  { ...basicImageLayoutPackage.scene, title: "基础图片排版（旧版兼容）", summary: "仅兼容已发布快照与历史运行；新场景直接绑定已授权媒体并用 core.code 处理数据" } as SceneModule,
   // Retain the old package for explicit compatibility, not as the default first solution.
-  { ...commercePackPackage.scene, title: "电商套图（旧版兼容）", summary: "仅保留旧图包协议；新方案优先使用基础图片生成与排版", description: "已有图包流程保留；新场景用通用逐项执行 + 基础ComfyUI + 图片画布与排版，不为每个商品场景定制执行器。" } as SceneModule,
+  { ...commercePackPackage.scene, title: "电商图包（旧版兼容）", summary: "仅保留旧图包协议与旧排版；新场景用 Hermes + core.code + ComfyUI 直接生成完整成图", description: "已有图包流程保留；新场景用通用逐项执行 + 基础ComfyUI 直接生成包含文字与版式的完整图片，数据编排用 core.code，不为每个商品场景定制执行器。" } as SceneModule,
 ];
 
 export function getScene(sceneId: string | undefined, availableScenes: SceneModule[]): SceneModule {

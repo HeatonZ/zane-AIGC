@@ -16,7 +16,10 @@ test("基础组合隔离执行：素材选择→并发逐项排版→归档，�
   const h = await productionHarness(t); await h.service.start();
   const pkg = parseScenePackage(JSON.parse(await readFile("examples/scenes/basic-image-layout.json", "utf8")));
   validateWorkflowShape(pkg.workflow as unknown as Record<string, unknown>);
-  assert.ok(pkg.workflow.steps.every((step) => h.executors.definitions().find((item) => item.id === step.capabilityId)?.usage?.tier === "basic"));
+  const definitions = h.executors.definitions();
+  assert.ok(pkg.workflow.steps.every((step) => definitions.some((item) => item.id === step.capabilityId)));
+  // 旧版兼容示例依赖的退役执行方式仍注册、仍可执行，按 compatibilityOnly 只兼容已有发布快照与历史运行。
+  for (const id of ["media.select_references", "media.image_layout"]) assert.equal(definitions.find((item) => item.id === id)!.usage?.compatibilityOnly, true, id);
   const source = path.join(h.root, "source.png"); await writeFile(source, await sharp({ create: { width: 100, height: 80, channels: 3, background: "#a5b8cc" } }).png().toBuffer());
   const workflow = pkg.workflow as unknown as RunWorkflowDefinition;
   const inputs = { images: [source], selection: { images: [1] }, layouts: [{ width: 400, height: 500, margin: 20, title: "商品展示" }, { width: 600, height: 400, background: "#ffffff", caption: "封面正文 & <b>原样文字</b>" }] };

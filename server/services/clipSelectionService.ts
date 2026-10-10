@@ -9,6 +9,45 @@ import { RunService } from "./runService.js";
 import { HttpError } from "../errors.js";
 
 const terminal = (run: RunRecord) => !["queued", "running", "cancelling", "waiting"].includes(run.status);
+/**
+ * Sandbox source for selection composition. It only orders the pinned clips and
+ * builds the manifest: media enters as a read-only [{filename}] projection, so the
+ * step can never create, rename or expose media bytes. Replaces the retired
+ * media.video_concat FFmpeg step.
+ */
+export const CLIP_COMPOSITION_CODE = [
+  "// 按选片清单整理成片顺序：只做确定性数据整理，不生成新媒体文件，也不调用生成服务。",
+  "const fail = (message) => { throw new Error(message); };",
+  "const record = (value) => (value && typeof value === \"object\" && !Array.isArray(value) ? value : null);",
+  "const clips = Array.isArray(inputs.clips) ? inputs.clips : [];",
+  "const shots = Array.isArray(inputs.shots) ? inputs.shots : [];",
+  "if (clips.length < 1 || clips.length > 360) fail(\"选片合成需要 1 到 360 个视频片段\");",
+  "if (shots.length !== clips.length) fail(\"选片镜头数量（\" + shots.length + \"）与片段数量（\" + clips.length + \"）不一致，不能静默漏掉片段或乱序\");",
+  "const selection = record(inputs.selection) ?? {};",
+  "const listShots = Array.isArray(selection.shots) ? selection.shots : [];",
+  "if (listShots.length !== clips.length) fail(\"选片清单镜头数量与片段数量不一致，不能静默漏掉镜头或乱序\");",
+  "const rows = [];",
+  "for (let position = 0; position < shots.length; position += 1) {",
+  "  const shot = record(shots[position]);",
+  "  if (!shot) fail(\"第 \" + (position + 1) + \" 条选片镜头无效\");",
+  "  if (shot.index !== position + 1) fail(\"选片镜头 index 必须从 1 开始连续递增，第 \" + (position + 1) + \" 条为 \" + shot.index);",
+  "  const pinned = record(listShots[position]?.choice) ?? {};",
+  "  rows.push({ index: shot.index, selectionShotId: typeof shot.selection_shot_id === \"string\" ? shot.selection_shot_id : null, assetId: typeof pinned.assetId === \"string\" ? pinned.assetId : null, assetVersion: Number.isSafeInteger(pinned.assetVersion) ? pinned.assetVersion : null, filename: clips[position]?.filename ?? null });",
+  "}",
+  "return { video: clips, manifest: { format: \"zane.clip-composition/v1\", count: clips.length, shots: rows } };",
+].join("\n");
+
+/** One custom-code step orders the pinned clips in selection order; no model, no FFmpeg, no new media. */
+export function clipCompositionWorkflow(sceneId: string): RunWorkflowDefinition {
+  return { sceneId, name: "选片合成",
+    inputs: [{ key:"clips",type:"video_list",required:true },{ key:"shots",type:"json",required:true },{ key:"selection",type:"json",required:true }],
+    steps: [{ id:"compose",name:"按选片清单整理成片顺序",kind:"capability",capabilityId:"core.code",capabilityVersion:"1",
+      capabilityConfig: { code: CLIP_COMPOSITION_CODE, timeoutMs: 5000 },
+      inputs: [ { key:"clips",label:"按选片顺序的视频片段",sourceRef:"input.clips",valueSource:"reference" }, { key:"shots",label:"选片镜头顺序",sourceRef:"input.shots",valueSource:"reference" }, { key:"selection",label:"选片清单快照",sourceRef:"input.selection",valueSource:"reference" } ],
+      outputs: [ { key:"video",label:"成片顺序",type:"video_list" }, { key:"manifest",label:"合成清单",type:"json" } ] }],
+    outputs: [ { key:"video",label:"成片",type:"video_list",sourceRef:"step.compose.outputs.video" }, { key:"manifest",label:"合成清单",type:"json",sourceRef:"step.compose.outputs.manifest" } ] };
+}
+
 export function shotFingerprint(value: unknown) {
   const stable = (item: unknown): unknown => Array.isArray(item) ? item.map(stable) : item && typeof item === "object" ? Object.fromEntries(Object.entries(item).sort(([a],[b]) => a.localeCompare(b)).map(([key,val]) => [key, stable(val)])) : item;
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
@@ -75,7 +114,7 @@ export class ClipSelectionService {
     if (selection.shots.some(shot => !shot.choice?.assetId || !shot.choice?.assetVersion)) throw new HttpError(400,"每个镜头都需要选定一个版本才能合成");
     const clips = selection.shots.map(shot => ({ assetId: shot.choice!.assetId!, assetVersion: shot.choice!.assetVersion! }));
     const shots = selection.shots.map((shot,index) => ({ ...(asRecord(shot.value) ?? {}), index: index+1, selection_shot_id: shot.shotId }));
-    const workflow: RunWorkflowDefinition = { sceneId: selection.sceneId, name: "选片合成", inputs: [{ key:"clips",type:"video_list",required:true },{ key:"shots",type:"json",required:true },{ key:"selection",type:"json",required:true }], steps: [{ id:"concat",name:"按选片清单本地合成",kind:"comfyui",capabilityId:"media.video_concat",capabilityVersion:"1",comfyui:{ workflowFile:"local.ffmpeg",adapter:"video_concat",bindings:[] },inputs:[{ key:"clips",sourceRef:"input.clips" },{ key:"shots",sourceRef:"input.shots" }],outputs:[{key:"video",type:"video_list",label:"成片"},{key:"download",type:"text",label:"下载地址"},{key:"manifest",type:"json",label:"合成清单"}] }], outputs:[{key:"video",type:"video_list",label:"成片",sourceRef:"step.concat.outputs.video"},{key:"manifest",type:"json",label:"合成清单",sourceRef:"step.concat.outputs.manifest"}] };
+    const workflow = clipCompositionWorkflow(selection.sceneId);
     const run = await this.runs.submit({ runId:body.runId,workflow,inputValues:{ clips,shots,selection:structuredClone(selection) },runTitle: (selection.name + " · 选片合成").slice(0,120) }, access);
     const saved = this.put(projectDirectory,{ ...selection,lastRunId:run.runId,updatedAt:new Date().toISOString() },selection.revision);
     return { runId:run.runId,status:run.status,selection:saved };

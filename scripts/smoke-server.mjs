@@ -87,16 +87,20 @@ try {
   assert.ok((await json(base, `/api/v1/runs/${runId}/events/history`)).events.length >= 4);
   const catalog = await json(base, "/api/v1/capabilities");
   assert.equal(catalog.schemaVersion, 1);
-  const template = catalog.capabilities.find((item) => item.id === "text.template");
-  assert.equal(template.version, "1"); assert.equal(template.result.renderer, "text");
+  const template = catalog.capabilities.find((item) => item.id === "core.code");
+  assert.equal(template.version, "1"); assert.equal(template.usage.compatibilityOnly, undefined);
   assert.ok(!("execute" in template));
+  // 已退役的低频执行方式仍注册可执行（兼容旧发布快照），但不再作为新步骤候选。
+  for (const id of ["text.template", "media.select_references", "media.image_layout", "core.manual"]) {
+    assert.equal(catalog.capabilities.find((item) => item.id === id).usage.compatibilityOnly, true, id);
+  }
   const capabilityRunId = randomUUID();
   const capabilityWorkflow = {
     sceneId: "capability-smoke", name: "能力包与局部重做冒烟", inputs: [{ key: "text", type: "text", required: true }],
     steps: [
-      { id: "draft", name: "原文", kind: "capability", capabilityId: "text.template", capabilityConfig: { template: "原文：{{text}}" }, inputs: [{ key: "text", sourceRef: "input.text" }], outputs: [{ key: "text", type: "text" }] },
-      { id: "publish", name: "发布文案", kind: "capability", capabilityId: "text.template", capabilityConfig: { template: "发布：{{text}}" }, inputs: [{ key: "text", sourceRef: "step.draft.outputs.text" }], outputs: [{ key: "text", type: "text" }] },
-      { id: "independent", name: "独立分支", kind: "capability", capabilityId: "text.template", capabilityConfig: { template: "不变" }, inputs: [], outputs: [{ key: "text", type: "text" }] },
+      { id: "draft", name: "原文", kind: "capability", capabilityId: "core.code", capabilityVersion: "1", capabilityConfig: { code: 'return { text: "原文：" + (inputs.text ?? "") };', timeoutMs: 5000 }, inputs: [{ key: "text", sourceRef: "input.text" }], outputs: [{ key: "text", type: "text" }] },
+      { id: "publish", name: "发布文案", kind: "capability", capabilityId: "core.code", capabilityVersion: "1", capabilityConfig: { code: 'return { text: "发布：" + (inputs.text ?? "") };', timeoutMs: 5000 }, inputs: [{ key: "text", sourceRef: "step.draft.outputs.text" }], outputs: [{ key: "text", type: "text" }] },
+      { id: "independent", name: "独立分支", kind: "capability", capabilityId: "core.code", capabilityVersion: "1", capabilityConfig: { code: 'return { text: "不变" };', timeoutMs: 5000 }, inputs: [], outputs: [{ key: "text", type: "text" }] },
     ],
     outputs: [{ key: "result", type: "text", sourceRef: "step.publish.outputs.text" }],
   };

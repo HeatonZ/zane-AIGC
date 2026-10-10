@@ -360,7 +360,7 @@ GET /api/v1/capabilities
 
 副作用：read
 
-分页读取已安装能力及usage适用范围；先查tier:basic，基础步骤能满足就不定制。确有缺口再查specialized并核对whenToUse/basicAlternative；compatibilityOnly:true仅兼容旧流程，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。core.http_request支持JSON或multipart授权图片上传、base64响应映射为images；服务端环境变量鉴权，配置不请求，固定发布后显式执行才可能计费，返回response/status与可选images，三者都是可选声明——生图场景可只声明images；默认一次请求，显式retries(0–5)只重试网络失败、超时和HTTP 408/429/5xx。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次；media.select_references支持组内序号数组或all，以及可选bundle逐项媒体包。core.code在隔离沙箱执行本地JavaScript做数据变换/控制流（无文件/网络/Node模块/计时器，128MB内存与200–60000毫秒超时，死循环与失控强制终止），输入按声明端口取JSON（媒体为只读[{filename}]投影），return对象键对应声明的text/number/boolean/json输出端口，配置与预检不执行代码；确定性数据处理优先text.template/data.zip/data.select/core.condition。默认all保留完整目录、基础优先排序。只读，不改场景或执行生成。
+分页读取已安装能力及usage适用范围；目录统一、不分基础/专用等级：场景差异用Profile、提示词、输入输出与ComfyUI节点绑定表达，场景特有的数据编排用core.code自定义代码；compatibilityOnly:true仅兼容已有发布快照与历史运行，不用于新场景。JSON端口/配置的valueSchema提供精确值契约。core.http_request支持JSON或multipart授权图片上传、base64响应映射为images；服务端环境变量鉴权，配置不请求，固定发布后显式执行才可能计费，返回response/status与可选images，三者都是可选声明——生图场景可只声明images；默认一次请求，显式retries(0–5)只重试网络失败、超时和HTTP 408/429/5xx。data.zip按items与等长输入列关联，expected_count校验数量，itemSchema/identityField校验结构与唯一标识，rows/first/rest用于样张和剩余批次。新场景的数据传递、模板拼装和结构化控制使用core.code隔离沙箱（无文件/网络/Node模块/计时器，128MB内存与200–60000毫秒超时，死循环与失控强制终止），输入按声明端口取JSON（媒体为只读[{filename}]投影），return对象键对应声明的text/number/boolean/json输出端口；声明image_list/video_list/audio_list输出时可返回文件名数组，按filename选择、排序或合并本步骤输入中的既有媒体（替代旧的媒体选择与合并），不产生新媒体或暴露路径/URL，引用未授权文件即INVALID_CODE_OUTPUT。配置与预检不执行代码；已授权媒体直接绑定到模型或ComfyUI步骤。media.select_references、media.image_layout、text.template、core.manual、core.condition、data.select、media.video_concat、data.zip与comfyui.h3_long_video、comfyui.long_text_video、comfyui.commerce_pack只兼容已有发布快照与历史运行。分支用任意步骤的startCondition开始条件（被跳过步骤输出为null）；默认limit:50（最大100），目录按安装注册顺序返回。只读，不改场景或执行生成。
 
 ## get_workspace_status
 
@@ -432,7 +432,7 @@ POST /api/v1/scenes
 
 副作用：write
 
-创建单场景草稿及流程，可附带它引用的新预设；空工作区原子初始化。scene.id先保存，响应丢失读同一ID，不换ID重建。不会发布或生成。
+创建单场景草稿及流程，可附带它引用的新预设；空工作区原子初始化。scene.id先保存，响应丢失读同一ID，不换ID重建。不会发布或生成。每个步骤都支持startCondition开始条件（match:all|any + rules:左值引用、运算符、字面量或引用比较），规则不满足时该步骤跳过且其输出按null参与下游引用；不再需要条件判断/条件选择步骤（已标记compatibilityOnly，仅兼容已发布快照）。
 
 ## get_scene_draft
 
@@ -464,7 +464,7 @@ PATCH /api/v1/scenes/{sceneId}/draft
 
 副作用：write
 
-数字类型场景输入可配置包含minimum和maximum（两者均可省略，配置后填写值须在范围内）；required=false允许留空。数字行字段itemFields使用相同范围约束，反向范围会被草稿校验拒绝。步骤级for_each可配置execution.carry:{outputKey,initialSourceRef?}串行继承上一项输出；仅当前步骤已声明输出键，初始来源仅input/前序step；启用后默认maxConcurrency=1、onError=stop，显式冲突拒绝。iteration.previous/hasPrevious/index见x-for-each-carry；续跑仅复用匹配完成前缀，单项编辑/反馈重做失效整个后缀。用当前内容revision替换提供的完整scene/workflow部分，省略部分保持不变；不是深层patch。可创建引用的新预设，不暗中覆盖共享预设。图生图复用基础hermes链路：writer先将有序reference_images与想法prompt整理为text edit_brief，aixg只消费该输出与原图片转为text prompt；生成步骤inputs和ComfyUI正向binding均引用aixg输出。公开输入仅reference_images（图片）、prompt（想法）、seed、ratio、mp；负向/步数/CFG/缩放/空图不作为用户输入，保留工作流固定配置。ratio/mp绑定目标画布，参考图仍传给图像编辑条件。切换ComfyUI工作流必须同步核对bindings节点与端口；双采视频只改配置，长文JSON入口为201.String而非196采样器。长文用writer输出storyboard/shots，基础hermes aixg按writer.shots逐项只输出text prompt；H3生成inputs.prompts引用step.aixg.outputs.prompt列表，保持Writer镜头元数据且全列表校验后才生成。ComfyUI只绑定image_list/audio_list/video_list物理列表，业务分类不作为节点类型；基础media.select_references新增可选images/audios/videos合并输出（旧快照可省略），按groups顺序及组内原上传顺序合并且不去重，提示词Picture/Audio/Video编号同步；长文H3绑定iteration.item.references.images到192.ref_images、references.audios到192.ref_audios，适配在逐镜选择后合并。场景输入和兼容旧ComfyUI输入绑定可配mediaRole（character/scene/prop为图片，voice_reference为音频，reference通用参考）；不新增媒体类型或执行器，同端口按绑定顺序合并，旧快照不自动替换。AI套图配置复用基础Writer完整设计→data.zip数量/结构校验→媒体选择bundle→AIXG完整成图提示词→data.zip对齐→基础ComfyUI样张审核→剩余逐张生成→收集模型原始图片。新模板不含add_text、layout、文字后置或条件选择，不把AI成图当无字底图；图中需要的文字、图形、版式由图像模型直接生成。不用commerce_pack专用适配器，旧发布快照不自动替换。data.zip可选ordinalField要求主项该整数属性严格按输入顺序1,2,...，拒绝重复/跳号/重排且不排序；省略保持旧行为。data.zip的itemSchema为有限本地JSON Schema，不能嵌入引用/代码；selection每组可用序号数组或all，bundle保留逐项边界。steps.inputs.referenceType可显式标注JSON字段中的image_list/video_list/audio_list，审核恢复后仍为真实附件；省略保持旧行为，不生成媒体。基础ComfyUI capabilityConfig.outputMediaCounts按声明输出key校验每次/逐项执行的媒体数量（0..144，最多64项），如{images:1}；省略兼容旧流程，多图/少图直接失败，不截断或错配。不会发布或执行。冲突返回currentRevision，重读后决策。
+数字类型场景输入可配置包含minimum和maximum（两者均可省略，配置后填写值须在范围内）；required=false允许留空。数字行字段itemFields使用相同范围约束，反向范围会被草稿校验拒绝。步骤级for_each可配置execution.carry:{outputKey,initialSourceRef?}串行继承上一项输出；仅当前步骤已声明输出键，初始来源仅input/前序step；启用后默认maxConcurrency=1、onError=stop，显式冲突拒绝。iteration.previous/hasPrevious/index见x-for-each-carry；续跑仅复用匹配完成前缀，单项编辑/反馈重做失效整个后缀。用当前内容revision替换提供的完整scene/workflow部分，省略部分保持不变；不是深层patch。可创建引用的新预设，不暗中覆盖共享预设。图生图复用基础hermes链路：writer先将有序reference_images与想法prompt整理为text edit_brief，aixg只消费该输出与原图片转为text prompt；生成步骤inputs和ComfyUI正向binding均引用aixg输出。公开输入仅reference_images（图片）、prompt（想法）、seed、ratio、mp；负向/步数/CFG/缩放/空图不作为用户输入，保留工作流固定配置。ratio/mp绑定目标画布，参考图仍传给图像编辑条件。切换ComfyUI工作流必须同步核对bindings节点与端口；双采视频只改配置，长文JSON入口为201.String而非196采样器。长文用writer输出storyboard/shots，基础hermes aixg按writer.shots逐项只输出text prompt；H3生成inputs.prompts引用step.aixg.outputs.prompt列表，保持Writer镜头元数据且全列表校验后才生成。ComfyUI只绑定image_list/audio_list/video_list物理列表，业务分类不作为节点类型；新场景直接绑定已授权媒体输入，旧media.select_references的分组选择和合并输出只供历史快照继续执行；长文H3绑定iteration.item.references.images到192.ref_images、references.audios到192.ref_audios，适配仍兼容旧快照。场景输入和兼容旧ComfyUI输入绑定可配mediaRole（character/scene/prop为图片，voice_reference为音频，reference通用参考）；不新增媒体类型或执行器，同端口按绑定顺序合并，旧快照不自动替换。AI套图配置复用基础Writer完整设计→data.zip数量/结构校验→已授权媒体直接绑定→AIXG完整成图提示词→data.zip对齐→基础ComfyUI样张审核→剩余逐张生成→收集模型原始图片。新模板不含add_text、layout、文字后置或条件选择，不把AI成图当无字底图；图中需要的文字、图形、版式由图像模型直接生成。不用commerce_pack专用适配器，旧发布快照不自动替换。data.zip可选ordinalField要求主项该整数属性严格按输入顺序1,2,...，拒绝重复/跳号/重排且不排序；省略保持旧行为。data.zip的itemSchema为有限本地JSON Schema，不能嵌入引用/代码；旧selection/bundle字段只为兼容旧快照保留。steps.inputs.referenceType可显式标注JSON字段中的image_list/video_list/audio_list，审核恢复后仍为真实附件；省略保持旧行为，不生成媒体。基础ComfyUI capabilityConfig.outputMediaCounts按声明输出key校验每次/逐项执行的媒体数量（0..144，最多64项），如{images:1}；省略兼容旧流程，多图/少图直接失败，不截断或错配。步骤可新增或修改startCondition开始条件（规则不满足即跳过、输出为null）；core.condition与data.select已标记compatibilityOnly，仅用于兼容已发布快照。不会发布或执行。冲突返回currentRevision，重读后决策。
 
 ## validate_scene_draft
 
@@ -544,7 +544,7 @@ POST /api/v1/scenes/{sceneId}/runs
 
 副作用：execute
 
-执行已确认的发布版场景，可能调用付费 Hermes/ComfyUI。输入允许额外键透传并保存到运行输入，已声明字段仍按原契约校验；步骤引用仍由发布工作流中的绑定决定。UI格式ComfyUI工作流按x-comfy-ui-routing解析前端Reroute链与扇出，不提交虚拟中继；循环/缺失/多来源/非零出口返回INVALID_COMFY_REROUTE，不修改原图或自动重试；API格式转换保持原样。运行绑定后按x-comfy-static-switch仅断开已证明静态布尔值的内置ComfySwitchNode未选中输入，避免无上下文首段校验示例视频；未知/循环选择器原样交给ComfyUI。显式空可选视频清除示例输入；真实选中的必需输入仍由上游校验，声明但未连线的标量输入可按object_info绑定。先预检；必须提供固定 versionId 和预先保存的 runId。素材固定版本由后端解析并归档；Hermes/AIXG以归档字节构造inline图片，ComfyUI读取并上传同一来源与顺序；Hermes保留现有图片预算/压缩，不改选素材版本。基础audio_list绑定将已授权私有音频（含media.select_references/data.zip中间JSON）按引用顺序上传为ComfyUI输入附件再连接LoadAudio；每文件100MB，保留已有合法附件，不读取previewUrl或转发工作台凭证；上传/读取失败在提交prompt前停止，不自动重试。完整机器契约见x-asset-media-execution.audioConsumers。不要求执行端持有工作台token或访问previewUrl。Hermes返回对象按x-hermes-output-json契约解析；仅单个提前闭合顶层括号或字符串内原始LF/CR/TAB可确定性修复，不组合修复；全回复解析、声明字段无缺失/未知/重复，完整保留解码值且不重试模型。返回后用 wait_run/get_run 查询。响应丢失只查同一 runId，不换 ID 再提交。
+执行已确认的发布版场景，可能调用付费 Hermes/ComfyUI。开始条件不满足的步骤直接跳过（该步骤不调用模型或外部服务、不计费），其输出为null，下游按null继续；运行失败不自动重试。输入允许额外键透传并保存到运行输入，已声明字段仍按原契约校验；步骤引用仍由发布工作流中的绑定决定。UI格式ComfyUI工作流按x-comfy-ui-routing解析前端Reroute链与扇出，不提交虚拟中继；循环/缺失/多来源/非零出口返回INVALID_COMFY_REROUTE，不修改原图或自动重试；API格式转换保持原样。运行绑定后按x-comfy-static-switch仅断开已证明静态布尔值的内置ComfySwitchNode未选中输入，避免无上下文首段校验示例视频；未知/循环选择器原样交给ComfyUI。显式空可选视频清除示例输入；真实选中的必需输入仍由上游校验，声明但未连线的标量输入可按object_info绑定。先预检；必须提供固定 versionId 和预先保存的 runId。素材固定版本由后端解析并归档；Hermes/AIXG以归档字节构造inline图片，ComfyUI读取并上传同一来源与顺序；Hermes保留现有图片预算/压缩，不改选素材版本。基础audio_list绑定将已授权私有音频（含media.select_references/data.zip中间JSON）按引用顺序上传为ComfyUI输入附件再连接LoadAudio；每文件100MB，保留已有合法附件，不读取previewUrl或转发工作台凭证；上传/读取失败在提交prompt前停止，不自动重试。完整机器契约见x-asset-media-execution.audioConsumers。不要求执行端持有工作台token或访问previewUrl。Hermes返回对象按x-hermes-output-json契约解析；仅单个提前闭合顶层括号或字符串内原始LF/CR/TAB可确定性修复，不组合修复；全回复解析、声明字段无缺失/未知/重复，完整保留解码值且不重试模型。返回后用 wait_run/get_run 查询。响应丢失只查同一 runId，不换 ID 再提交。
 
 ## list_runs
 
@@ -736,4 +736,4 @@ POST /api/v1/clip-selections/{id}/compose
 
 副作用：execute
 
-按完整选片清单创建仅本地FFmpeg合成运行，不调用模型。需要最新revision和保存的新runId。缺镜头拒绝合成；响应丢失先查询runId和清单lastRunId。
+按完整选片清单创建仅本地自定义代码整理运行，按镜头顺序输出成片媒体序列与清单JSON，不调用模型、不生成新媒体文件。需要最新revision和保存的新runId。缺镜头拒绝整理；响应丢失先查询runId和清单lastRunId。

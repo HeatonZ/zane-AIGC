@@ -20,7 +20,7 @@ if (original.scenes.some((scene) => scene.id === pkg.scene.id)) {
 } else {
   if (original.scenes.some((scene) => scene.title === pkg.scene.title)) throw new Error("工作区已有同名场景，请通过版本管理更新；没有覆盖已有内容");
   const health = await json("/api/health");
-  if (!["long_text_video", "video_concat"].every((adapter) => health.adapters?.includes(adapter))) throw new Error("当前服务尚未加载长文出视频适配器，请先构建并重启服务；工作区未修改");
+  if (!["long_text_video"].every((adapter) => health.adapters?.includes(adapter))) throw new Error("当前服务尚未加载长文出视频适配器，请先构建并重启服务；工作区未修改");
   const settings = await json("/api/settings");
   if (!["writer", "aixg"].every(profile => (settings.enabledHermesProfiles ?? []).includes(profile))) throw new Error("请先启用并配置 Writer 和 AIXG Profile；本场景不静默改用其他 Profile");
   const published = createSceneVersion(pkg.scene, pkg.workflow, pkg.optionPresets);

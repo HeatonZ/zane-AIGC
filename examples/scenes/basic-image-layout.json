@@ -4,10 +4,10 @@
   "exportedAt": "2026-10-02T06:00:00.000Z",
   "scene": {
     "id": "basic_image_layout",
-    "title": "基础图片排版",
-    "shortTitle": "图片排版",
-    "summary": "跨场景图片选择与多规格排版，不调用生成模型",
-    "description": "素材选择 → 通用逐项画布排版。商品图、封面、海报都使用同一基础组合；只改尺寸、留白、背景和文案配置，不新建执行器。不包含电商ZIP协议或平台政策。",
+    "title": "基础图片排版（旧版兼容）",
+    "shortTitle": "图片排版（旧版）",
+    "summary": "仅兼容已发布快照与历史运行；新场景不再新增媒体选择与合并、图片画布与排版步骤",
+    "description": "旧版兼容示例：素材选择 → 通用逐项画布排版，仍可执行、历史运行不变。media.select_references 与 media.image_layout 已标记 compatibilityOnly，不再向新步骤提供：新场景把已授权媒体输入直接绑定到模型或 ComfyUI 步骤，图中版式与文案由图像模型直接生成，数据传递与拼装用 core.code。商品图、封面、海报不再依赖本地确定性排版；不包含电商ZIP协议或平台政策。",
     "accent": "green",
     "stages": [
       "图片与规格",
@@ -20,7 +20,7 @@
   "optionPresets": [],
   "workflow": {
     "sceneId": "basic_image_layout",
-    "name": "基础能力 · 图片选择与多规格排版",
+    "name": "旧版兼容 · 图片选择与多规格排版",
     "inputs": [
       {
         "key": "images",

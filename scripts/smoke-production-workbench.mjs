@@ -26,7 +26,7 @@ const json = async (route, body, method) => { const r = await request(route, bod
 const conflict = async (route, body, method) => { const r = await request(route, body, method); assert.equal(r.status, 409, `${route} must reject stale edits`); };
 const settled = async (id) => { const deadline = Date.now() + 40000; while (Date.now() < deadline) { const r = await json("/api/v1/runs/" + id); if (!["queued", "running", "cancelling"].includes(r.status)) return r; await new Promise((resolve) => setTimeout(resolve, 100)); } throw Error("Timed out: " + id); };
 const submit = async (workflow, inputValues, suffix) => {
-  assert.ok(workflow.steps.every((s) => (s.kind === "manual" && !s.capabilityId) || (s.kind === "capability" && ["text.template", "media.video_concat"].includes(s.capabilityId))), "Generative capabilities are prohibited");
+  assert.ok(workflow.steps.every((s) => (s.kind === "manual" && !s.capabilityId) || (s.kind === "capability" && s.capabilityId === "core.code")), "Generative capabilities are prohibited");
   const id = randomUUID(); ownRuns.push(id); await json("/api/v1/runs", { runId: id, runTitle: tag + "-" + suffix, workflow, inputValues }); return id;
 };
 const report = { schemaVersion: 1, baseUrl: base.origin, startedAt: new Date().toISOString(), noAi: true, tag, ownRuns, checks };
@@ -47,8 +47,8 @@ try {
   const textWorkflow = {
     sceneId: "e2e_production_workbench", name: tag + "-人工确认", inputs: [{ key: "text", type: "text", required: true }],
     steps: [
-      { id: "draft", name: "测试初稿", kind: "capability", capabilityId: "text.template", capabilityConfig: { template: "初稿：{{text}}" }, inputs: [{ key: "text", sourceRef: "input.text" }], outputs: [{ key: "text", type: "text" }], review: { enabled: true, instruction: "E2E 合成内容，请审核后继续" } },
-      { id: "publish", name: "测试发布", kind: "capability", capabilityId: "text.template", capabilityConfig: { template: "发布：{{text}}" }, inputs: [{ key: "text", sourceRef: "step.draft.outputs.text" }], outputs: [{ key: "text", type: "text" }] },
+      { id: "draft", name: "测试初稿", kind: "capability", capabilityId: "core.code", capabilityVersion: "1", capabilityConfig: { code: 'return { text: "初稿：" + (inputs.text ?? "") };', timeoutMs: 5000 }, inputs: [{ key: "text", sourceRef: "input.text" }], outputs: [{ key: "text", type: "text" }], review: { enabled: true, instruction: "E2E 合成内容，请审核后继续" } },
+      { id: "publish", name: "测试发布", kind: "capability", capabilityId: "core.code", capabilityVersion: "1", capabilityConfig: { code: 'return { text: "发布：" + (inputs.text ?? "") };', timeoutMs: 5000 }, inputs: [{ key: "text", sourceRef: "step.draft.outputs.text" }], outputs: [{ key: "text", type: "text" }] },
     ], outputs: [{ key: "result", type: "text", sourceRef: "step.publish.outputs.text" }],
   };
   const reviewId = await submit(textWorkflow, { text: "合成测试文案" }, "人工确认"); report.reviewRunId = reviewId;
@@ -78,14 +78,13 @@ try {
   await conflict(`/api/v1/clip-selections/${created.selection.id}/compose`, { revision: created.selection.revision });
   checks.push("候选镜头读取、调序保存、过期选片合成 409");
   const composition = await json(`/api/v1/clip-selections/${created.selection.id}/compose`, { revision: reordered.selection.revision }); ownRuns.push(composition.runId); report.composedRunId = composition.runId;
-  const composed = await settled(composition.runId); assert.equal(composed.status, "completed", composed.error); assert.equal(composed.workflow.steps.length, 1); assert.equal(composed.workflow.steps[0].capabilityId, "media.video_concat");
+  const composed = await settled(composition.runId); assert.equal(composed.status, "completed", composed.error); assert.equal(composed.workflow.steps.length, 1); assert.equal(composed.workflow.steps[0].capabilityId, "core.code");
   const video = composed.outputs.find((item) => /video/.test(item.type)); assert.ok(video);
   const findUrl = (v) => typeof v === "string" && v.startsWith("/api/") ? v : Array.isArray(v) ? v.map(findUrl).find(Boolean) : v && typeof v === "object" ? v.url ?? Object.values(v).map(findUrl).find(Boolean) : undefined;
-  const preview = findUrl(video.value); assert.ok(preview, "Missing archived composition preview");
-  const response = await request(preview); assert.equal(response.status, 200); const outputFile = path.join(output, "synthetic-composed.mp4"); await writeFile(outputFile, Buffer.from(await response.arrayBuffer()));
-  const { stdout } = await promisify(execFile)("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,r_frame_rate", "-of", "json", outputFile], { windowsHide: true, timeout: 10000 });
-  const probe = JSON.parse(stdout); assert.ok(Number(probe.format.duration) >= 1 && Number(probe.format.duration) < 2); assert.ok(probe.streams.some((s) => s.codec_type === "audio")); report.composedMedia = { preview, ...probe };
-  checks.push("纯本地 FFmpeg 合成成功，MP4 可下载并保留声音，不调用生成步骤");
+  const ordered = Array.isArray(video.value) ? video.value : []; assert.equal(ordered.length, 2, "合成应输出全部镜头的成片顺序");
+  const previews = []; for (const entry of ordered) { const preview = findUrl(entry); assert.ok(preview, "Missing pinned clip preview"); const response = await request(preview); assert.equal(response.status, 200); previews.push({ preview, bytes: Buffer.from(await response.arrayBuffer()) }); }
+  assert.ok(previews[0].bytes.equals(await readFile(files[1])) && previews[1].bytes.equals(await readFile(files[0])), "调序后的成片顺序应跟随选片清单"); report.composedMedia = { previews: previews.map((item) => item.preview) };
+  checks.push("选片合成只运行自定义代码整理成片顺序，固定素材版本可下载，不调用生成步骤");
   report.status = "passed";
 } catch (error) {
   report.status = "failed"; report.error = error.message; process.exitCode = 1;

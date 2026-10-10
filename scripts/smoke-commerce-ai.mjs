@@ -78,7 +78,7 @@ const comfy = createServer(async (request, response) => {
       const data = JSON.parse((await body(request)).toString("utf8")); const actualGraph = data.prompt;
       const prompt = actualGraph["471"].inputs.prompt; const refs = Object.values(actualGraph).filter(node => node.class_type === "LoadImage").map(node => hash(uploads.get(node.inputs.image)));
       const cardIndex = Number(/PROMPT:card_(\d+)/.exec(prompt)?.[1]) - 1; assert.ok(cardIndex >= 0);
-      const expected = [hash(fixtures[0]), hash(fixtures[1]), ...(/CASE:no_style/.test(prompt) ? [] : [hash(fixtures[2])])]; assert.deepEqual(refs, expected, "ComfyUI gets all product/style references selected by the basic media step");
+      const expected = [hash(fixtures[0]), hash(fixtures[1]), ...(/CASE:no_style/.test(prompt) ? [] : [hash(fixtures[2])])]; assert.deepEqual(refs, expected, "ComfyUI gets all product/style references merged by the core.code media step");
       assert.equal(actualGraph["479"].inputs.switch, true); const id = "test-" + (++promptSequence); const filename = "generated-" + id + ".png";
       const fails = prompt.includes("CASE:fail_once") && cardIndex === 1 && !failedOnce; if (fails) failedOnce = true;
       generations.set(id, { filename, fails, imageCount: prompt.includes("CASE:extra_images") ? 2 : prompt.includes("CASE:no_images") ? 0 : 1 }); outputs.set(filename, fixtures[cardIndex % 2]); comfyRequests.push({ id, cardIndex, prompt, refs, fails }); return json(response, { prompt_id: id });
@@ -100,11 +100,15 @@ try {
   const call = async (name, arguments_ = {}) => { const result = await raw(name, arguments_); assert.equal(result?.ok, true, name + ": " + JSON.stringify(result)); return result.data; };
   await call("initialize_workspace", { format: "zane-studio.workspace/v1", scenes: [], workflows: {}, optionPresets: [], drafts: [], sceneVersions: {} });
   const definitions = []; let cursor;
-  do { const page = await call("list_capabilities", { tier: "basic", limit: 2, ...(cursor ? { cursor } : {}) }); definitions.push(...page.capabilities); cursor = page.nextCursor; } while (cursor);
-  assert.equal(definitions.find(item => item.id === "data.zip").usage.tier, "basic"); assert.ok(definitions.find(item => item.id === "media.select_references").outputs.some(item => item.key === "bundle"));
+  do { const page = await call("list_capabilities", { limit: 2, ...(cursor ? { cursor } : {}) }); definitions.push(...page.capabilities); cursor = page.nextCursor; } while (cursor);
+  assert.equal(definitions.find(item => item.id === "core.code").usage.compatibilityOnly, undefined); assert.equal(definitions.find(item => item.id === "data.zip").usage.compatibilityOnly, true, "列表对齐已退役，改用 core.code");
   const assets = [];
   for (const [index, file] of fixtureFiles.entries()) assets.push((await call("upload_asset", { createId: randomUUID(), name: "test reference " + index, kind: "image", filePath: file })).reference);
   const pkg = JSON.parse(await readFile(path.join(root, "examples/scenes/commerce-ai.json"), "utf8"));
+  // The template must not reintroduce retired low-frequency execution modes; media selection/merge is core.code.
+  const retired = ["media.select_references", "media.image_layout", "text.template", "core.manual", "core.condition", "data.select", "data.zip", "comfyui.commerce_pack", "comfyui.h3_long_video", "comfyui.long_text_video"];
+  assert.ok(!pkg.workflow.steps.some(step => retired.includes(step.capabilityId)), "AI commerce template uses retired capabilities");
+  assert.deepEqual(pkg.workflow.steps.filter(step => step.capabilityId === "core.code").map(step => step.id), ["plan_contract", "references", "prompt_jobs", "render_jobs", "final"]);
   let draft = await call("create_scene", { scene: pkg.scene, workflow: pkg.workflow, optionPresets: [] });
   const originalRevision = draft.revision;
   draft = await call("update_scene_draft", { sceneId: pkg.scene.id, revision: draft.revision, workflow: { ...pkg.workflow, name: "isolated AI suite acceptance" } });
@@ -132,8 +136,9 @@ try {
   assert.ok(comfyRequests.every(request => request.prompt.includes("直接生成含标题、图形、背景与完整设计的最终电商成图") && request.prompt.includes("标题“测试商品”"))); const originalRun = JSON.stringify(run);
   const media = [];
   for (let offset = 0; offset < 3; offset++) { const page = await call("get_run_outputs", { runId: run.runId, outputKey: "images", includeValues: true, valueOffset: offset, valueLimit: 1 }); const output = page.outputs[0]; assert.equal(output.valuePage.total, 3); media.push(...output.mediaReferences); assert.equal(output.valuePage.hasMore, offset < 2); }
-  const firstItems = await call("get_step_result", { runId: run.runId, stepId: "references", limit: 1, includeValues: true }); assert.ok(firstItems.hasMore && firstItems.nextCursor);
-  const secondItems = await call("get_step_result", { runId: run.runId, stepId: "references", limit: 1, includeValues: true, cursor: firstItems.nextCursor }); assert.equal(secondItems.items[0].index, 1);
+  // references is now a single core.code step; per-card items live on the AIXG for_each step.
+  const firstItems = await call("get_step_result", { runId: run.runId, stepId: "prompts", limit: 1, includeValues: true }); assert.ok(firstItems.hasMore && firstItems.nextCursor);
+  const secondItems = await call("get_step_result", { runId: run.runId, stepId: "prompts", limit: 1, includeValues: true, cursor: firstItems.nextCursor }); assert.equal(secondItems.items[0].index, 1);
   for (const reference of media) { const response = await fetch(new URL(reference.url, base)); assert.equal(response.status, 200); assert.ok((await response.arrayBuffer()).byteLength); }
   const exported = await call("get_run_media_export", { runId: run.runId, outputKey: "images" }); assert.equal(exported.fileCount, 3); assert.equal(exported.incomplete, false); assert.equal((await fetch(base + exported.downloadUrl, { method: "HEAD" })).status, 200);
   const archive = Buffer.from(await (await fetch(base + exported.downloadUrl)).arrayBuffer()); assert.equal(archive.readUInt32LE(0), 0x04034b50); assert.ok(archive.includes(Buffer.from("manifest.json")));

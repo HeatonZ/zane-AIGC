@@ -80,7 +80,7 @@ export async function loadWorkflowCapabilities() {
   const seenCursors = new Set<string>();
   const seenIds = new Set<string>();
   do {
-    const query = new URLSearchParams({ tier: "all", limit: "100" });
+    const query = new URLSearchParams({ limit: "100" });
     if (cursor) query.set("cursor", cursor);
     const page = await request<Page>("/api/v1/capabilities?" + query);
     if (first && page.revision !== first.revision) throw new ApiError("能力目录在分页期间变化，请重新加载", 409, "CAPABILITY_PAGE_CHANGED");

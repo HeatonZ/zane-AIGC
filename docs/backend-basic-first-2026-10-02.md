@@ -38,7 +38,7 @@ PID、数量、目录和 revision 仅是本次只读验收快照，不是未来�
 2. 上传素材并固定版本；创建/编辑场景；旧 revision 返回 409；校验后显式发布。
 3. 使用原 publicationId 对账重复发布；以固定发布快照预检，无外部执行步骤。
 4. 提前保存 runId；提交后只读原 ID 对账，重复提交返回 RUN_ALREADY_EXISTS，不创建第二个任务。
-5. `media.select_references` → 通用并发 `for_each` → `media.image_layout`，输出 3 个规格，无并发文件覆盖。
+5. `media.select_references` → 通用并发 `for_each` → `media.image_layout`，输出 3 个规格，无并发文件覆盖。（该组合已在此后标记 `compatibilityOnly:true`：仍可执行旧发布快照，新场景改为直接绑定已授权媒体 + `core.code` + 图像模型直接成图。）
 6. 分段读清单和逐项结果；媒体 GET、HEAD、Range、尺寸、SHA-256 验证。
 7. 只重做一个逐项索引，其余结果复用；原运行记录、原图片与祖先归档保持不变。
 

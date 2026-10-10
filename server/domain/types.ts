@@ -1,4 +1,5 @@
 import type { WorkflowMediaRole } from "./workflowMediaRoles.js";
+import type { ConditionExpression } from "./startCondition.js";
 import type { RuntimeMediaValue } from "../runtimeValue.js";
 
 export interface SavedSettings {
@@ -135,6 +136,9 @@ export interface RunStep {
       rightRef: string;
     }>;
   };
+/** Generic start condition: the step only runs when the rules hold. Every step type
+   * supports it; a skipped step contributes null outputs to later references. */
+  startCondition?: ConditionExpression;
   review?: { enabled: boolean; instruction?: string };
   runCondition?: { conditionStepId: string; expectedResult: boolean };
 }

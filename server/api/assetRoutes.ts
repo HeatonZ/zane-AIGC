@@ -5,6 +5,8 @@ import { assetEnvelope, assetSummary, parseAssetInput } from "../services/assetC
 import { saveAssetSchema, uploadAssetSchema } from "../domain/assetLibraryContracts.js";
 import { HttpError } from "../errors.js";
 import { enablePrivateMediaRevalidation } from "./privateMediaCache.js";
+import { previewWidth } from "../services/mediaPreview.js";
+import { sendPrivateMedia } from "./mediaPreviewResponse.js";
 
 function query(req: Request) {
   const result: Record<string, unknown> = {};
@@ -26,7 +28,7 @@ export function createAssetRouter(service: AssetService) {
   router.use("/api/v1/assets", (req, res, next) => {
     res.set("Cache-Control", "no-store");
     // Owned task-attachment media is authorized by the identity middleware; catalog and all writes are admin-only.
-    if (!/^\/[^/]+\/versions\/\d+\/media$/.test(req.path)) authorize(res);
+    if (!/^\/[^/]+\/versions\/\d+\/(?:media|preview)$/.test(req.path)) authorize(res);
     next();
   });
   router.get("/api/v1/assets", async (req, res) => {
@@ -71,11 +73,26 @@ export function createAssetRouter(service: AssetService) {
     enablePrivateMediaRevalidation(res);
     res.sendFile(service.file(projectDirectory, req.params.assetId, version), { dotfiles: "allow", cacheControl: false, etag: true, lastModified: true, headers: { "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox" } }, error => { if (error) next(error); });
   });
+  router.get("/api/v1/assets/:assetId/versions/:version/preview", async (req, res, next) => {
+    const { projectDirectory } = await service.loadSettings();
+    const version = Number(req.params.version);
+    if (!Number.isSafeInteger(version) || version < 1) throw new HttpError(400, "素材版本无效", "INVALID_ASSET_REQUEST");
+    // Same authorization as the original bytes; the derivative never widens access.
+    if (res.locals.identity?.role === "admin") authorize(res);
+    else res.locals.authorizeAssetMedia?.(projectDirectory, req.params.assetId);
+    await sendPrivateMedia(res, service.file(projectDirectory, req.params.assetId, version), previewWidth(req.query.w), projectDirectory, next);
+  });
   router.get("/api/v1/runs/:runId/output-media", async (req,res,next) => {
     const { projectDirectory } = await service.loadSettings();
     const selected = await service.source(projectDirectory, { runId:req.params.runId, stepId:req.query.stepId, itemIndex:req.query.itemIndex === undefined ? undefined : Number(req.query.itemIndex), outputKey:req.query.outputKey, mediaIndex:Number(req.query.mediaIndex ?? 0), allowIncompleteStep:true });
-    enablePrivateMediaRevalidation(res);
-    res.sendFile(service.localMediaFile(projectDirectory, selected.value), { dotfiles:"allow", cacheControl:false, etag:true, lastModified:true }, error => { if (error) next(error); });
+    const file = service.localMediaFile(projectDirectory, selected.value);
+    const width = req.query.w === undefined ? undefined : previewWidth(req.query.w);
+    if (width === undefined) {
+      enablePrivateMediaRevalidation(res);
+      res.sendFile(file, { dotfiles:"allow", cacheControl:false, etag:true, lastModified:true }, error => { if (error) next(error); });
+      return;
+    }
+    await sendPrivateMedia(res, file, width, projectDirectory, next);
   });
   return router;
 }

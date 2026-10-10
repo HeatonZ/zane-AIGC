@@ -1,12 +1,35 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.5.31。当前 92 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.5.32。当前 92 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
 
+### generic-start-condition
+
+通用开始条件startCondition：每个步骤（hermes/comfyui/手动/能力/旧条件节点）都可声明match(all|any)+rules（左值引用input/前序step输出，运算符equals/not_equals/greater_than/greater_or_equal/less_than/less_or_equal/contains/not_contains/is_empty/is_not_empty，右侧为字面量或另一个引用）；规则不满足时该步骤整步跳过、逐项模式下按项跳过，其声明输出按null参与下游引用，模型与外部服务不会被调用也不计费。开始条件必须在提交前通过引用存在性与结构校验（引用后续步骤/未知引用/空规则/无效匹配方式均拒绝），重做规划按其引用步骤失效旧结果。旧core.condition条件步骤、runCondition与data.select条件选择保留为compatibilityOnly仅兼容已发布快照，新场景不再需要它们：分支跳过由开始条件+null输出表达。配置不发布不执行，发布快照固定后行为才生效，历史运行不自动替换。
+
+| 工具 | HTTP | 副作用 |
+| --- | --- | --- |
+| `list_capabilities` | `GET /api/v1/capabilities` | read |
+| `create_scene` | `POST /api/v1/scenes` | write |
+| `get_scene_draft` | `GET /api/v1/scenes/{sceneId}/draft` | read |
+| `update_scene_draft` | `PATCH /api/v1/scenes/{sceneId}/draft` | write |
+| `validate_scene_draft` | `POST /api/v1/scenes/{sceneId}/validate` | read |
+| `publish_scene` | `POST /api/v1/scenes/{sceneId}/publish` | write |
+| `get_scene` | `GET /api/v1/scenes/{sceneId}` | read |
+| `prepare_scene` | `POST /api/v1/scenes/{sceneId}/prepare` | read |
+| `submit_scene` | `POST /api/v1/scenes/{sceneId}/runs` | execute |
+| `get_step_result` | `GET /api/v1/runs/{runId}/steps/{stepId}/result` | read |
+| `resume_run` | `POST /api/v1/runs/{sourceRunId}/resume` | execute |
+| `preview_rerun` | `POST /api/v1/runs/{sourceRunId}/rerun/preview` | read |
+| `rerun` | `POST /api/v1/runs/{sourceRunId}/rerun` | execute |
+| `submit_own_scene` | `POST /api/v1/self/scenes/{sceneId}/runs` | execute |
+| `get_own_step_result` | `GET /api/v1/self/runs/{runId}/steps/{stepId}` | read |
+| `resume_own_run` | `POST /api/v1/self/runs/{runId}/resume` | execute |
+
 ### custom-code-step
 
-通用自定义代码基础步骤core.code：在隔离沙箱（worker_thread + node:vm，每次执行单worker；128MB内存上限、200–60000毫秒超时、同步死循环由vm超时终止、失控Promise与外部取消强制终止）执行本地JavaScript，只做数据变换与控制，不读写文件、不联网、不调用模型、不计费。用户代码以async function体书写，顶层return对象键对应声明的输出端口；输入按声明端口以JSON进入沙箱，媒体值以只读[{filename}]投影进入（只暴露数量/顺序/文件名）；输出必须齐声明端口与text/number/boolean/json类型，缺失、额外、不可序列化和超大返回都是明确失败；console日志仅失败时作为错误上下文。代码/端口/超时通过草稿编辑，发布快照固定后才在提交执行时运行，取消即终止沙箱；配置和预检不执行代码。复杂确定性数据处理仍优先text.template/data.zip/data.select/core.condition等基础步骤组合；既有发布快照不自动替换。机器契约x-code-step v1。
+通用自定义代码基础步骤core.code：在隔离沙箱（worker_thread + node:vm，每次执行单worker；128MB内存上限、200–60000毫秒超时、同步死循环由vm超时终止、失控Promise与外部取消强制终止）执行本地JavaScript，用于新场景的数据传递、模板拼装、条件控制和结构化计算；不读写文件、不联网、不调用模型、不计费。用户代码以async function体书写，顶层return对象键对应声明的输出端口；输入按声明端口以JSON进入沙箱，媒体值以只读[{filename}]投影进入（只暴露数量/顺序/文件名）；输出必须齐声明端口与text/number/boolean/json/image_list/video_list/audio_list类型，缺失、额外、不可序列化和超大返回都是明确失败；媒体输出端口返回文件名数组（字符串或{filename}），只按filename选择、排序或合并本步骤声明输入里已有的媒体（可重复、可重排），不产生、不改名、不暴露媒体字节/路径/URL，引用不存在文件或类型不符即失败；console日志仅失败时作为错误上下文。代码/端口/超时通过草稿编辑，发布快照固定后才在提交执行时运行，取消即终止沙箱；配置和预检不执行代码。既有发布快照不自动替换；text.template、core.manual、media.select_references、media.image_layout仅保留旧流程兼容。机器契约x-code-step v1。
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -50,7 +73,7 @@
 
 ### comfy-static-switch
 
-精简长文基础组合：data.zip可选ordinalField校验1-based连续整数序号，无需额外步骤；逐项JSON来源内媒体与上游输出共用归档，保持新运行的carry恢复匹配。单工作流上下文切换：运行绑定后仅对可证明静态Boolean的内置ComfySwitchNode断开未选中可选输入；未知、循环和自定义选择器不处理，保留所有节点/输出和其他消费者，不执行表达式或节点。显式空可选视频清除原图示例路径，选中必需输入仍校验；同服务支持HTTP/MCP、固定发布及恢复，配置不生成、旧版不迁移。机器契约x-comfy-static-switch v1。
+精简长文基础组合：旧版data.zip可选ordinalField校验1-based连续整数序号（仅兼容已发布快照，新场景用core.code做同类校验）；逐项JSON来源内媒体与上游输出共用归档，保持新运行的carry恢复匹配。单工作流上下文切换：运行绑定后仅对可证明静态Boolean的内置ComfySwitchNode断开未选中可选输入；未知、循环和自定义选择器不处理，保留所有节点/输出和其他消费者，不执行表达式或节点。显式空可选视频清除原图示例路径，选中必需输入仍校验；同服务支持HTTP/MCP、固定发布及恢复，配置不生成、旧版不迁移。机器契约x-comfy-static-switch v1。
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -119,7 +142,7 @@ UI格式ComfyUI图在同一转换服务解析前端Reroute链与扇出，保留�
 
 ### ai-commerce-basic-composition
 
-AI电商套图仅复用基础Writer/AIXG完整视觉设计、媒体选择、严格列表对齐、ComfyUI与审核；直接生成包含所需文字/图形/版式的完整图片，交付模型原始成图，不含add_text、layout、无字底图限制、后置文案、条件排版或程序合成。商品和风格参考分离，固定计划ID、样张先确认、剩余逐张生成。data.zip校验等长/唯一ID/有限本地itemSchema，media.select_references支持all与可选bundle保留逐项边界，steps.inputs.referenceType显式标注JSON内媒体供审核恢复后真实附件使用，基础ComfyUI的outputMediaCounts逐次校验准确媒体数量，不用总数掩盖错配；草稿不自动发布，旧电商快照/历史不迁移。
+AI电商套图仅复用基础Writer/AIXG完整视觉设计、已授权媒体输入、严格列表对齐、ComfyUI与审核；直接生成包含所需文字/图形/版式的完整图片，交付模型原始成图，不含add_text、layout、无字底图限制、后置文案、条件排版或程序合成。商品和风格参考分离，固定计划ID、样张先确认、剩余逐张生成。列表配对与数量/唯一ID校验由core.code自定义代码完成（旧版data.zip仅兼容已发布快照）；参考图合并与成图交付由core.code媒体输出端口按filename选择本次输入的既有媒体（不产生新媒体、不暴露路径/URL），模板不再使用已退役的media.select_references步骤；已授权媒体输入直接绑定到模型/ComfyUI步骤，steps.inputs.referenceType显式标注JSON内媒体供审核恢复后真实附件使用，基础ComfyUI的outputMediaCounts逐次校验准确媒体数量，不用总数掩盖错配；草稿不自动发布，旧电商快照/历史不迁移。
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -288,7 +311,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### discovery
 
-实时工作台、项目和能力发现；基础优先的适用范围与专用替代说明，目录revision/tier绑定分页；基础媒体引用选择及按物理媒体类型合并列表、图片排版的声明与值schema；旧电商兼容边界
+实时工作台、项目和能力发现；统一能力目录的适用范围与旧版兼容边界，目录revision绑定分页；core.code的新场景数据处理契约；媒体选择与合并、图片画布与排版等旧能力的兼容边界与值schema
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -393,7 +416,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### asset-execution-access
 
-UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为同一任务私有归档，Hermes/AIXG读取字节构造inline图片、ComfyUI按参考图顺序上传同一来源；基础audio_list从已授权固定音色私有路径（含media.select_references/data.zip中间JSON）读取原字节，按引用顺序上传再连接LoadAudio；每文件100MB、合法既有附件不重传、preview不回退、失败在prompt前停止且不自动重试，机器契约audioConsumers；Hermes保留现有预算/压缩，不改选版本，不依赖受保护previewUrl或转发工作台token；管理员兼容本后台同源/相对固定素材URL，预检提前拒绝错误版本/类型/丢失文件；普通用户仍仅本人固定引用；原运行不变、显式断点续跑不盲重放
+UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为同一任务私有归档，Hermes/AIXG读取字节构造inline图片、ComfyUI按参考图顺序上传同一来源；基础audio_list从已授权固定音色私有路径读取原字节，按引用顺序上传再连接LoadAudio；旧media.select_references/data.zip中间JSON仍可被历史快照使用；每文件100MB、合法既有附件不重传、preview不回退、失败在prompt前停止且不自动重试，机器契约audioConsumers；Hermes保留现有预算/压缩，不改选版本，不依赖受保护previewUrl或转发工作台token；管理员兼容本后台同源/相对固定素材URL，预检提前拒绝错误版本/类型/丢失文件；普通用户仍仅本人固定引用；原运行不变、显式断点续跑不盲重放
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -424,7 +447,7 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 
 ### clip-selections
 
-选版清单、修订家族候选与本地合成
+选版清单、修订家族候选与成片顺序整理
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -438,7 +461,7 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 ## 最小使用闭环
 
 - 已有场景：get_workbench → list_scenes → get_scene（固定版本的输入schema/默认值/示例）→ prepare_scene → submit_scene（先保存UUID runId）→ wait_run → get_run_outputs/get_step_result。
-- 能力选型：list_capabilities({tier:basic})优先复用；通用素材映射/图片排版使用media.select_references / media.image_layout；逐项计划/素材/提示词严格对齐用data.zip（rows/first/rest）；复杂数据变换与控制流用core.code本地沙箱执行（不联网、不计费，契约x-code-step）；精确JSON值schema随目录返回。基础缺口先补强，专用仅做定制节点适配；compatibilityOnly:true只保留旧流程。
+- 能力选型：list_capabilities 读取统一目录，能力不分基础/专用等级；新场景的数据传递、模板拼装和结构化控制使用core.code本地沙箱执行（不联网、不计费，契约x-code-step）；已授权媒体直接绑定到模型或ComfyUI步骤；逐项计划/素材/提示词的对齐、数量与唯一ID校验用core.code。media.select_references、media.image_layout、text.template、core.manual、core.condition、data.select、data.zip、comfyui.h3_long_video、comfyui.long_text_video、comfyui.commerce_pack均标记compatibilityOnly:true，仅保留已有发布快照与历史运行，不再作为新步骤推荐。分支跳过用任意步骤的startCondition开始条件（被跳过步骤输出为null，不再需要条件判断/条件选择步骤）；精确JSON值schema随目录返回。不再新增场景专用步骤；能力缺口先补强或拆出可复用能力，场景特有的数据编排用core.code表达。
 - 新业务：create_scene（先保存scene.id）→ get_scene_draft → update_scene_draft（当前revision）→ validate_scene_draft → publish_scene（先保存UUID publicationId）→ get_scene读取真实发布版；发布不执行生成。
 - 共享选项：list_option_presets查看revision/使用场景 → save_option_preset；恢复旧发布版时共享选项冲突会克隆，已发布快照不变。
 - 局部修订：preview_rerun确认影响范围 → rerun（先保存新runId）；审核用最新reviewId，不绕过waiting。

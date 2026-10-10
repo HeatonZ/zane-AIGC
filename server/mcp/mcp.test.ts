@@ -112,7 +112,7 @@ test("真实stdio MCP：第三方请求分页发现、固定发布、冲突保�
   const { call } = await connect(t, h.base);
   const catalog: any[] = []; let cursor: string | undefined;
   do {
-    const page = (await call("list_capabilities", { tier: "basic", limit: 2, ...(cursor ? { cursor } : {}) })).payload.data as any;
+    const page = (await call("list_capabilities", { limit: 2, ...(cursor ? { cursor } : {}) })).payload.data as any;
     assert.ok(page.capabilities.length <= 2); catalog.push(...page.capabilities);
     cursor = page.hasMore ? page.nextCursor : undefined;
     if (page.hasMore) assert.ok(cursor);
@@ -182,7 +182,7 @@ test("真实stdio MCP：第三方请求重试字段经草稿/发布到真实执�
     },
   }) });
   const { call } = await connect(t, h.base);
-  const catalog = (await call("list_capabilities", { tier: "basic", limit: 100 })).payload.data as any;
+  const catalog = (await call("list_capabilities", { limit: 100 })).payload.data as any;
   const capability = catalog.capabilities.find((item: any) => item.id === "core.http_request");
   assert.ok(capability); assert.ok(capability.config.some((field: any) => field.key === "retries"));
   assert.ok(capability.config.some((field: any) => field.key === "retryDelaySeconds"));
@@ -276,4 +276,88 @@ test("真实stdio MCP：第三方multipart图片从固定素材到真实执行�
   assert.equal((mediaExport.payload.data as any).fileCount, 2);
   const run = (await call("get_run", { runId })).payload.data as any;
   assert.equal(run.outputs[0].value.length, 2);
+});
+
+test("真实stdio MCP：第三方生图归档URL经core.code按文件名选择（回归闭环）", async t => {
+  // End-to-end reproduction of the recorded failing run: a third-party image
+  // request publishes its archived result as a canonical RELATIVE workbench
+  // URL, and a core.code step downstream selects that media by file name. The
+  // sandbox only ever sees {filename}, so an unparsed relative URL leaves the
+  // list empty and the step fails its output validation.
+  const output = await sharp({ create: { width: 12, height: 12, channels: 3, background: "green" } }).png().toBuffer();
+  const variable = "TEST_MCP_IMAGE_ARCHIVE_KEY"; const previousKey = process.env[variable];
+  process.env[variable] = "mcp-only-image-archive-key";
+  t.after(() => { if (previousKey === undefined) delete process.env[variable]; else process.env[variable] = previousKey; });
+  let sends = 0;
+  const h = await aiHarness(t, { thirdPartyRequest: createThirdPartyJsonRequester({
+    async resolve() { return [{ address: "93.184.216.34", family: 4 }]; },
+    async send() { sends += 1; return { status: 200, contentType: "application/json", body: Buffer.from(JSON.stringify({ data: [{ b64_json: output.toString("base64") }] })) }; },
+  }) });
+  const { call } = await connect(t, h.base);
+  const sceneId = "mcp-http-archive-url";
+  const workflow = {
+    name: "第三方生图归档URL闭环",
+    inputs: [{ key: "prompt", label: "提示词", type: "textarea", required: true }, { key: "images", label: "图", type: "image_list", required: false }, { key: "model", label: "模型", type: "select", required: true, options: ["gpt-image-2.5-sunburst", "gpt-image-2"], defaultValue: "gpt-image-2.5-sunburst" }],
+    steps: [
+      // 图编辑：仅在提供了参考图时执行，否则跳过且不调用外部服务。
+      { id: "generate", name: "图编辑", kind: "capability", capabilityId: "core.http_request", capabilityVersion: "2",
+        capabilityConfig: { url: "https://images.example.net/v1/images/edits", method: "POST", apiKeyEnv: variable, apiKeyHeader: "Authorization", apiKeyPrefix: "Bearer ", bodyFormat: "multipart", timeoutSeconds: 60, retries: 0, multipartImages: [{ inputKey: "input_images", fieldName: "image[]" }], responseImages: { path: "data", base64Field: "b64_json", expectedCount: 1 }, bodyTemplate: { model: "{{model}}", prompt: "{{prompt}}" } },
+        inputs: [{ key: "input_images", sourceRef: "input.images", selection: { mode: "all" } }, { key: "prompt", sourceRef: "input.prompt" }, { key: "model", sourceRef: "input.model" }],
+        outputs: [{ key: "response", type: "json" }, { key: "status", type: "number" }, { key: "images", type: "image_list" }],
+        startCondition: { match: "all", rules: [{ id: "rule_edit", leftRef: "input.images", operator: "is_not_empty", valueSource: "literal", rightValue: "", rightRef: "" }] } },
+      // 图生成：没有参考图时执行，返回归档后的相对URL。
+      { id: "step_mv1pefbo_2", name: "图生成", kind: "capability", capabilityId: "core.http_request", capabilityVersion: "2",
+        capabilityConfig: { url: "https://images.example.net/v1/images/generations", method: "POST", apiKeyEnv: variable, apiKeyHeader: "Authorization", apiKeyPrefix: "Bearer ", bodyFormat: "json", timeoutSeconds: 60, retries: 0, responseImages: { path: "data", base64Field: "b64_json", expectedCount: 1 }, bodyTemplate: { model: "{{model}}", prompt: "{{prompt}}", n: 1, response_format: "b64_json" } },
+        inputs: [{ key: "prompt", sourceRef: "input.prompt" }, { key: "model", sourceRef: "input.model" }],
+        outputs: [{ key: "response", type: "json" }, { key: "status", type: "number" }, { key: "images", type: "image_list" }],
+        startCondition: { match: "all", rules: [{ id: "rule_gen", leftRef: "input.images", operator: "is_empty", valueSource: "literal", rightValue: "", rightRef: "" }] } },
+      // 合并结果图片：按filename选择，空列表回退到生成结果。
+      { id: "merge_images", name: "合并结果图片", kind: "capability", capabilityId: "core.code", capabilityVersion: "1",
+        capabilityConfig: { code: 'const edited = (inputs.edit_images ?? []).map((item) => item.filename);\nconst generated = (inputs.gen_images ?? []).map((item) => item.filename);\nreturn { images: edited.length ? edited : generated };', timeoutMs: 5000 },
+        inputs: [{ key: "edit_images", sourceRef: "step.generate.outputs.images", referenceType: "image_list" }, { key: "gen_images", sourceRef: "step.step_mv1pefbo_2.outputs.images", referenceType: "image_list" }],
+        outputs: [{ key: "images", type: "image_list" }] },
+    ],
+    outputs: [{ key: "result", label: "生成结果", type: "image_list", sourceRef: "step.merge_images.outputs.images", selection: { mode: "all" } }, { key: "generated", label: "文生图结果", type: "image_list", sourceRef: "step.step_mv1pefbo_2.outputs.images", selection: { mode: "all" } }],
+  };
+  const created = await call("create_scene", { scene: { id: sceneId, title: "归档URL闭环" }, workflow }); assert.equal(created.payload.ok, true);
+  const draft = (created.payload.data as any).revision;
+  const validation = (await call("validate_scene_draft", { sceneId, revision: draft })).payload; assert.equal(validation.ok, true, JSON.stringify(validation));
+  const versionId = randomUUID();
+  assert.equal((await call("publish_scene", { sceneId, revision: draft, publicationId: versionId })).payload.ok, true);
+  // 空图片列表：图编辑跳过，图生成执行，合并步骤必须能按文件名选中归档图片。
+  const inputValues = { prompt: "两个人", images: [], model: "gpt-image-2.5-sunburst" };
+  assert.equal((await call("prepare_scene", { sceneId, versionId, inputValues })).payload.ok, true);
+  assert.equal(sends, 0, "预检不得调用第三方接口");
+  const runId = randomUUID();
+  assert.equal((await call("submit_scene", { sceneId, versionId, runId, inputValues })).payload.ok, true);
+  const done = (await call("wait_run", { runId, timeoutSeconds: 20 })).payload.data as any;
+  assert.equal(done.status, "completed", JSON.stringify(done));
+  assert.equal(sends, 1, "只有图生成步骤调用一次第三方接口");
+  const run = (await call("get_run", { runId })).payload.data as any;
+  const status = Object.fromEntries(run.steps.map((step: any) => [step.stepId, step.status]));
+  assert.equal(status.generate, "skipped"); assert.equal(status.step_mv1pefbo_2, "completed"); assert.equal(status.merge_images, "completed");
+  // 归档URL必须保留可用文件名：合并步骤选中同一张图，而不是空列表。
+  const generated = (await call("get_step_result", { runId, stepId: "step_mv1pefbo_2", outputKey: "images" })).payload.data as any;
+  const archivedUrl = generated.outputs[0].value[0];
+  assert.match(archivedUrl, new RegExp("^/api/v1/runs/" + runId + "/media/[A-Za-z0-9._-]+\\.png$"));
+  // 选中项保留原URL定位符，因此对外仍是同一归档地址；关键是列表非空，即按文件名选择成功。
+  const merged = (await call("get_step_result", { runId, stepId: "merge_images", outputKey: "images" })).payload.data as any;
+  assert.equal(merged.outputs[0].value.length, 1);
+  assert.deepEqual(merged.outputs[0].value, [archivedUrl]);
+  // 最终输出同时暴露合并结果与文生图结果，且指向同一归档媒体。
+  assert.equal(run.outputs.length, 2);
+  assert.deepEqual(run.outputs.map((item: any) => item.key), ["result", "generated"]);
+  assert.equal(run.outputs[0].value.length, 1); assert.equal(run.outputs[1].value.length, 1);
+  assert.deepEqual(run.outputs[0].value, [archivedUrl]); assert.deepEqual(run.outputs[1].value, [archivedUrl]);
+  // 归档媒体可经鉴权地址读取：HEAD与Range走同一固定版本来源。
+  const mediaUrl = generated.outputs[0].mediaReferences[0].url;
+  const head = await fetch(h.base + mediaUrl, { method: "HEAD" }); assert.equal(head.status, 200);
+  const range = await fetch(h.base + mediaUrl, { headers: { Range: "bytes=0-7" } }); assert.equal(range.status, 206);
+  assert.deepEqual(Buffer.from(await range.arrayBuffer()), output.subarray(0, 8));
+  const mediaExport = await call("get_run_media_export", { runId, outputKey: "result" });
+  assert.equal(mediaExport.payload.ok, true);
+  assert.equal((mediaExport.payload.data as any).fileCount, 1);
+  // 响应丢失对账：同一runId重复提交被拒绝，不重复计费。
+  assert.equal((await call("submit_scene", { sceneId, versionId, runId, inputValues })).payload.error?.status, 409);
+  assert.equal(sends, 1);
 });

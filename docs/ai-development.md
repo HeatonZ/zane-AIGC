@@ -2,11 +2,11 @@
 
 适用：新增场景功能、能力包、执行/反馈/审核、素材、选版、业务配置及相关修改。仓库根 `AGENTS.md` 已将本约定纳入后续开发指令。
 
-## 基础优先，专用按需
+## 基础优先，专用由自定义代码替代
 
-新增场景先尝试基础步骤组合；Profile、提示词、字段、节点绑定及通用逐项/条件/审核配置能够表达的差异，不新增场景专用执行器。基础能力不足时先补强或拆出通用能力；素材映射、图片排版等通用处理不按场景专用化。只有 H3 数字人这类确需定制节点/协议适配、基础配置不能表达时，才新增专用能力，并声明 `usage.tier / whenToUse / basicAlternative`。未声明的旧扩展保守视为按需专用，不自动改动原流程。
+新增场景先尝试基础步骤组合；Profile、提示词、字段、节点绑定及通用逐项/条件/审核配置能够表达的差异，不新增场景专用执行器。场景特有的数据传递、模板拼装、素材映射与结构化控制用 core.code 自定义代码在隔离沙箱内表达；基础能力不足时先补强或拆出可复用能力，不按场景名称专用化。能力目录统一，不再分基础/专用等级：步骤只声明 `usage.whenToUse`，退役的执行方式（含旧 H3 适配与电商图包整包）标记 `usage.compatibilityOnly`，仍注册可执行以兼容已有发布快照与历史运行，不作为新步骤推荐。未声明 usage 的旧扩展补默认说明，不自动改动原流程。
 
-UI、HTTP、MCP 读取同一能力目录；AI 优先查询 `tier:basic`，确有缺口再查看 `specialized`。目录分页与 revision 必须一致，发布/运行快照不得因展示分组改变。
+UI、HTTP、MCP 读取同一能力目录；`list_capabilities` 只有一个扁平目录，不再接受 `tier` 参数，目录按安装注册顺序返回。目录分页与 revision 必须一致，发布/运行快照不得因展示分组改变。
 
 ## 场景只维护服务端一套
 
@@ -54,6 +54,21 @@ UI、HTTP、MCP 读取同一能力目录；AI 优先查询 `tier:basic`，确有
 - 摘要/详情/分页/大值省略的区别明确；旧或跨对象游标被拒绝。
 - 审核、取消、恢复、局部重做等保持原状态机。
 - 现有 UI 与历史运行、场景元数据和扩展字段兼容。
+
+## 本机接入与只读核验
+
+本机用户环境变量已提供 `ZANE_ADMIN_TOKEN`（≥32 字符运维管理凭证，服务端识别为 `@operator`/admin）：HTTP API 作 `Authorization: Bearer`，MCP 入口作 `ZANE_API_TOKEN`，两条入口都可用。判断“能不能访问工作台”之前先实测，不要凭印象宣称没有凭证。
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8799/api/health                       # 无需鉴权，确认服务在跑
+$h = @{ Authorization = "Bearer $env:ZANE_ADMIN_TOKEN" }
+Invoke-RestMethod http://127.0.0.1:8799/api/v1/self/account -Headers $h  # 应返回 @operator / 运维管理员 / admin
+$env:ZANE_API_TOKEN = $env:ZANE_ADMIN_TOKEN                              # 启动 MCP 前显式传入同一凭证
+```
+
+全局 Codex 配置已注册 `zane-workbench` 条目（2026-10-10 按 `examples/mcp/codex.toml`，令牌取本机 `ZANE_ADMIN_TOKEN` 注入 env 表，改动前备份 `config.toml.bak-20261010`）；注册或修改配置后需重新加载 MCP 连接才生效，未生效时用上面的命令直连。
+
+MCP 入口与 `npm run ai:doctor` 只读取启动环境，不自动加载项目 `.env*`；终端命令不会自动继承 Codex 只传给 MCP 子进程的环境。检查配置只输出存在性、长度/前缀、是否启用、地址与错误类别，401 是鉴权未通过、403 是权限不足。密钥只存在于本机环境变量或本机 Codex 配置，不进仓库、日志、回复、AGENTS.md 和示例文件；不因此重启工作台、Hermes Gateway 或 ComfyUI。
 
 ## 命令和自动门禁
 

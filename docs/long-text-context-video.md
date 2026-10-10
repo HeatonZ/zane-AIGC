@@ -9,7 +9,7 @@
 1. **Writer**（writer Profile，一次）：完成长文改编与制作级视频分镜脚本，输出可读 `storyboard` 和原始 `shots`；包括每镜叙事任务、景别/机位/站位/动作/光线、起止连续性、素材选择、时长、逐字对白与语气/停顿/时间。**不输出prompt或H3提示词外壳**。
 2. **AIXG**（aixg Profile，一次批量）：只转换Writer已确定的全部分镜，输出按原顺序一一对应的 `prompts` 字符串数组；不重新编剧、拆镜、改台词、时长或素材选择。
 3. **align / data.zip**：原始Writer分镜与AIXG提示词等长对齐，校验分镜结构和1-based连续序号；原始shots不含prompt，不接受Writer混入模型提示词。
-4. **references / media.select_references**：按原始selection选择本镜素材，将全局标签确定性映射为实际Picture/Audio编号。
+4. **references / media.select_references（旧版兼容）**：按原始selection选择本镜素材，将全局标签确定性映射为实际Picture/Audio编号。该步骤已标记 `compatibilityOnly:true`，只为已发布快照保留；新场景直接绑定已授权媒体输入，省略这一定位步骤。
 5. **records / data.zip**：保持原始Writer镜头对象，将映射后的prompt和逐镜媒体包对齐为执行记录。
 6. **generate**：同一个ComfyUI工作流以for_each.carry串行自动续接。
 7. **assemble**：本地FFmpeg合成，保留原生声音。

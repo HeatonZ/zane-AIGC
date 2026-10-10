@@ -158,6 +158,11 @@ export interface WorkflowControlConfig {
   rules: WorkflowConditionRule[];
 }
 
+/** Generic start condition attached to every step; rules reuse the condition vocabulary. */
+export interface WorkflowStartCondition {
+  match: "all" | "any";
+  rules: WorkflowConditionRule[];
+}
 export interface WorkflowRunCondition {
   conditionStepId: string;
   expectedResult: boolean;
@@ -236,6 +241,8 @@ export interface WorkflowStepDefinition {
   comfyui?: ComfyUIWorkflowConfig;
   control?: WorkflowControlConfig;
   review?: { enabled: boolean; instruction?: string };
+/** Runs only when the rules hold; a skipped step contributes null outputs downstream. */
+  startCondition?: WorkflowStartCondition;
   runCondition?: WorkflowRunCondition;
 }
 

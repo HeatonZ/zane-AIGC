@@ -19,8 +19,9 @@ export function publicRequestAllowed(method: string, rawPath: string): boolean {
   if (method === "POST" && ["/api/auth/login", "/api/v1/self/logout"].includes(rawPath)) return true;
   if (userOperations.some(operation => (operation.method === method || (operation.method === "GET" && method === "HEAD")) && operation.pattern.test(rawPath))) return true;
   if (!read(method)) return false;
-  return /^\/api\/v1\/runs\/[^/]+\/(?:output-media|media\/[A-Za-z0-9_-][A-Za-z0-9._-]*|media\.zip)\/?$/.test(rawPath)
-    || /^\/api\/v1\/assets\/[^/]+\/versions\/[1-9][0-9]*\/media\/?$/.test(rawPath);
+  return /^\/api\/v1\/runs\/[^/]+\/(?:output-media|media\/[A-Za-z0-9_-][A-Za-z0-9._-]*(?:\/preview)?|media\.zip)\/?$/.test(rawPath)
+    || /^\/api\/v1\/self\/runs\/[^/]+\/media\.zip\/?$/.test(rawPath)
+    || /^\/api\/v1\/assets\/[^/]+\/versions\/[1-9][0-9]*\/(?:media|preview)\/?$/.test(rawPath);
 }
 export const publicEntryGuard: RequestHandler = (req, res, next) => {
   if (!res.locals.publicUserOnly) { next(); return; }

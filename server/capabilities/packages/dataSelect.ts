@@ -4,7 +4,7 @@ import { resolveWorkflowValue, toJsonValue } from "../../domain/workflowValues.j
 /** Lazy, lossless branch merge for any workflow value, including media lists. */
 const factory: CapabilityFactory = () => ({
   definition: {
-    id: "data.select", version: "1", usage: { tier: "basic", whenToUse: "按布尔条件合并分支结果，支持文本、JSON 和媒体，不调用模型。" }, label: "条件选择", category: "数据",
+    id: "data.select", version: "1", usage: { compatibilityOnly: true, whenToUse: "仅兼容已有发布快照与历史运行；新场景不再新增条件选择步骤：分支用任意步骤的startCondition开始条件跳过，默认值由null输出或core.code自定义代码合并（steps.startCondition + inputs.上游输出 ?? 默认值）；媒体分支仍可用data.select兼容旧流程。" }, label: "条件选择（旧版兼容）", category: "数据",
     description: "按布尔条件选择一个分支的结果；未选中的分支可以跳过。支持文本、JSON 和媒体列表，不调用模型。",
     dependencyMode: "declared", legacy: { kind: "capability" },
     inputs: [

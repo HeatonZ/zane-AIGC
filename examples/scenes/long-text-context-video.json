@@ -832,50 +832,43 @@
         }
       },
       {
-        "promptTemplate": "",
         "id": "assemble",
-        "name": "FFmpeg · 顺序拼接成片（保留原生声音）",
-        "kind": "comfyui",
-        "capabilityId": "media.video_concat",
+        "name": "自定义代码 · 按分镜顺序整理成片",
+        "kind": "capability",
+        "capabilityId": "core.code",
         "capabilityVersion": "1",
         "inputs": [
           {
+            "key": "clips",
             "label": "按生成顺序的视频片段",
             "sourceRef": "step.generate.outputs.result",
-            "key": "clips",
             "valueSource": "reference"
           },
           {
+            "key": "shots",
             "label": "完整制作分镜清单",
             "sourceRef": "step.writer.outputs.shots",
-            "key": "shots",
             "valueSource": "reference"
           }
         ],
         "outputs": [
           {
-            "label": "完整成片",
-            "description": "",
             "key": "video",
+            "label": "完整成片顺序",
+            "description": "",
             "type": "video_list"
           },
           {
-            "label": "成片地址",
-            "description": "",
-            "key": "download",
-            "type": "text"
-          },
-          {
-            "label": "成片拼接记录",
-            "description": "",
             "key": "manifest",
+            "label": "成片顺序记录",
+            "description": "",
             "type": "json"
           }
         ],
-        "comfyui": {
-          "workflowFile": "builtin:video_concat",
-          "bindings": [],
-          "adapter": "video_concat"
+        "promptTemplate": "",
+        "capabilityConfig": {
+          "code": "// 按分镜顺序整理成片：只做确定性数据整理，不生成新媒体文件，也不调用生成服务。\nconst fail = (message) => { throw new Error(message); };\nconst record = (value) => (value && typeof value === \"object\" && !Array.isArray(value) ? value : null);\nconst clips = Array.isArray(inputs.clips) ? inputs.clips : [];\nconst shots = Array.isArray(inputs.shots) ? inputs.shots : [];\nif (clips.length < 1 || clips.length > 360) fail(\"成片整理需要 1 到 360 个视频片段\");\nif (shots.length !== clips.length) fail(\"分镜数量（\" + shots.length + \"）与片段数量（\" + clips.length + \"）不一致，不能静默漏掉片段或乱序\");\nconst rows = [];\nfor (let position = 0; position < shots.length; position += 1) {\n  const shot = record(shots[position]);\n  if (!shot) fail(\"第 \" + (position + 1) + \" 条分镜无效\");\n  if (shot.index !== position + 1) fail(\"分镜 index 必须从 1 开始连续递增，第 \" + (position + 1) + \" 条为 \" + shot.index);\n  rows.push({ index: shot.index, seconds: typeof shot.seconds === \"number\" ? shot.seconds : null });\n}\nreturn { video: clips, manifest: { format: \"zane.film-order/v1\", count: clips.length, shots: rows } };",
+          "timeoutMs": 5000
         }
       }
     ],
@@ -885,12 +878,6 @@
         "key": "video",
         "type": "video_list",
         "sourceRef": "step.assemble.outputs.video"
-      },
-      {
-        "label": "成片地址",
-        "key": "download",
-        "type": "text",
-        "sourceRef": "step.assemble.outputs.download"
       },
       {
         "label": "制作级分镜脚本",

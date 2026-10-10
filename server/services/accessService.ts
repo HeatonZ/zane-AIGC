@@ -165,11 +165,11 @@ export class AccessService {
         };
         if (identity.role === "admin" || req.path.startsWith("/api/v1/self/") || ["/api/v1/ai", "/api/v1/ai/guide", "/api/v1/ai/openapi.json"].includes(req.path)) { next(); return; }
         if (["GET", "HEAD"].includes(req.method)) {
-          const media = /^\/api\/v1\/runs\/([^/]+)\/(?:output-media|media\/[^/]+)$/.exec(req.path);
+          const media = /^\/api\/v1\/runs\/([^/]+)\/(?:output-media|media\/[^/]+(?:\/preview)?)$/.exec(req.path);
           if (media) { const run = this.store.getRun(await loadProject(), decodeURIComponent(media[1])); if (run?.ownerUserId === identity.id) { res.locals.authorizeRunMedia(run); next(); return; } throw new HttpError(404, "媒体不存在", "OBJECT_NOT_FOUND"); }
           const archive = /^\/api\/v1\/runs\/([^/]+)\/(?:media-export|media\.zip)$/.exec(req.path);
           if (archive) { const run = this.store.getRun(await loadProject(), decodeURIComponent(archive[1])); if (!run) throw new HttpError(404, "运行不存在", "OBJECT_NOT_FOUND"); res.locals.authorizeRunMedia(run); next(); return; }
-          const asset = /^\/api\/v1\/assets\/([^/]+)\/versions\/\d+\/media$/.exec(req.path);
+          const asset = /^\/api\/v1\/assets\/([^/]+)\/versions\/\d+\/(?:media|preview)$/.exec(req.path);
           if (asset) { res.locals.authorizeAssetMedia(await loadProject(), decodeURIComponent(asset[1])); next(); return; }
         }
         throw new HttpError(403, "需要管理员权限", "ADMIN_REQUIRED");

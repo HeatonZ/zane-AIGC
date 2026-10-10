@@ -9,12 +9,12 @@
 - 正式升级必须先核验进程身份、空闲任务和数据备份，再正常切换工作台；不连带重启 Hermes Gateway 或 ComfyUI。一次性升级脚本不能重复使用旧 PID。
 - Hermes 上游及 evolution foundation 保持只读；使用受支持的用户配置、技能和独立脚本。
 
-## 基础优先，专用按需
+## 基础优先，专用由自定义代码替代
 
-- 不按场景名称新增执行器；优先复用基础步骤，用 Profile、提示词、输入输出、ComfyUI 工作流/节点绑定表达场景差异。
-- 遍历、分支、审核、恢复与本地媒体合成复用通用机制；基础步骤能完整满足需求时，不增加专用能力包。
-- 基础能力不足时先补强或拆出可复用基础能力；媒体选择、排版等通用数据变换/确定性后处理不能因为场景名称做成专用。只有 H3 数字人这类确需定制节点/协议适配且基础配置无法表达时，才新增专用适配；声明 `usage.tier / whenToUse / basicAlternative`，说明必要性和基础替代边界。
-- 已发布专用流程与历史运行不自动替换；迁移必须在草稿中核对行为、以 revision 保护编辑，校验后显式发布。
+- 不按场景名称新增执行器或专用步骤；场景差异用 Profile、提示词、输入输出、ComfyUI 工作流/节点绑定表达，场景特有的数据编排用 core.code 自定义代码在隔离沙箱内完成。
+- 能力目录统一，不再分基础/专用等级；步骤只声明 `usage.whenToUse`，退役的执行方式标记 `usage.compatibilityOnly`：仍注册可执行，只兼容已有发布快照与历史运行，不作为新步骤推荐。
+- 遍历、分支、审核、恢复与本地媒体合成复用通用机制；基础步骤加自定义代码能完整满足需求时，不增加任何场景专用能力包。
+- 已发布的旧流程与历史运行不自动替换；迁移必须在草稿中核对行为、以 revision 保护编辑，校验后显式发布。
 
 ## 新功能必须同步提供 AI 配套
 
@@ -33,8 +33,8 @@
 
 ## 本机工作台 AI 接入定位
 
-- 本机 Codex 工作台连接固定配置在 `C:\Users\Windows11\.codex\config.toml` 的 `[mcp_servers.zane-workbench]` 与 `[mcp_servers.zane-workbench.env]`；先检查已连接的工作台 MCP，未连接时按此位置检查，不反复要求用户在聊天里提供密钥。此路径是本机约定，不是所有开发机器的通用路径。
-- 正式服务地址为 `http://127.0.0.1:8799`，MCP 入口为 `F:\code\zane-drama\dist-server\mcp\index.js`。`ZANE_API_TOKEN` 必须是管理后台“用户管理 → 本人 AI 凭证”创建的有效工作台凭证（用户端已不再提供 AI 接入入口）；管理场景需管理员身份，不把模型供应商 Key 当作工作台凭证。
-- 当前 MCP 入口与 `npm run ai:doctor` 只读取启动环境，不自动加载项目 `.env*`；Codex 的 `.env` 配置表只传给它启动的 MCP 子进程，不会自动传给终端命令。独立执行 doctor 时需显式传入同一配置的环境，禁止输出密钥或使用任意文件执行代理。
-- 配置模板为空密钥且 `enabled = false` 时表示尚未完成接入；填入有效凭证后设为 `true`，需客户端重新加载连接配置。先用 `get_workbench`、`get_current_user` 只读核验身份与契约，再操作服务端场景；不因此重启工作台、Hermes Gateway 或 ComfyUI。
-- 不将密钥写入仓库、日志、回复、AGENTS.md 或示例文件。检查配置时只输出是否存在、是否启用、地址与错误类别，不输出文件全量。401 表示鉴权未通过，403 表示权限不足；不要绕过身份验证或读取生产 SQLite 寻找凭证。
+- 本机用户环境变量已提供 `ZANE_ADMIN_TOKEN`（≥32 字符运维管理凭证，无默认值、不进网页）。它同时可用于两条入口：HTTP API 作 `Authorization: Bearer <token>`，MCP 入口作 `ZANE_API_TOKEN`；服务端都识别为 `@operator`（运维管理员，admin）。2026-10-10 实测通过：`GET /api/v1/self/account` 返回 `@operator`/admin，stdio MCP `get_current_user` 返回同一身份且 92 个工具可用。不要说“本机没有凭证、访问不了 MCP 和 API”；只有实测失败时才报告存在性、地址与错误类别（401 鉴权未通过、403 权限不足、服务未启动）。
+- 只读核验先做后写：`GET /api/health` 确认 `http://127.0.0.1:8799` 在跑；再用同一凭证调 `/api/v1/self/account`，或经 MCP 调 `get_workbench` / `get_current_user`，核对 contractVersion、`worker.ready/accepting`、`projectConfigured` 与身份角色，然后才操作服务端场景。核验只输出存在性、长度/前缀、是否启用、地址、身份与错误类别；不输出密钥全量，不写入仓库、日志、回复、AGENTS.md 或示例文件，不绕过身份验证，不读取生产 SQLite 找凭证。
+- MCP 入口为 `F:\code\zane-drama\dist-server\mcp\index.js`，只读取启动环境、不自动加载项目 `.env*`；Codex 的 `.env` 配置表只传给它启动的 MCP 子进程，不会自动传给终端命令。要起 MCP 必须显式把同一 token 传进启动环境（PowerShell：`$env:ZANE_API_TOKEN = $env:ZANE_ADMIN_TOKEN`；`ZANE_BASE_URL` 默认 `http://127.0.0.1:8799`）。`npm run ai:doctor` 同样只读启动环境；独立执行需显式传入同一配置的环境，禁止输出密钥或使用任意文件执行代理。只读核验不重启工作台、Hermes Gateway 或 ComfyUI。
+- 本机 Codex 工作台连接固定配置在 `C:\Users\Windows11\.codex\config.toml` 的 `[mcp_servers.zane-workbench]` 与 `[mcp_servers.zane-workbench.env]`；2026-10-10 已按 `examples/mcp/codex.toml` 注册（`command=node`、`args=dist-server/mcp/index.js`、env 表注入 `ZANE_BASE_URL`/`ZANE_API_TOKEN`/`ZANE_MCP_TIMEOUT_MS`，密钥取本机 `ZANE_ADMIN_TOKEN`、只写进该配置，不进仓库），改动前的备份为 `config.toml.bak-20261010`。注册或改过配置后需客户端重新加载 MCP 连接才生效；先检查已连接的工作台 MCP，未加载时不要反复要求用户在聊天里提供密钥——直接用环境变量里的 `ZANE_ADMIN_TOKEN` 按上面两条访问 HTTP/MCP。此路径是本机约定，不是所有开发机器的通用路径。
+- 普通用户与其他机器的工作台凭证仍由管理后台“用户管理 → 本人 AI 凭证”创建后作为 `ZANE_API_TOKEN` 使用；它与本机运维 `ZANE_ADMIN_TOKEN` 是两条并行入口，不互相否定，也不把模型供应商 Key 当作工作台凭证。

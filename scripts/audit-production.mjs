@@ -121,7 +121,6 @@ export async function auditProduction({ baseUrl, outputDirectory }) {
       const comfy = step.comfyui;
       if (step.kind !== "comfyui" || !comfy) continue;
       if (comfy.adapter) await check(`${step.name}: 执行适配器`, async () => assert.ok(health?.adapters.includes(comfy.adapter), `Adapter ${comfy.adapter} unavailable`), scene.id);
-      if (comfy.workflowFile === "builtin:video_concat") continue;
       const graph = await check(`${step.name}: ComfyUI 文件读取与转换`, async () => {
         if (!graphCache.has(comfy.workflowFile)) graphCache.set(comfy.workflowFile, json("/api/comfyui/workflow?filename=" + encodeURIComponent(comfy.workflowFile)));
         const result = await graphCache.get(comfy.workflowFile); assert.ok(result.nodes?.length); return result;

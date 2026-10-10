@@ -13,9 +13,9 @@ import { isRunId, runArtifactPaths } from "../../artifacts/runArtifacts.js";
 import { throwIfAborted } from "../../execution/cancellation.js";
 const factory: CapabilityFactory = () => ({
   definition: {
-    id: "media.image_layout", version: "1", label: "图片画布与排版", category: "图片", legacy: { kind: "capability" }, dependencyMode: "declared",
+    id: "media.image_layout", version: "1", label: "图片画布与排版（旧版兼容）", category: "图片", legacy: { kind: "capability" }, dependencyMode: "declared",
     description: "本地调整画布/留白/背景并完整排入标题正文，保留主体不裁切；不调用生成模型，不内置电商/平台政策。",
-    usage: { tier: "basic", whenToUse: "商品图、封面、海报等需要确定性图片排版时复用；批量规格通过通用逐项执行，不需要场景专用适配器。" },
+    usage: { compatibilityOnly: true, whenToUse: "仅兼容已有发布快照与历史运行；新场景不再新增确定性图片画布与排版步骤：让图像模型直接生成包含版式与文案的完整图片，其他数据编排使用core.code。" },
     inputs: [{ key: "image", label: "源图片（恰好一张）", type: "image_list", required: true }, { key: "layout", label: "画布与文案", type: "json", required: true, valueSchema: z.toJSONSchema(imageLayoutSchema) as Record<string, CapabilityValue> }],
     outputs: [{ key: "images", label: "排版图片", type: "image_list" }, { key: "layout_manifest", label: "排版记录", type: "json", description: "format=zane-image-layout/item-v1；sourceRunId、outputFile、preview、bytes、sha256、layout与qa完整保留" }],
     config: [], editor: { inputs: "ports", outputs: "ports" }, result: { renderer: "auto" },

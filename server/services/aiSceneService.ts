@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import type { JsonValue, RunWorkflowDefinition, SavedSettings } from "../domain/types.js";
 import { asRecord, normalizeRunWorkflow } from "../domain/workflowValues.js";
-import { validateWorkflowShape, validateCarryReferences } from "../domain/workflowValidation.js";
+import { validateWorkflowShape, validateCarryReferences, validateStartConditionReferences } from "../domain/workflowValidation.js";
 import { validateWorkflowInputs, workflowInputDefaults } from "../domain/inputValidation.js";
 import { sceneInputContract } from "../domain/inputContract.js";
 import { SceneDraftService, sceneDraftFromWorkspace } from "./sceneDraftService.js";
@@ -60,6 +60,7 @@ export class AiSceneService {
     const presets = Array.isArray(version.optionPresets) ? version.optionPresets.map(asRecord) : [];
     const workflow = normalizeRunWorkflow(structuredClone(workflowValue) as unknown as RunWorkflowDefinition);
     validateCarryReferences(workflow);
+    validateStartConditionReferences(workflow);
     workflow.sceneId = sceneId;
     workflow.publishedScene = { versionId: selectedId, version: version.version, publishedAt: version.publishedAt };
     workflow.inputs = workflow.inputs.map(field => {

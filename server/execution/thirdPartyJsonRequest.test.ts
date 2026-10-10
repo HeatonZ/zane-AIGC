@@ -230,6 +230,9 @@ test("第三方multipart：已授权图片原字节上传、响应归档且base6
   const item = result.images.items[0]!; assert.equal(item.locator.type, "url");
   const archivedUrl = (item.locator as { value: string }).value;
   assert.match(archivedUrl, /^\/api\/v1\/runs\/test\/media\/[A-Za-z0-9._-]+$/);
+  // The published relative archive URL must still expose the file name: media
+  // is selected downstream by file name only.
+  assert.equal(item.filename, path.basename(archivedUrl));
   const archivedPath = path.join(context.artifacts.directory, "outputs", "media", path.basename(archivedUrl));
   assert.deepEqual(await readFile(archivedPath), image);
   assert.equal((await stat(path.dirname(archivedPath))).isDirectory(), true);

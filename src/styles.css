@@ -402,10 +402,10 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .workflow-run-step-value dt small { color: #9ba197; font: 8px Consolas, "DM Sans", sans-serif; }
 .workflow-run-step-value dd { min-width: 0; margin: 0; }
 .workflow-run-step-value pre { max-height: 220px; overflow: auto; padding: 8px; margin: 0; color: #54604f; font: 9px/1.6 Consolas, "DM Sans", sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid #edf0eb; border-radius: 3px; }
-.workflow-run-step-value > .run-value-view { max-height: 220px; overflow: auto; padding: 8px; color: #54604f; font-size: 9px; line-height: 1.6; background: #fff; border: 1px solid #edf0eb; border-radius: 3px; }
+.workflow-run-step-value .run-value-view { max-height: 220px; overflow: auto; padding: 8px; color: #54604f; font-size: 9px; line-height: 1.6; background: #fff; border: 1px solid #edf0eb; border-radius: 3px; }
 .workflow-run-step-value .run-value-object, .workflow-run-output .run-value-object { gap: 5px; }
-.workflow-run-step-value .run-value-object > div, .workflow-run-output .run-value-object > div { grid-template-columns: minmax(70px, .34fr) minmax(0, 1fr); gap: 8px; padding-bottom: 5px; border-bottom-color: #edf0eb; }
-.workflow-run-step-value .run-value-object dt, .workflow-run-output .run-value-object dt { font-size: 9px; }
+.workflow-run-step-value .run-value-object > div, .workflow-run-output .run-value-object > div { grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 8px; padding-bottom: 5px; border-bottom-color: #edf0eb; }
+.workflow-run-step-value .run-value-object dt, .workflow-run-output .run-value-object dt, .workflow-run-item-output .run-value-object dt, .run-input-snapshot .run-value-object dt { font-size: 9px; }
 .workflow-run-step-value .run-value-array > ol, .workflow-run-output .run-value-array > ol { gap: 5px; }
 .workflow-run-step-value .run-value-array > ol > li, .workflow-run-output .run-value-array > ol > li { padding: 6px 7px 6px 24px; background: #f5f8f3; }
 .workflow-run-step-value .run-value-array > ol > li::before, .workflow-run-output .run-value-array > ol > li::before { top: 6px; left: 8px; font-size: 9px; }
@@ -432,7 +432,8 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .workflow-run-output-heading strong { color: #4d574a; font-size: 9px; font-weight: 600; }
 .workflow-run-output-heading small { color: #9ba197; font-size: 8px; }
 .workflow-run-output pre { max-height: 230px; overflow: auto; padding: 10px; margin: 0; color: #54604f; font: 9px/1.65 Consolas, "DM Sans", sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
-.workflow-run-output > .run-value-view { max-height: 230px; padding: 10px; background: #fafbf9; border-color: #edf0eb; border-radius: 4px; }
+.workflow-run-output > .run-value-view, .workflow-run-item-output > .run-value-view { max-height: 230px; overflow: auto; padding: 10px; color: #54604f; font-size: 9px; line-height: 1.6; background: #fafbf9; border-color: #edf0eb; border-radius: 4px; }
+.workflow-run-output .run-value-text, .workflow-run-item-output .run-value-text, .workflow-run-step-value .run-value-text { max-width: 64em; }
 .workflow-run-media { display: flex; flex-wrap: wrap; gap: 8px; }
 .workflow-run-media a { display: block; max-width: min(100%, 480px); overflow: hidden; border: 1px solid #e3e8df; border-radius: 4px; }
 .workflow-run-media img { display: block; max-width: 100%; max-height: 420px; object-fit: contain; }
@@ -1071,7 +1072,7 @@ fieldset.rerun-dialog-body { border: 0; margin: 0; min-width: 0; }
 .capability-picker-help { margin: 7px 0 0; color: #7c8477; font-size: 10px; line-height: 1.6; }
 .capability-picker-help p { margin: 5px 0 0; }
 .capability-picker-toggle { align-self: flex-start; margin-top: 7px; }
-.capability-picker-specialized { padding: 9px 11px; border-left: 2px solid #b8ac8f; background: #faf8f1; }
+.capability-picker-legacy { padding: 9px 11px; border-left: 2px solid #b8ac8f; background: #faf8f1; }
 
 /* Shared authority and explicit draft/publication boundaries. */
 .workspace-authority-status { color: var(--muted, #69776d); font-size: 11px; white-space: nowrap; }
@@ -1258,12 +1259,12 @@ fieldset.rerun-dialog-body { border: 0; margin: 0; min-width: 0; }
 .run-value-empty { color: #9aa493; font-style: italic; }
 .run-value-count { display: block; margin-bottom: 6px; color: #96a18c; font-size: 10px; }
 .run-value-object { display: grid; gap: 8px; margin: 0; }
-.run-value-object > div { display: grid; grid-template-columns: minmax(92px, .32fr) minmax(0, 1fr); gap: 12px; align-items: start; padding-bottom: 7px; border-bottom: 1px solid #e7eee0; }
+.run-value-object > div { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 12px; align-items: start; padding-bottom: 7px; border-bottom: 1px solid #e7eee0; }
 .run-value-object > div:last-child { padding-bottom: 0; border-bottom: 0; }
-.run-value-object dt { color: #7c8974; font-size: 11px; font-weight: 600; }
+.run-value-object dt { max-width: 220px; overflow-wrap: anywhere; color: #7c8974; font-size: 11px; font-weight: 600; }
 .run-value-object dd { min-width: 0; margin: 0; }
 .run-value-object.nested { gap: 6px; }
-.run-value-object.nested > div { grid-template-columns: minmax(72px, .38fr) minmax(0, 1fr); gap: 8px; padding-bottom: 5px; }
+.run-value-object.nested > div { grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 8px; padding-bottom: 5px; }
 .run-value-array { min-width: 0; }
 .run-value-array > ol { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; counter-reset: run-value-item; }
 .run-value-array > ol > li { position: relative; min-width: 0; padding: 8px 9px 8px 30px; background: #eef5e9; border-radius: 6px; counter-increment: run-value-item; }

@@ -9,6 +9,9 @@ import { externalizeRuntimeValue } from "../domain/workflowValues.js";
 import type { ExecutionContext, PreparedRun } from "../execution/workflowExecutor.js";
 import { RunService } from "./runService.js";
 import { HttpError } from "../errors.js";
+import { productionHarness } from "../testing/productionSupport.js";
+import { businessRunInputs } from "./runDetailService.js";
+import { runInputQuery } from "../ai/accessSchemas.js";
 
 test("取消收尾中的任务不能被迟到的完成结果覆盖", async t => {
   const gate = deferred<void>(); let entered = false;
@@ -144,4 +147,41 @@ test("单个排队任务的输入归档损坏不阻止服务启动或其他任�
   const damaged = await recovered.getRun(h.settings.projectDirectory, broken.runId);
   assert.equal(damaged?.status, "stale"); assert.match(damaged?.error ?? "", /输入归档/);
   assert.equal((await recovered.wait(h.settings.projectDirectory, good.runId)).status, "completed");
+});
+
+test("局部重做与断点续跑保留输入快照里的固定素材引用", async t => {
+  const h = await productionHarness(t);
+  const asset = await h.assets.save({ name: "主角", kind: "image", category: "character" }, { bytes: Buffer.from("hero image"), filename: "hero.png" });
+  const definition = workflow([{ id: "first", name: "第一步", kind: "fake", inputs: [], outputs: [{ key: "value", type: "text" }] }]);
+  definition.inputs = [{ key: "prompt", type: "text", required: true }, { key: "images", type: "image_list", required: true }];
+  await h.service.start();
+  const local = path.join(h.root, "reference.png"); await writeFile(local, "local image");
+  // A mixed list keeps the pinned asset reference and the plain local path side by side.
+  const source = await h.service.submit(submission(id("revision-input-source"), definition, { prompt: "原始提示词", images: [asset.reference, local] } as never));
+  const original = await h.service.wait(h.settings.projectDirectory, source.runId);
+  const pinned = (original.inputValues.images as Array<Record<string, unknown>>)[0];
+  assert.equal(pinned.assetId, asset.asset.id); assert.equal(pinned.assetVersion, 1);
+  const revisedId = id("revision-input-revised");
+  await h.service.submit({ workflow: original.workflow, inputValues: original.inputValues, runId: revisedId, rerunFromRunId: original.runId, rerunRequest: { rerunSteps: [{ stepId: "first" }] } });
+  const revised = await h.service.wait(h.settings.projectDirectory, revisedId);
+  const revisedPin = (revised.inputValues.images as Array<Record<string, unknown>>)[0];
+  assert.equal(revisedPin.assetId, pinned.assetId); assert.equal(revisedPin.assetVersion, pinned.assetVersion);
+  assert.equal(revisedPin.assetName, pinned.assetName);
+  assert.equal((revised.inputValues.images as unknown[])[1], String((original.inputValues.images as unknown[])[1]).replace(original.artifacts.directory, revised.artifacts.directory));
+  // The revision re-archives its own copy instead of trusting the ancestor file or the original source.
+  assert.notEqual(revisedPin.path, pinned.path);
+  assert.ok(String(revisedPin.path).startsWith(revised.artifacts.directory));
+  assert.equal(await readFile(String(revisedPin.path), "utf8"), "hero image");
+  h.store.saveRun(h.settings.projectDirectory, { ...revised, status: "failed", finishedAt: new Date().toISOString(), error: "模拟失败", outputs: [], steps: [] }, []);
+  const resumedId = id("revision-input-resumed");
+  await h.service.submit({ workflow: revised.workflow, inputValues: revised.inputValues, runId: resumedId, resumeFromRunId: revised.runId });
+  const resumed = await h.service.wait(h.settings.projectDirectory, resumedId);
+  assert.equal((resumed.inputValues.images as Array<Record<string, unknown>>)[0].assetId, pinned.assetId);
+  assert.equal((resumed.inputValues.images as unknown[])[1], String((revised.inputValues.images as unknown[])[1]).replace(revised.artifacts.directory, resumed.artifacts.directory));
+  // The user-facing input snapshot keeps the pinned reference; internal paths stay omitted.
+  const projection = businessRunInputs(resumed, runInputQuery.parse({}));
+  const images = projection.inputs.find(field => field.key === "images")!;
+  assert.deepEqual(images.value, [{ assetId: pinned.assetId, assetVersion: 1, assetName: "主角" }, { locatorOmitted: true }]);
+  assert.equal(images.present, true);
+  assert.equal(projection.inputs.find(field => field.key === "prompt")!.value, "原始提示词");
 });

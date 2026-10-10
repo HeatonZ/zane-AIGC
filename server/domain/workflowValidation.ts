@@ -1,6 +1,7 @@
 import { validWorkflowMediaRole } from "./workflowMediaRoles.js";
 import { HttpError } from "../errors.js";
 import { iterationCarrySchema } from "./iterationCarry.js";
+import { CONDITION_OPERATORS, conditionReferenceRoots } from "./startCondition.js";
 import { asRecord, splitWorkflowReference, parseWorkflowJsonPath } from "./workflowValues.js";
 
 /** Validate nested execution contracts before normalization or side effects. */
@@ -142,10 +143,39 @@ export function validateWorkflowShape(value: Record<string, unknown>) {
         text(rule.rightValue, "条件值", true); text(rule.rightRef, "条件引用", true);
       }
     }
+    if (step.startCondition !== undefined) {
+      const config = record(step.startCondition, "开始条件");
+      if (!["all", "any"].includes(String(config.match))) invalid("开始条件匹配方式");
+      const rules = list(config.rules, "开始条件规则");
+      if (!rules.length) invalid("开始条件至少需要一条规则");
+      for (const item of rules) {
+        const rule = record(item, "开始条件规则");
+        text(rule.id, "开始条件规则", true);
+        text(rule.leftRef, "开始条件引用");
+        if (!CONDITION_OPERATORS.includes(String(rule.operator) as (typeof CONDITION_OPERATORS)[number])) invalid("开始条件运算符");
+        if (!["literal", "reference"].includes(String(rule.valueSource))) invalid("开始条件值来源");
+        if (rule.valueSource === "reference") text(rule.rightRef, "开始条件引用");
+        text(rule.rightValue, "开始条件值", true); text(rule.rightRef, "开始条件引用", true);
+        if (!splitWorkflowReference(String(rule.leftRef))) invalid("开始条件左值引用格式");
+        if (rule.valueSource === "reference" && !splitWorkflowReference(String(rule.rightRef))) invalid("开始条件右值引用格式");
+      }
+    }
   }
 }
 
 
+/** Start-condition references must exist and point at prior steps or inputs. */
+export function validateStartConditionReferences(flow: import("./types.js").RunWorkflowDefinition) {
+  const inputs = new Set(flow.inputs.map((field) => field.key));
+  const available = new Set<string>();
+  for (const step of flow.steps) {
+    for (const root of conditionReferenceRoots(step.startCondition)) {
+      const known = root.startsWith("input.") ? inputs.has(root.slice(6)) : root.startsWith("iteration.") || available.has(root);
+      if (!known) throw new HttpError(400, "开始条件引用不存在、未声明或引用后续步骤：" + root, "INVALID_WORKFLOW_REFERENCE", { stepId: step.id, reference: root });
+    }
+    for (const port of step.outputs ?? []) available.add(`step.${step.id}.outputs.${port.key}`);
+  }
+}
 /** Validate carry dependency roots against the complete snapshot, never an isolated item override. */
 export function validateCarryReferences(flow: import("./types.js").RunWorkflowDefinition) {
   const inputs = new Set(flow.inputs.map(field => field.key));

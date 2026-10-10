@@ -39,7 +39,7 @@ test("原始配置草稿的 JSON 和数字错误不能偷偷保留旧值继续�
 test("旧后台缺少usage时只补全精确版本内置声明，不猜未知扩展或覆盖服务声明", async () => {
   const { withBuiltinCapabilityUsage } = await import("./capabilities");
   const legacy = structuredClone(builtinCapabilities); for (const item of legacy) delete item.usage;
-  const known = withBuiltinCapabilityUsage(legacy); assert.equal(known.find((item) => item.id === "core.comfyui")?.usage?.tier, "basic"); assert.equal(legacy[0].usage, undefined);
-  const declared = { ...legacy[0], usage: { tier: "specialized" as const, whenToUse: "服务已明确" } }; assert.equal(withBuiltinCapabilityUsage([declared])[0], declared);
+  const known = withBuiltinCapabilityUsage(legacy); assert.match(known.find((item) => item.id === "core.comfyui")?.usage?.whenToUse ?? "", /图片|视频|音频/); assert.equal(legacy[0].usage, undefined);
+  const declared = { ...legacy[0], usage: { whenToUse: "服务已明确" } }; assert.equal(withBuiltinCapabilityUsage([declared])[0], declared);
   const future = { ...legacy[0], version: "future" }; assert.equal(withBuiltinCapabilityUsage([future])[0].usage, undefined);
 });

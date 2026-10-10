@@ -16,7 +16,7 @@ export class ExecutorRegistry {
   registerCapability(capability: CapabilityPackage) {
     const d = capability.definition;
     if (!d || !/^[a-zA-Z0-9_.-]+$/.test(d.id) || !d.version || !d.label || typeof capability.execute !== "function") throw new Error("能力包声明无效");
-    if (d.usage && (!["basic", "specialized"].includes(d.usage.tier) || typeof d.usage.whenToUse !== "string" || !d.usage.whenToUse.trim() || (d.usage.basicAlternative !== undefined && (typeof d.usage.basicAlternative !== "string" || !d.usage.basicAlternative.trim())))) throw new Error("能力包适用范围声明无效：" + d.id);
+    if (d.usage && (typeof d.usage.whenToUse !== "string" || !d.usage.whenToUse.trim())) throw new Error("能力包适用范围声明无效：" + d.id);
     if (d.usage?.compatibilityOnly !== undefined && typeof d.usage.compatibilityOnly !== "boolean") throw new Error("能力包兼容范围声明无效：" + d.id);
     if (this.capabilities.has(d.id)) throw new Error("能力包重复：" + d.id);
     const legacyCollision = [...this.capabilities.values()].some((item) => d.legacy.kind !== "capability" && item.definition.legacy.kind === d.legacy.kind && item.definition.legacy.adapter === d.legacy.adapter);

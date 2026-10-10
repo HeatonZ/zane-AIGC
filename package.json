@@ -15,7 +15,7 @@
     "start:prod": "npm run update:prod",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.server.json --noEmit",
-    "check": "npm run typecheck && npm test && npm run build && npm run test:smoke && npm run test:feedback:smoke && npm run test:commerce:smoke && npm run docs:ai:check && npm run test:ai:smoke && npm run test:basic:smoke && npm run test:dual-video:smoke && npm run test:access:smoke && npm run test:mcp:restart:smoke && npm run test:asset:execution:smoke && npm run test:long-video:smoke && npm run test:context-video:smoke && npm run test:hermes-output:smoke && npm run test:upgrade:smoke && npm run test:commerce-ai:smoke && npm run test:public:smoke",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:smoke && npm run test:feedback:smoke && npm run test:commerce:smoke && npm run docs:ai:check && npm run test:ai:smoke && npm run test:basic:smoke && npm run test:dual-video:smoke && npm run test:access:smoke && npm run test:mcp:restart:smoke && npm run test:asset:execution:smoke && npm run test:long-video:smoke && npm run test:director-console:smoke && npm run test:context-video:smoke && npm run test:hermes-output:smoke && npm run test:upgrade:smoke && npm run test:commerce-ai:smoke && npm run test:public:smoke",
     "test:smoke": "node scripts/smoke-server.mjs",
     "test:hermes-output:smoke": "node scripts/smoke-hermes-output.mjs",
     "test:feedback:smoke": "node scripts/smoke-hermes-feedback.mjs",
@@ -41,7 +41,8 @@
     "update:prod:status": "node --import tsx scripts/update-production.mjs status",
     "test:upgrade:smoke": "node --import tsx scripts/smoke-production-upgrade.mjs",
     "scene:install:commerce-ai": "node scripts/install-commerce-ai.mjs",
-    "test:commerce-ai:smoke": "node scripts/smoke-commerce-ai.mjs"
+    "test:commerce-ai:smoke": "node scripts/smoke-commerce-ai.mjs",
+    "test:director-console:smoke": "node --import tsx scripts/smoke-long-text-director-console.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.2.0",

@@ -1,3 +1,4 @@
+import { evaluateConditionExpression } from "../domain/startCondition.js";
 import { carryValue } from "../domain/iterationCarry.js";
 import { feedbackForStep } from "../domain/stepFeedback.js";
 import type { HermesFeedbackContext, StepFeedbackRecord } from "../domain/feedbackContracts.js";
@@ -61,6 +62,17 @@ export interface ExecutionContext {
   executeStep(context: StepExecutionContext): Promise<Record<string, JsonValue>>;
   checkpoint(patch: Partial<RunRecord>): Promise<void>;
 }
+/** A step runs only when its start condition holds; every step type supports it. */
+function startConditionSatisfied(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>): boolean {
+  const condition = step.startCondition;
+  if (!condition?.rules.length) return true;
+  return evaluateConditionExpression(condition, (reference) => resolveWorkflowReference(reference, inputs, stepValues), (reference) => types.get(reference) ?? types.get(splitWorkflowReference(reference)?.root ?? reference));
+}
+/** Skipped steps contribute null outputs so later references stay resolvable. */
+function skippedOutputs(step: RunStep) {
+  return Object.fromEntries((step.outputs ?? []).map((output) => [output.key, null])) as Record<string, JsonValue>;
+}
+
 export async function executeWorkflow(prepared: PreparedRun, context: ExecutionContext): Promise<ExecutionResult> {
   const { runId, executionWorkflow, inputValues, settings, artifacts, resumeSource } = prepared;
   const requestedResumeFromRunId = prepared.resumedFromRunId;
@@ -259,12 +271,22 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           break;
         }
         if (condition !== step.runCondition.expectedResult) {
-          itemSteps.push({ stepId: step.id, name: step.name, status: "skipped", message: "执行条件未满足", inputs: stepInputs, inputLabels, outputLabels, outputTypes });
-          syncSteps(itemSteps);
+          values.set(step.id, skippedOutputs(step));
+          itemSteps.push({ stepId: step.id, name: step.name, status: "skipped", message: "执行条件未满足", inputs: stepInputs, inputLabels, outputLabels, outputTypes, outputs: skippedOutputs(step) });
           await persistRuntime("running");
           continue;
         }
       }
+      if (step.startCondition?.rules.length && !startConditionSatisfied(step, itemInputValues, values, types)) {
+        const nullOutputs = skippedOutputs(step);
+        values.set(step.id, nullOutputs);
+        for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, output.type);
+        itemSteps.push({ stepId: step.id, name: step.name, status: "skipped", message: "开始条件未满足", inputs: stepInputs, inputLabels, outputLabels, outputTypes, outputs: nullOutputs });
+        syncSteps(itemSteps);
+        await persistRuntime("running");
+        continue;
+      }
+
 
       if (step.execution?.mode === "for_each") {
         const sourceRef = step.execution.sourceRef?.trim() ?? "";
@@ -411,6 +433,14 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
             currentTypes.set("iteration.previous", canonicalWorkflowType(carryType));
             currentTypes.set("iteration.hasPrevious", "boolean");
             currentTypes.set("iteration.index", "number");
+          }
+          if (itemStep.startCondition?.rules.length && !startConditionSatisfied(itemStep, currentInputs, currentValues, currentTypes)) {
+            setIterationItem(finishStepTiming({ index: itemIndex, value: sourceItem, status: "skipped" as const, startedAt: itemStartedAt, inputs: currentStepInputs, outputs: skippedOutputs(itemStep), error: "开始条件未满足" }));
+            iterationProcessed[itemIndex] = true;
+            iterationSucceeded[itemIndex] = false;
+            syncSteps(itemSteps);
+            await persistRuntime("running");
+            return;
           }
           const itemRecord: RunStepItemRecord = { index: itemIndex, value: sourceItem, status: "running", startedAt: itemStartedAt, inputs: currentStepInputs, ...(itemStep !== step ? { stepSnapshot: structuredClone(itemStep) } : {}) };
           setIterationItem(itemRecord);

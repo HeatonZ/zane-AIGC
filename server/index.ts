@@ -46,7 +46,8 @@ import type { SavedSettings, HermesProfile, HermesApiConnection, ComfyUIWorkflow
 import { normalizeMediaList, externalizeRuntimeValue, asRecord, uniqueStrings, workflowReferenceRoot, resolveWorkflowReference, parseWorkflowLiteral, resolveWorkflowValue, resolvePromptTemplate, toJsonValue } from "./domain/workflowValues.js";
 import { cancellationError, throwIfAborted, delayWithAbort } from "./execution/cancellation.js";
 import { ResourceQueues } from "./execution/resourceQueue.js";
-import { bindComfyAudioPaths, comfyAutogrowInputNames, comfyBindingMediaKind, groupComfyMediaBindings } from "./execution/comfyMediaBindings.js";
+import { resolveComfyInputBindings } from "./execution/comfyBindings.js";
+import { bindComfyAudioPaths, comfyAutogrowInputNames, groupComfyMediaBindings } from "./execution/comfyMediaBindings.js";
 import { defaultWorkflowTimeoutMinutes, minimumWorkflowTimeoutMinutes, maximumWorkflowTimeoutMinutes, parseWorkflowTimeoutMinutes, normalizeWorkflowTimeoutMinutes, workflowTimeoutMs, workflowTimeoutLabel, parseEnvFile, nonEmpty, isProduction, port, host, localDirectory, settingsFile, workspaceFile, distDirectory, hermesHome, ffmpegBinary, ffprobeBinary, execFileAsync, defaults } from "./config.js";
 import express from "express";
 import { randomUUID } from "node:crypto";
@@ -54,9 +55,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "
 import path from "node:path";
 import {
   createRuntimeMediaValue,
-  isRuntimeMediaValue,
   mediaKindFromWorkflowType,
-  selectRuntimeMedia,
 } from "./runtimeValue.js";
 
 import { createPublicUserApp, publicEntryGuard, validatePublicListener } from "./security/publicEntry.js";
@@ -1448,18 +1447,7 @@ async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonValue>, 
   }
   const bindings = step.comfyui?.bindings ?? [];
   const nodeInfoCache = new Map<string, Promise<unknown>>();
-  const resolvedBindings = bindings.filter((item) => item.direction === "input").map((binding) => {
-    const inputKey = binding.valueSource === "literal" ? undefined : /^input\.([a-zA-Z0-9_]+)$/.exec(workflowReferenceRoot(binding.sourceRef ?? ""))?.[1];
-    const sourceField = inputKey ? inputFields.find((field) => field.key === inputKey) : undefined;
-    const sourceType = binding.valueSource === "literal" ? binding.type : variableTypes.get(workflowReferenceRoot(binding.sourceRef ?? "")) ?? sourceField?.type ?? binding.type;
-    const rawValue = binding.valueSource === "literal"
-      ? parseWorkflowLiteral(binding.literalValue, binding.type, binding.label ?? binding.key)
-      : resolveWorkflowReference(binding.sourceRef ?? "", inputs, stepValues);
-    const mediaKind = comfyBindingMediaKind(rawValue, sourceType, binding.type);
-    const normalizedValue = mediaKind && !isRuntimeMediaValue(rawValue) ? createRuntimeMediaValue(mediaKind, rawValue) : rawValue;
-    const value = (binding.selection ? selectRuntimeMedia(normalizedValue, binding.selection) : normalizedValue) as JsonValue | undefined;
-    return { binding, sourceField, value, mediaKind };
-  });
+  const resolvedBindings = resolveComfyInputBindings({ bindings, inputs, stepValues, inputFields, variableTypes, stepName: step.name });
   for (const group of groupComfyMediaBindings(resolvedBindings)) {
     const { binding, sourceField, value, mediaKind: sourceMediaKind } = group[0]!;
     const directNode = graph[binding.nodeId];

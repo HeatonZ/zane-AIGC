@@ -3,7 +3,10 @@ import test from "node:test";
 import { executeCodeStep, validateCodeStep, CODE_STEP_CONTRACT } from "./codeSandbox.js";
 import type { StepExecutionContext } from "./workflowExecutor.js";
 import type { JsonValue, RunStep } from "../domain/types.js";
-import { createRuntimeMediaValue } from "../runtimeValue.js";
+import path from "node:path";
+import { writeFile } from "node:fs/promises";
+import sharp from "sharp";
+import { createRuntimeMediaValue, runtimeMediaItems, type RuntimeMediaValue } from "../runtimeValue.js";
 import { harness, id } from "../testing/testSupport.js";
 import codeStepFactory from "../capabilities/packages/codeStep.js";
 import type { CapabilityPackage, CapabilityRuntime } from "../capabilities/package.js";
@@ -75,8 +78,10 @@ test("自定义代码：媒体输入以只读文件名投影进入沙箱，不�
   for (const key of ["nested", "names", "plain"] as const) assert.ok(!String(filled[key]).includes("input") || key === "plain", key);
   const blank = await executeCodeStep(context(read, { reference: empty, payload: {}, text: "" }));
   assert.deepEqual(blank, { count: 0, names: "", nested: "{}", plain: "\"\"" });
-  // A media projection is data only: the sandbox still cannot produce or consume media bytes.
-  await assert.rejects(() => executeCodeStep(context(step("return { images: inputs.reference };", [{ key: "images", type: "image_list" }], [{ key: "reference", sourceRef: "input.reference" }]), { reference: images })), { code: "INVALID_CODE_CONFIG" });
+  // 投影只是数据：媒体输出端口按 filename 选择既有媒体，既不产生新媒体，也不暴露路径/URL/字节。
+  const passthrough = await executeCodeStep(context(step("return { images: inputs.reference };", [{ key: "images", type: "image_list" }], [{ key: "reference", sourceRef: "input.reference" }]), { reference: images }));
+  assert.deepEqual(runtimeMediaItems(passthrough.images, "image").map((item) => item.filename), ["a.png", "b.png"]);
+  await assert.rejects(() => executeCodeStep(context(step("return { images: [{ filename: \"c.png\" }] };", [{ key: "images", type: "image_list" }], [{ key: "reference", sourceRef: "input.reference" }]), { reference: images })), { code: "INVALID_CODE_OUTPUT" }, "输入里不存在的媒体不能凭文件名伪造");
 });
 
 test("自定义代码：配置和端口在发布前校验，拒绝无效代码与端口", () => {
@@ -89,7 +94,8 @@ test("自定义代码：配置和端口在发布前校验，拒绝无效代码�
   assert.throws(() => validateCodeStep(step("return { value: 1 };", outputs, [], { timeoutMs: "3000" })), { code: "INVALID_CODE_CONFIG" });
   assert.throws(() => validateCodeStep(step("return { value: 1 };", outputs, [], { timeoutMs: 1.5 })), { code: "INVALID_CODE_CONFIG" });
   assert.throws(() => validateCodeStep(step("return { value: 1 };", [])), { code: "INVALID_CODE_CONFIG" });
-  assert.throws(() => validateCodeStep(step("return { value: 1 };", [{ key: "images", type: "image_list" }])), { code: "INVALID_CODE_CONFIG" });
+  for (const type of ["image_list", "video_list", "audio_list"]) assert.doesNotThrow(() => validateCodeStep(step("return { " + type + ": [] };", [{ key: type, type }])), type);
+  assert.throws(() => validateCodeStep(step("return { value: 1 };", [{ key: "value", type: "single_media" as never }])), { code: "INVALID_CODE_CONFIG" });
   assert.throws(() => validateCodeStep(step("return { value: 1 };", [{ key: "0bad", type: "json" }])), { code: "INVALID_CODE_CONFIG" });
   assert.throws(() => validateCodeStep(step("return { value: 1 };", [{ key: "value", type: "text" }, { key: "value", type: "number" }])), { code: "INVALID_CODE_CONFIG" });
   assert.throws(() => validateCodeStep(step("return { value: 1 };", outputs, [{ key: "has space", sourceRef: "input.a" }])), { code: "INVALID_CODE_CONFIG" });
@@ -98,6 +104,77 @@ test("自定义代码：配置和端口在发布前校验，拒绝无效代码�
   // 未知配置键沿用既有能力包约定：不拒绝，也不进入执行。\n  validateCodeStep(step("return { value: 1 };", outputs, [], { timeoutMs: 5000, extra: "ignored" }));
   assert.equal(CODE_STEP_CONTRACT.capabilityId, "core.code");
   assert.ok(CODE_STEP_CONTRACT.sandbox.nodeBuiltins === false && CODE_STEP_CONTRACT.sandbox.network === false);
+});
+
+test("自定义代码：媒体输出端口按 filename 选择、重排、合并既有媒体，未授权引用与类型不符明确失败", async () => {
+  const images = createRuntimeMediaValue("image", [
+    { id: "img-a", kind: "image", locator: { type: "path", value: "C:/tmp/a.png" }, filename: "a.png" },
+    { id: "img-b", kind: "image", locator: { type: "path", value: "C:/tmp/b.png" }, filename: "b.png" },
+  ]);
+  const voices = createRuntimeMediaValue("audio", [{ id: "aud-a", kind: "audio", locator: { type: "path", value: "C:/tmp/a.wav" }, filename: "a.wav" }]);
+  const current = step("return { picked: [inputs.images[1].filename, inputs.images[0].filename, inputs.images[0].filename], names: inputs.images.map(item => item.filename), voices: inputs.voices.map(item => ({ filename: item.filename })) };",
+    [{ key: "picked", type: "image_list" }, { key: "names", type: "json" }, { key: "voices", type: "audio_list" }],
+    [{ key: "images", sourceRef: "input.images" }, { key: "voices", sourceRef: "input.voices" }]);
+  const result = await executeCodeStep(context(current, { images, voices }));
+  const picked = result.picked as RuntimeMediaValue;
+  assert.equal(picked.mediaKind, "image");
+  assert.deepEqual(picked.items.map((item) => [item.filename, item.kind]), [["b.png", "image"], ["a.png", "image"], ["a.png", "image"]]);
+  assert.deepEqual(picked.items.map((item) => (item.locator as { value: string }).value), ["C:/tmp/b.png", "C:/tmp/a.png", "C:/tmp/a.png"]);
+  assert.deepEqual(result.names, ["a.png", "b.png"]);
+  assert.deepEqual((result.voices as RuntimeMediaValue).items.map((item) => item.filename), ["a.wav"]);
+  // 只能引用本步骤输入里的媒体：未知文件、路径/URL、类型不符、非数组与未声明输入都是明确失败。
+  for (const [code, expected] of [
+    ["return { picked: [\"missing.png\"] };", "不存在的媒体"],
+    ["return { picked: [\"C:/tmp/a.png\"] };", "不存在的媒体"],
+    ["return { picked: [\"a.wav\"] };", "不一致"],
+    ["return { picked: \"a.png\" };", "必须是媒体文件名数组"],
+    ["return { picked: [\"\"] };", "每一项都必须是媒体文件名"],
+    ["return { picked: [{ path: \"C:/tmp/a.png\" }] };", "每一项都必须是媒体文件名"],
+  ] as const) {
+    await assert.rejects(() => executeCodeStep(context(step(code, [{ key: "picked", type: "image_list" }], [{ key: "images", sourceRef: "input.images" }, { key: "voices", sourceRef: "input.voices" }]), { images, voices })),
+      (error: any) => error.code === "INVALID_CODE_OUTPUT" && error.message.includes(expected), code);
+  }
+  await assert.rejects(() => executeCodeStep(context(step("return { picked: [\"a.png\"] };", [{ key: "picked", type: "image_list" }]), { images })), { code: "INVALID_CODE_OUTPUT" }, "未声明的输入不可见");
+});
+
+test("自定义代码：相对归档URL的媒体输入仍可按filename选择（回归）", async () => {
+  // Regression for a third-party image step feeding a code step. The image step
+  // publishes its decoded results as canonical *relative* archive URLs; that
+  // shape previously carried no file name, so the sandbox projection was blank
+  // and every selection by filename failed with INVALID_CODE_OUTPUT.
+  const runId = "72fa80cb-9724-4755-9f07-e03f72b061a4";
+  const generated = createRuntimeMediaValue("image", [{ url: `/api/v1/runs/${runId}/media/7985392f-89d8-41d7-9033-6c8fbbe3d0aa.png` }]);
+  assert.equal(generated.items[0]!.filename, "7985392f-89d8-41d7-9033-6c8fbbe3d0aa.png");
+  const current = step("const edited = (inputs.edit_images ?? []).map((item) => item.filename);\nconst generated = (inputs.gen_images ?? []).map((item) => item.filename);\nreturn { images: edited.length ? edited : generated };", [{ key: "images", type: "image_list" }], [{ key: "edit_images", sourceRef: "input.edit_images" }, { key: "gen_images", sourceRef: "input.gen_images" }]);
+  const filled = await executeCodeStep(context(current, { edit_images: createRuntimeMediaValue("image", []), gen_images: generated }));
+  const items = runtimeMediaItems(filled.images, "image");
+  assert.deepEqual(items.map((item) => item.filename), ["7985392f-89d8-41d7-9033-6c8fbbe3d0aa.png"]);
+  // The selection reuses the already-archived media instead of inventing a file.
+  assert.deepEqual(items.map((item) => (item.locator as { value: string }).value), [`/api/v1/runs/${runId}/media/7985392f-89d8-41d7-9033-6c8fbbe3d0aa.png`]);
+});
+
+test("自定义代码：媒体输出经后台运行按序合并，可作为最终输出读取", async (t) => {
+  const { executors, service, settings, root } = await harness(t);
+  executors.registerCapability(pkg);
+  await service.start();
+  const seed = path.join(root, "seed.png"); const left = path.join(root, "left.png"); const right = path.join(root, "right.png");
+  for (const file of [seed, left, right]) await writeFile(file, await sharp({ create: { width: 8, height: 8, channels: 3, background: "#123456" } }).png().toBuffer());
+  const run = await service.submit({ runId: id("code-step-media"), inputValues: { seed: [seed], left: [left], right: [right] }, workflow: {
+    sceneId: "test", name: "代码媒体合并", inputs: [{ key: "seed", type: "image_list" }, { key: "left", type: "image_list" }, { key: "right", type: "image_list" }],
+    steps: [{ id: "merge", name: "合并媒体", kind: "capability", capabilityId: "core.code", capabilityVersion: pkg.definition.version,
+      capabilityConfig: { code: "return { images: [...inputs.seed.map(item => item.filename), ...inputs.left.map(item => item.filename), ...inputs.right.map(item => item.filename)] };", timeoutMs: 5000 },
+      inputs: [{ key: "seed", sourceRef: "input.seed" }, { key: "left", sourceRef: "input.left" }, { key: "right", sourceRef: "input.right" }],
+      outputs: [{ key: "images", type: "image_list" }] }],
+    outputs: [{ key: "images", type: "image_list", sourceRef: "step.merge.outputs.images" }],
+  } });
+  const result = await service.wait(settings.projectDirectory, run.runId);
+  assert.equal(result.status, "completed", result.error);
+  // 选择的媒体仍是本运行已归档的同一批文件：顺序保持 seed → left → right，不产生新媒体。
+  const values = (result.outputs[0]?.value ?? []) as string[];
+  assert.equal(values.length, 3);
+  assert.deepEqual(values.map((value) => /([^\\/]+)\.png$/.exec(value)?.[1].split("-")[0]), ["seed", "left", "right"]);
+  assert.ok(values.every((value) => value.includes(path.join(".zane", "runs", run.runId))), "媒体输出必须指向本次运行已归档的同一文件");
+  assert.deepEqual(runtimeMediaItems(result.steps[0]?.outputs?.images, "image").map((item) => (item.locator as { value: string }).value), values);
 });
 
 test("自定义代码：经后台执行完成运行、记录能力身份，无效配置在提交前拒绝", async (t) => {

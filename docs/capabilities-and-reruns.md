@@ -1,17 +1,17 @@
 # 能力包与局部重做
 
-## 基础优先：复用 → 补强 → 节点适配
+## 基础优先：复用 → 补强 → 自定义代码替代专用步骤
 
-不为长文、商品图、分镜等场景各造一个执行器。Profile、提示词、数据引用、ComfyUI工作流/节点绑定及通用逐项/条件/审核机制优先复用；现有基础能力不足时先拆出或补强通用能力。只有H3数字人这类定制节点的时间轴、提示词注入、帧数/音频协议需要专用适配。
+不为长文、商品图、分镜等场景各造一个执行器。Profile、提示词、数据引用、ComfyUI工作流/节点绑定及通用逐项/条件/审核机制优先复用；现有基础能力不足时先拆出或补强通用能力。场景特有的数据编排（含旧H3节点的时间轴、提示词注入、帧数/音频协议适配）用 core.code 自定义代码与基础组合表达，不再新增专用适配。
 
-- **媒体引用选择**（`media.select_references`）：输入各组素材与从1开始的序号，输出选中媒体、映射提示词、引用表。不写死人物/场景/商品分类；通用配置groups支持image/audio/video。长文H3适配复用同一素材选择与映射实现，不复制逻辑。
-- **图片画布与排版**（`media.image_layout`）：输入恰好一张图与layout规格，本地输出图片和layout_manifest。商品图、封面、海报复用同一实现；批量用通用逐项执行，每项归档按稳定运行/步骤/索引隔离，不覆盖其他项。尺寸、留白、背景和文案都由配置表达；过长文字报错，不截断。
-- **H3节点适配**：H3数字人长视频仍保留；旧`long_text_video`标识不变，显示为“H3原生有声适配”。保留H3特有的帧网格、六段提示词、原生声音规则，不把“逐项生成”当成专用能力。
-- **旧电商图包**：`comfyui.commerce_pack`只兼容现有发布快照和旧图包ZIP/清单协议，`usage.compatibilityOnly:true`；排版已调用基础服务。新场景用基础生成（需要时）+排版+逐项组合。多平台尺寸和白底/无字策略可作为layout配置，但基础排版不会自动猜平台政策，也不自动产生旧图包ZIP协议。
+- **媒体引用选择**（`media.select_references`，旧版兼容）：输入各组素材与从1开始的序号，输出选中媒体、映射提示词、引用表；通用配置groups支持image/audio/video。已标记`usage.compatibilityOnly:true`，仍注册可执行以兼容已发布快照与历史运行，但不再向新步骤提供：新场景把已授权媒体输入直接绑定到模型或ComfyUI步骤，需要按序号/分组选择、重排或合并时用一个`core.code`步骤——声明媒体输入与`image_list`/`video_list`/`audio_list`输出端口，代码按`filename`返回需要的顺序（可重复），运行期仍使用同一批已授权归档文件。
+- **图片画布与排版**（`media.image_layout`，旧版兼容）：输入恰好一张图与layout规格，本地输出图片和layout_manifest；批量用通用逐项执行。已标记`usage.compatibilityOnly:true`，仍可执行旧快照，但新场景不再新增本地画布与排版步骤：图中版式、图形与文案由图像模型直接生成，其他数据编排用`core.code`。
+- **H3节点适配**（`comfyui.h3_long_video`、`comfyui.long_text_video`，旧版兼容）：只保留在已有发布快照与历史运行中继续执行；旧`long_text_video`标识不变，显示为“H3原生有声适配”。新场景不再新增这类专用适配，改用 Hermes + `core.code` + 基础ComfyUI + 通用逐项执行组合，成片由 ComfyUI 工作流或导演台直接输出。
+- **旧电商图包**：`comfyui.commerce_pack`只兼容现有发布快照和旧图包ZIP/清单协议，`usage.compatibilityOnly:true`；排版已调用基础服务。新场景用 Hermes + `core.code` + 基础ComfyUI（需要生成时）+ 通用逐项执行组合，图中文字与版式由图像模型直接生成；多平台尺寸/文案/清单作为配置和普通JSON输出。旧确定性排版不自动猜平台政策，也不自动产生旧图包ZIP协议。
 
-新空工作区的首个默认方案及可导入示例：`examples/scenes/basic-image-layout.json`；旧电商包移至最后并标注旧版兼容，不给已有工作区自动插入/改写场景。它只需一张源图和多规格参数，执行“基础素材选择 → 通用逐项排版”，不调用Hermes/ComfyUI生成服务。需要AI底图时，可在同一草稿中组合已有Hermes与基础ComfyUI步骤。
+旧版兼容示例集中在默认目录末尾并标注“（旧版兼容）”：`examples/scenes/basic-image-layout.json`（素材选择 → 通用逐项排版）、`examples/scenes/commerce-ai.json`（AI整图生成，内含旧媒体选择步骤）与`examples/scenes/commerce-pack.json`。它们仍可执行、历史运行不变，但依赖的`media.select_references`/`media.image_layout`已标记compatibilityOnly，不再作为新场景方案；不给已有工作区自动插入/改写场景。新场景用Hermes + `core.code` + 基础ComfyUI：把已授权媒体直接绑定到模型或ComfyUI步骤，数据传递与拼装写在自定义代码里，图中文字与版式由图像模型一次生成。
 
-目录统一由现有执行器注册表投影：`GET /api/v1/capabilities?tier=basic&limit=50`与MCP `list_capabilities`同源。默认查询all以兼容旧客户端，按基础→专用排序；UI新步骤默认展示基础，专用按需展开，旧兼容包仅在当前步骤使用时显示。响应包含usage、端口/配置valueSchema、完整目录revision、hasMore和nextCursor；跨tier游标400，目录变化409 CAPABILITY_PAGE_CHANGED。客户端读完整分页后才使用目录，不静默截断。
+目录统一由现有执行器注册表投影：`GET /api/v1/capabilities?limit=50`与MCP `list_capabilities`同源，只有一个扁平目录、按安装注册顺序返回，不再接受`tier`参数。UI/MCP把compatibilityOnly的退役执行方式排除在新步骤候选外，仅在当前步骤已使用时保留显示，避免隐藏后丢配置或自动切换。响应包含usage（whenToUse + compatibilityOnly）、端口/配置valueSchema、完整目录revision、hasMore和nextCursor；失效游标400，目录变化409 CAPABILITY_PAGE_CHANGED。客户端读完整分页后才使用目录，不静默截断。
 
 所有已发布快照、稳定能力ID/执行版本和历史运行保持不变；不自动编辑/发布生产草稿。新能力通过已有创建、编辑、发布、执行、结果工具完成闭环，不另建AI数据库或任意执行代理。字体可用`ZANE_IMAGE_FONT_FILE`，兼容`ZANE_COMMERCE_FONT_FILE`；未配置时依赖系统的文字字体支持。
 
@@ -24,7 +24,7 @@
 2. 在“执行方式”中选择能力。目录由服务端提供，名称、输入/输出、配置表单和结果展示方式来自能力声明。
 3. 填写配置并连接步骤输入，正常发布场景即可。
 
-新增的“文本模板”是无模型调用的示例能力：模板 `商品：{{product}}` 会使用名为 `product` 的步骤输入。可以新增多个输入；输出 `text` 是固定契约，不能改成其他 key 或类型。
+“文本模板”（`text.template`）与“数据传递”（`core.manual`）已标记compatibilityOnly：仍可执行旧发布快照，但不再向新步骤提供。新场景用自定义代码`core.code`完成同样的拼装与传递（输入按端口进入沙箱，return对应声明的text/number/boolean/json输出），示例见 `server/capabilities/packages/codeStep.ts` 与生成的AI文档。
 
 ### 再修改结果或局部重做
 

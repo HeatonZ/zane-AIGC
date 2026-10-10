@@ -2,7 +2,8 @@ import RunMediaDownloadButton from "./RunMediaDownloadButton";
 import RunWarnings from "./RunWarnings";
 import { useEffect, useRef, useState } from "react";
 import { Activity, AlertCircle, Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, ClipboardCheck, Copy, Download, FileText, Layers3, LoaderCircle, PackageOpen, RefreshCw, RotateCcw, Square } from "lucide-react";
-import { accessApi, accessMedia, type OwnRun } from "../lib/accessApi";
+import { accessApi, type OwnRun } from "../lib/accessApi";
+import { useProtectedMedia } from "../lib/mediaPreview";
 import { resultPath, mergeResultPage, type ResultContext, type ResultOutput, type ResultPage } from "../lib/userPortal";
 import { activityLabel, mergeResultSlice, previousValueOffset, runDate, runStatusLabels, stepDurationLabel } from "../lib/runDetails";
 import RunOverview from "./RunOverview";
@@ -18,27 +19,13 @@ function valueText(value: unknown): string {
   return value === undefined ? "未提供" : value === null ? "空值" : typeof value === "string" ? value : typeof value === "boolean" ? (value ? "是 / true" : "否 / false") : JSON.stringify(value, null, 2);
 }
 function OutputImage({ url, alt, userId, number }: { url: string; alt: string; userId: string; number: number }) {
-  const [source, setSource] = useState("");
-  const [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    const controller = new AbortController();
-    let objectUrl = "";
-    setSource(""); setError("");
-    void accessMedia(url, userId, controller.signal).then(blob => {
-      if (!blob.type.startsWith("image/")) throw new Error("工作台返回的内容不是图片");
-      if (controller.signal.aborted) return;
-      objectUrl = URL.createObjectURL(blob);
-      setSource(objectUrl);
-    }).catch(failure => {
-      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "图片读取失败");
-    });
-    return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [url, userId, attempt]);
-  return <figure>
-    {source ? <a href={source} target="_blank" rel="noreferrer"><img src={source} alt={alt} loading="lazy" onError={() => { URL.revokeObjectURL(source); setSource(""); setError("图片文件无法解码"); }} /></a>
-      : <div className="run-empty-state" role={error ? "alert" : "status"}><strong>{error ? "图片暂时无法读取" : "正在读取图片…"}</strong>{error && <><p>{error}</p><button className="button button-outline" onClick={() => setAttempt(value => value + 1)}>重试</button></>}</div>}
-    <figcaption><span>第 {number} 项</span>{source && <a href={source} download className="run-icon-button"><Download size={14} />下载</a>}</figcaption>
+  const { holder, source, error, retry } = useProtectedMedia(url, "image", userId);
+  const [decoded, setDecoded] = useState(true);
+  useEffect(() => setDecoded(true), [source]);
+  return <figure ref={holder}>
+    {source && decoded ? <a href={source} target="_blank" rel="noreferrer"><img src={source} alt={alt} loading="lazy" onError={() => setDecoded(false)} /></a>
+      : <div className="run-empty-state" role={error || !decoded ? "alert" : "status"}><strong>{error || !decoded ? "图片暂时无法读取" : "正在读取图片…"}</strong>{(error || !decoded) && <><p>{error ?? "图片文件无法解码"}</p><button className="button button-outline" onClick={() => { setDecoded(true); retry(); }}>重试</button></>}</div>}
+    <figcaption><span>第 {number} 项</span>{source && <a href={url} download className="run-icon-button"><Download size={14} />下载</a>}</figcaption>
   </figure>;
 }
 function OutputCard({ output, onSlice, busy, userId }: { output: ResultOutput; onSlice: (offset: number, narrow?: boolean) => void; busy: boolean; userId: string }) {

@@ -11,20 +11,21 @@ import type { CapabilityCatalogPage } from "../capabilities/contracts.js";
 import type { ApiResult } from "./httpClient.js";
 
 // Real stdio transport and temporary HTTP/SQLite/project; external runtimes throw in aiHarness.
-test("真实stdio MCP基础组合：按tier分页发现→创建/编辑冲突→发布对账→选图排版→按需结果", async t => {
+test("真实stdio MCP基础组合：统一目录分页发现→创建/编辑冲突→发布对账→选图排版→按需结果", async t => {
   const h = await aiHarness(t, { emptyWorkspace: true });
   const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", "tsx", path.resolve("server/mcp/index.ts")], cwd: process.cwd(), env: { ...Object.fromEntries(Object.entries(process.env).filter((item): item is [string, string] => typeof item[1] === "string")), ZANE_BASE_URL: h.base }, stderr: "pipe" });
   const client = new Client({ name: "basic-media-test", version: "1" }); t.after(() => client.close()); await client.connect(transport);
   const call = async (name: string, arguments_: Record<string, unknown> = {}) => { const result = await client.callTool({ name, arguments: arguments_ }); return result.structuredContent as ApiResult; };
-  const first = await call("list_capabilities", { tier: "basic", limit: 1 }); assert.equal(first.ok, true); const firstPage = first.data as CapabilityCatalogPage;
-  assert.equal(firstPage.capabilities.length, 1); assert.ok(firstPage.nextCursor && firstPage.hasMore); assert.equal(firstPage.capabilities[0].usage?.tier, "basic");
+  const first = await call("list_capabilities", { limit: 1 }); assert.equal(first.ok, true); const firstPage = first.data as CapabilityCatalogPage;
+  assert.equal(firstPage.capabilities.length, 1); assert.ok(firstPage.nextCursor && firstPage.hasMore); assert.ok(firstPage.capabilities[0].usage?.whenToUse);
   const seen = [...firstPage.capabilities]; let cursor: string | undefined = firstPage.nextCursor;
-  while (cursor) { const response = await call("list_capabilities", { tier: "basic", limit: 2, cursor }); assert.equal(response.ok, true); const page = response.data as CapabilityCatalogPage; assert.equal(page.revision, firstPage.revision); seen.push(...page.capabilities); cursor = page.nextCursor; }
+  while (cursor) { const response = await call("list_capabilities", { limit: 2, cursor }); assert.equal(response.ok, true); const page = response.data as CapabilityCatalogPage; assert.equal(page.revision, firstPage.revision); seen.push(...page.capabilities); cursor = page.nextCursor; }
   assert.equal(seen.length, new Set(seen.map((item) => item.id)).size);
   const imageCapability = seen.find((item) => item.id === "media.image_layout")!; assert.ok(imageCapability.inputs.find((item) => item.key === "layout")?.valueSchema?.properties);
-  assert.ok(seen.some((item) => item.id === "media.select_references")); assert.ok(seen.every((item) => item.usage?.tier === "basic"));
-  assert.equal((await call("list_capabilities", { tier: "specialized", cursor: firstPage.nextCursor })).error?.code, "INVALID_CAPABILITY_CURSOR");
-  const invalidQuery = await client.callTool({ name: "list_capabilities", arguments: { tier: "invalid" } }); assert.equal(invalidQuery.isError, true);
+  assert.ok(seen.some((item) => item.id === "media.select_references")); assert.ok(seen.every((item) => typeof item.usage?.whenToUse === "string"));
+  assert.equal((await call("list_capabilities", { cursor: "invalid-cursor" })).error?.code, "INVALID_CAPABILITY_CURSOR");
+  const invalidQuery = await client.callTool({ name: "list_capabilities", arguments: { limit: 0 } }); assert.equal(invalidQuery.isError, true);
+  const retiredTier = await client.callTool({ name: "list_capabilities", arguments: { tier: "specialized" } }); assert.equal(retiredTier.isError, true);
   const source = path.join(h.root, "input.png"); await writeFile(source, await sharp({ create: { width: 80, height: 100, channels: 3, background: "#b6c7a4" } }).png().toBuffer());
   const uploaded = await call("upload_asset", { createId: randomUUID(), filePath: source, kind: "image", name: "隔离源图", category: "material" }); assert.equal(uploaded.ok, true);
   const asset = uploaded.data as Record<string, any>;

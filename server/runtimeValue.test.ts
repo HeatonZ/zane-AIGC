@@ -32,6 +32,26 @@ test("single paths, URLs, data URLs and ComfyUI attachments become lists", () =>
   }
 });
 
+test("relative workbench media URLs keep a usable file name", () => {
+  // Third-party response images are published as canonical relative archive
+  // paths. `new URL` rejects a relative reference without a base, so the file
+  // name must still be derived: the sandbox projects media by file name only,
+  // and downstream selection cannot work without it.
+  const archived = "/api/v1/runs/72fa80cb-9724-4755-9f07-e03f72b061a4/media/7985392f-89d8-41d7-9033-6c8fbbe3d0aa.png";
+  const fromUrl = createRuntimeMediaValue("image", [{ url: archived }]);
+  assert.equal(fromUrl.items[0].filename, "7985392f-89d8-41d7-9033-6c8fbbe3d0aa.png");
+  assert.equal(fromUrl.items[0].locator.type, "url");
+  // The string form already resolved relative paths and must not change.
+  assert.equal(createRuntimeMediaValue("image", archived).items[0].filename, "7985392f-89d8-41d7-9033-6c8fbbe3d0aa.png");
+  // A query string is not part of the file name.
+  assert.equal(createRuntimeMediaValue("image", [{ url: archived + "?v=1" }]).items[0].filename, "7985392f-89d8-41d7-9033-6c8fbbe3d0aa.png");
+  assert.equal(createRuntimeMediaValue("image", [{ url: "/api/workflows/runs/r/media/clip.mp4" }]).items[0].filename, "clip.mp4");
+  // An endpoint path has no file name and must not invent one.
+  assert.equal(createRuntimeMediaValue("image", [{ url: "/api/v1/runs/r/output-media?outputKey=images" }]).items[0].filename, undefined);
+  // Absolute URLs keep their existing behaviour.
+  assert.equal(createRuntimeMediaValue("image", [{ url: "https://example.test/a%20b.png" }]).items[0].filename, "a b.png");
+});
+
 test("external nested arrays preserve order in a flat media collection", () => {
   const result = createRuntimeMediaValue("image", ["first.png", ["second.png", ["third.png"]]]);
   assert.deepEqual(runtimeMediaExternalValue(result), ["first.png", "second.png", "third.png"]);

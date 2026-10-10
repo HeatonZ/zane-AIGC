@@ -3,7 +3,7 @@ import { resolveStepInputs } from "../../domain/workflowValues.js";
 /** Reference implementation: adding this file alone makes the capability selectable and executable. */
 const factory: CapabilityFactory = () => ({
   definition: {
-    id: "text.template", version: "1", usage: { tier: "basic", whenToUse: "按变量拼装提示词或文案，不调用模型；不同场景复用同一模板能力。" }, label: "文本模板", description: "把步骤输入填入 {{变量名}}，用于拼装提示词或文案，不调用模型。", category: "文本",
+    id: "text.template", version: "1", usage: { compatibilityOnly: true, whenToUse: "仅兼容已有发布快照与历史运行；新场景用core.code完成文本模板和文案拼装：读取声明的输入端口，按需要拼装文本并返回声明的text输出。" }, label: "文本模板（旧版兼容）", description: "旧版文本模板步骤：把步骤输入填入 {{变量名}}，用于拼装提示词或文案，不调用模型。新场景使用自定义代码。", category: "文本",
     dependencyMode: "declared", legacy: { kind: "capability" }, inputs: [{ key: "text", label: "文本", type: "text" }], outputs: [{ key: "text", label: "拼装文本", type: "text" }],
     config: [{ key: "template", label: "文本模板", type: "textarea", required: true, defaultValue: "{{text}}", placeholder: "例如：为 {{product}} 写一条 {{style}} 风格文案", description: "变量名对应下方步骤输入的 key。" }],
     editor: { inputs: "ports", outputs: "ports", editablePorts: true, editableOutputs: false }, result: { renderer: "text" },

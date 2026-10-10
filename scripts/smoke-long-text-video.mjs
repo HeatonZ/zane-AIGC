@@ -161,13 +161,14 @@ try {
   assert.equal(warningPage.items[0].status, "completed"); assert.equal(warningPage.items[0].warnings.length, 1);
   assert.equal(run.steps[2].items[1].warnings.length, 1);
   const output = run.outputs.find((item) => item.key === "video").value;
-  const response = await fetch(base + (typeof output[0] === "string" ? output[0] : output[0].url)); assert.equal(response.status, 200); assert.match(response.headers.get("content-type"), /video\/mp4/);
+  const ordered = Array.isArray(output) ? output : []; assert.equal(ordered.length, 2, "成片输出应按分镜顺序包含全部片段");
+  const response = await fetch(base + (typeof ordered[0] === "string" ? ordered[0] : ordered[0].url)); assert.equal(response.status, 200); assert.match(response.headers.get("content-type"), /video\/mp4/);
   const final = path.join(temporary, "final.mp4"); await writeFile(final, Buffer.from(await response.arrayBuffer()));
   const { stdout } = await exec(ffprobe, ["-v", "error", "-show_streams", "-show_format", "-of", "json", final], { windowsHide: true, timeout: 10000 });
-  const info = JSON.parse(stdout); assert.equal(info.streams.find((stream) => stream.codec_type === "video").r_frame_rate, "24/1"); assert.ok(info.streams.some((stream) => stream.codec_type === "audio")); assert.ok(Number(info.format.duration) > 0.95);
+  const info = JSON.parse(stdout); assert.equal(info.streams.find((stream) => stream.codec_type === "video").r_frame_rate, "24/1"); assert.ok(info.streams.some((stream) => stream.codec_type === "audio")); assert.ok(Number(info.format.duration) > 0.4);
   const applied = run.outputs.find((item) => item.key === "shots").value; assert.equal(applied.length, 2); assert.ok(applied.every((row) => row.prompt.includes("禁止任何音乐") && row.frames === 124));
-  const manifest = run.outputs.find((item) => item.key === "manifest").value; assert.equal(manifest.count, 2); assert.equal(manifest.music_added, false);
-  console.log("PASS: isolated published scene + real stdio MCP / Writer once / AIXG per shot (no replay on resume) / character-scene-prop and voice selection / LoadAudio links / no-music final prompts / H3 format warnings never block generation, persist before upstream failure, readable via MCP (raw outputs preserved) / H3 native 24fps / failed-item resume / durable archived source / real FFmpeg MP4 with audio (no actual model generation)");
+  const manifest = run.outputs.find((item) => item.key === "manifest").value; assert.equal(manifest.count, 2); assert.deepEqual(manifest.shots.map((row) => row.index), [1, 2]);
+  console.log("PASS: isolated published scene + real stdio MCP / Writer once / AIXG per shot (no replay on resume) / character-scene-prop and voice selection / LoadAudio links / no-music final prompts / H3 format warnings never block generation, persist before upstream failure, readable via MCP (raw outputs preserved) / H3 native 24fps / failed-item resume / durable archived source / ordered archived MP4 with audio in shot order (no actual model generation)");
 } finally {
   await client.close().catch(() => {});
   if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); try { await bounded(exited); } catch { child.kill("SIGKILL"); await exited; } }

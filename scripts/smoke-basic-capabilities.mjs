@@ -54,20 +54,23 @@ try {
   assert.equal((await raw("update_task_concurrency", { revision: 0, maxActiveRuns: 4 })).error.code, "RESOURCE_REVISION_CONFLICT");
   await call("update_task_concurrency", { revision: concurrencySaved.revision, maxActiveRuns: 2 });
   console.log("Task concurrency compiled MCP acceptance passed: singleton SQLite + live scheduler + revision conflict + lost receipt reconciliation; no tasks submitted.");
-  const catalog = await call("list_capabilities", { tier: "basic", limit: 1 });
-  assert.equal(catalog.selectionPolicy.defaultTier, "basic"); assert.ok(catalog.nextCursor && catalog.hasMore);
+  const catalog = await call("list_capabilities", { limit: 1 });
+  assert.equal(catalog.selectionPolicy.sceneSpecificLogic, "core.code"); assert.ok(catalog.nextCursor && catalog.hasMore);
   let cursor = catalog.nextCursor; const capabilities = [...catalog.capabilities];
-  while (cursor) { const page = await call("list_capabilities", { tier: "basic", limit: 2, cursor }); assert.equal(page.revision, catalog.revision); capabilities.push(...page.capabilities); cursor = page.nextCursor; }
+  while (cursor) { const page = await call("list_capabilities", { limit: 2, cursor }); assert.equal(page.revision, catalog.revision); capabilities.push(...page.capabilities); cursor = page.nextCursor; }
   assert.equal(capabilities.length, new Set(capabilities.map(item => item.id)).size);
-  assert.ok(capabilities.every(item => item.usage.tier === "basic"));
-  assert.ok(capabilities.some(item => item.id === "media.select_references"));
+  assert.ok(capabilities.every(item => typeof item.usage.whenToUse === "string" && item.usage.whenToUse));
+  // 退役的执行方式仍留在目录里执行旧快照，但标记 compatibilityOnly，不再作为新步骤候选。
+  for (const id of ["media.select_references", "media.image_layout", "text.template", "core.manual"]) assert.equal(capabilities.find(item => item.id === id).usage.compatibilityOnly, true, id);
+  assert.equal(capabilities.find(item => item.id === "core.code").usage.compatibilityOnly, undefined);
   assert.ok(capabilities.find(item => item.id === "media.image_layout").inputs.find(input => input.key === "layout").valueSchema.properties);
-  assert.equal((await raw("list_capabilities", { tier: "specialized", cursor: catalog.nextCursor })).error.code, "INVALID_CAPABILITY_CURSOR");
-  const invalid = await client.callTool({ name: "list_capabilities", arguments: { tier: "not-a-tier" } }); assert.equal(invalid.isError, true);
-  const specialized = await call("list_capabilities", { tier: "specialized", limit: 100 });
-  assert.equal(specialized.capabilities.find(item => item.id === "comfyui.commerce_pack").usage.compatibilityOnly, true);
-  assert.ok(specialized.capabilities.some(item => item.id === "comfyui.long_text_video" && item.label.includes("H3")));
-  const httpCatalog = await (await fetch(base + "/api/v1/capabilities?tier=basic&limit=1")).json(); assert.equal(httpCatalog.revision, catalog.revision);
+  assert.equal((await raw("list_capabilities", { cursor: "not-a-cursor" })).error.code, "INVALID_CAPABILITY_CURSOR");
+  const invalid = await client.callTool({ name: "list_capabilities", arguments: { limit: 0 } }); assert.equal(invalid.isError, true);
+  const unknownQuery = await client.callTool({ name: "list_capabilities", arguments: { tier: "specialized" } }); assert.equal(unknownQuery.isError, true, "未声明的查询参数必须拒绝，不再有基础/专用分层");
+  const retired = await call("list_capabilities", { limit: 100 });
+  assert.equal(retired.capabilities.find(item => item.id === "comfyui.commerce_pack").usage.compatibilityOnly, true);
+  assert.ok(retired.capabilities.some(item => item.id === "comfyui.long_text_video" && item.label.includes("H3")));
+  const httpCatalog = await (await fetch(base + "/api/v1/capabilities?limit=1")).json(); assert.equal(httpCatalog.revision, catalog.revision);
 
   const source = path.join(temporary, "input.png");
   const sourceBytes = await sharp({ create: { width: 80, height: 100, channels: 3, background: "#b6c7a4" } }).png().toBuffer();
@@ -207,7 +210,7 @@ try {
 
   // Custom code step: local sandbox execution through the same compiled HTTP + stdio MCP services.
   const codeCapability = capabilities.find(item => item.id === "core.code");
-  assert.ok(codeCapability && codeCapability.usage.tier === "basic" && codeCapability.editor.editableOutputs === true && codeCapability.config.some(field => field.key === "code" && field.type === "textarea"));
+  assert.ok(codeCapability && codeCapability.usage.compatibilityOnly === undefined && codeCapability.editor.editableOutputs === true && codeCapability.config.some(field => field.key === "code" && field.type === "textarea"));
   const codeSceneId = "isolated-code-step";
   const codeFlow = { sceneId: codeSceneId, name: "自定义代码隔离验收", inputs: [{ key: "rows", type: "json", required: true }, { key: "prefix", type: "text", required: true }],
     steps: [{ id: "aggregate", name: "汇总代码", kind: "capability", capabilityId: "core.code", capabilityVersion: codeCapability.version,
@@ -218,7 +221,7 @@ try {
   let codeDraft = await call("create_scene", { scene: { id: codeSceneId, title: "隔离代码步骤" }, workflow: codeFlow });
   // Invalid drafts fail before publication: media output type, bad syntax, out-of-range timeout and empty code.
   for (const [mutate, expected] of [
-    [(workflow) => { workflow.steps[0].outputs[0].type = "image_list"; }, "INVALID_CODE_CONFIG"],
+    [(workflow) => { workflow.steps[0].outputs[0].type = "image"; }, "INVALID_CODE_CONFIG"],
     [(workflow) => { workflow.steps[0].capabilityConfig.code = "return {"; }, "INVALID_CODE_CONFIG"],
     [(workflow) => { workflow.steps[0].capabilityConfig.timeoutMs = 10; }, "INVALID_CODE_CONFIG"],
     [(workflow) => { workflow.steps[0].capabilityConfig.code = ""; }, "INVALID_CAPABILITY_CONFIG"],
@@ -260,8 +263,82 @@ try {
   assert.equal((await call("get_run", { runId: failRunId })).error.includes("sandbox failure"), true);
   assert.equal((await raw("submit_scene", { sceneId: codeSceneId, versionId: codeVersionId, runId: codeRunId, inputValues: codeInputs })).error.code, "RUN_ALREADY_EXISTS");
   assert.equal((await call("get_scene", { sceneId: codeSceneId, versionId: codeVersionId })).workflow.steps[0].capabilityConfig.code, codeFlow.steps[0].capabilityConfig.code);
-  console.log("Custom code step real stdio MCP passed: basic tier -> invalid config rejected -> fixed publication -> sandbox execution -> typed outputs -> explicit failure -> snapshot isolation; no models/media.");
-  const report = { status: "passed", compiledBackend: true, realStdioMcp: true, isolated: true, baseUrl: base, temporary, sceneId: pkg.scene.id, versionId, runId, rerunId, imageCount: media.length, media, generationExecuted: false, externalSteps: [], checks: ["basic-tier-pagination-and-schema", "legacy-compatibility-discovery", "HTTP-MCP-shared-catalog", "asset-upload", "draft-revision-conflict", "publish-id-reconciliation", "fixed-publication-preflight", "run-id-reconciliation", "parallel-basic-composition", "output-and-step-pagination", "image-dimensions-sha256-HEAD-Range", "selective-item-rerun", "original-run-and-artifact-immutability"] };
+  console.log("Custom code step real stdio MCP passed: unified catalog -> invalid config rejected -> fixed publication -> sandbox execution -> typed outputs -> explicit failure -> snapshot isolation; no models/media.");
+
+  // core.code media outputs: select, reorder and merge media already authorized in this run by file name.
+  const otherSource = path.join(temporary, "other.png");
+  const otherBytes = await sharp({ create: { width: 60, height: 60, channels: 3, background: "#3d5a80" } }).png().toBuffer();
+  await writeFile(otherSource, otherBytes);
+  const other = await call("upload_asset", { createId: randomUUID(), filePath: otherSource, kind: "image", name: "隔离第二张源图", category: "material" });
+  const mediaSceneId = "isolated-code-media";
+  const mediaFlow = { sceneId: mediaSceneId, name: "自定义代码媒体输出隔离验收", inputs: [{ key: "hero", type: "image_list", required: true }, { key: "gallery", type: "image_list" }],
+    steps: [{ id: "pick", name: "按文件名选择与合并", kind: "capability", capabilityId: "core.code", capabilityVersion: codeCapability.version,
+      capabilityConfig: { code: "const gallery = (inputs.gallery ?? []).map(item => item.filename);\nconst hero = (inputs.hero ?? []).map(item => item.filename);\nreturn { images: [...gallery, ...hero], count: gallery.length + hero.length };", timeoutMs: 5000 },
+      inputs: [{ key: "hero", sourceRef: "input.hero" }, { key: "gallery", sourceRef: "input.gallery" }],
+      outputs: [{ key: "images", type: "image_list" }, { key: "count", type: "number" }] }],
+    outputs: [{ key: "images", type: "image_list", sourceRef: "step.pick.outputs.images" }, { key: "count", type: "number", sourceRef: "step.pick.outputs.count" }] };
+  const mediaDraft = await call("create_scene", { scene: { id: mediaSceneId, title: "隔离代码媒体输出" }, workflow: mediaFlow });
+  await call("validate_scene_draft", { sceneId: mediaSceneId, revision: mediaDraft.revision });
+  const mediaVersionId = randomUUID(); const mediaPublication = { sceneId: mediaSceneId, revision: mediaDraft.revision, publicationId: mediaVersionId };
+  await call("publish_scene", mediaPublication); assert.equal((await call("publish_scene", mediaPublication)).versionId, mediaVersionId);
+  const mediaPrepared = await call("prepare_scene", { sceneId: mediaSceneId, versionId: mediaVersionId, inputValues: { hero: [asset.reference], gallery: [other.reference, asset.reference] } });
+  assert.deepEqual(mediaPrepared.boundaries.externalSteps, []); assert.equal(mediaPrepared.externalServicesChecked, false, "代码不读取素材也不调用外部服务");
+  const mediaRunId = randomUUID();
+  await call("submit_scene", { sceneId: mediaSceneId, versionId: mediaVersionId, runId: mediaRunId, inputValues: { hero: [asset.reference], gallery: [other.reference, asset.reference] } }); // lost receipt -> same ID
+  assert.equal((await call("wait_run", { runId: mediaRunId, timeoutSeconds: 20 })).status, "completed");
+  const mediaOutputs = await call("get_run_outputs", { runId: mediaRunId, outputKey: "images", includeValues: true, valueLimit: 10 });
+  assert.equal((await call("get_run_outputs", { runId: mediaRunId, outputKey: "count", includeValues: true })).outputs[0].value, 3);
+  assert.equal(mediaOutputs.outputs[0].valuePage.total, 3); assert.equal(mediaOutputs.outputs[0].valuePage.complete, true);
+  const mergedBytes = [];
+  for (const reference of mediaOutputs.outputs[0].mediaReferences) { const response = await fetch(new URL(reference.url, base)); assert.equal(response.status, 200); mergedBytes.push(Buffer.from(await response.arrayBuffer())); }
+  assert.deepEqual(mergedBytes.map(bytes => digest(bytes)), [digest(otherBytes), digest(sourceBytes), digest(sourceBytes)], "按文件名合并既有媒体，顺序保持且不产生新媒体");
+  // A media port can only reference media the step received; an unknown file name fails at execution, before any output is written.
+  const mediaMissing = structuredClone(mediaFlow); mediaMissing.steps[0].capabilityConfig.code = "return { images: [\"missing.png\"], count: 0 };";
+  const mediaBase = await call("get_scene_draft", { sceneId: mediaSceneId });
+  const mediaMissingDraft = await call("update_scene_draft", { sceneId: mediaSceneId, revision: mediaBase.revision, workflow: mediaMissing });
+  await call("validate_scene_draft", { sceneId: mediaSceneId, revision: mediaMissingDraft.revision });
+  const mediaMissingVersionId = randomUUID(); await call("publish_scene", { sceneId: mediaSceneId, revision: mediaMissingDraft.revision, publicationId: mediaMissingVersionId });
+  const mediaMissingRunId = randomUUID();
+  await call("submit_scene", { sceneId: mediaSceneId, versionId: mediaMissingVersionId, runId: mediaMissingRunId, inputValues: { hero: [asset.reference], gallery: [other.reference] } });
+  assert.equal((await call("wait_run", { runId: mediaMissingRunId, timeoutSeconds: 20 })).status, "failed");
+  assert.equal((await call("get_run", { runId: mediaMissingRunId })).error.includes("missing.png"), true, "未授权媒体文件名必须明确失败");
+  assert.equal((await call("get_scene", { sceneId: mediaSceneId, versionId: mediaVersionId })).workflow.steps[0].capabilityConfig.code, mediaFlow.steps[0].capabilityConfig.code, "失败运行不改写固定发布快照");
+  console.log("Custom code media outputs real stdio MCP passed: declared media ports -> filename selection/merge of already authorized media -> typed count -> unknown filename rejected -> snapshot isolation; no models, no new media.");
+  // Generic start condition: every step can gate itself; a skipped step emits null outputs.
+  const startSceneId = "isolated-start-condition";
+  const startFlow = { sceneId: startSceneId, name: "开始条件隔离验收", inputs: [{ key: "flag", type: "boolean", required: true }],
+    steps: [
+      { id: "gated", name: "有条件步骤", kind: "capability", capabilityId: "core.code", capabilityVersion: "1", capabilityConfig: { code: 'return { text: "已执行" };', timeoutMs: 5000 },
+        startCondition: { match: "all", rules: [{ id: "rule_start_1", leftRef: "input.flag", operator: "equals", valueSource: "literal", rightValue: "true", rightRef: "" }] },
+        inputs: [], outputs: [{ key: "text", type: "text" }] },
+      { id: "merge", name: "合并步骤", kind: "capability", capabilityId: "core.code", capabilityVersion: "1", capabilityConfig: { code: "return { text: inputs.gated ?? inputs.fallback };", timeoutMs: 5000 },
+        inputs: [{ key: "gated", sourceRef: "step.gated.outputs.text" }, { key: "fallback", valueSource: "literal", literalType: "text", literalValue: "未执行" }], outputs: [{ key: "text", type: "text" }] }],
+    outputs: [{ key: "text", type: "text", sourceRef: "step.merge.outputs.text" }] };
+  const startDraft = await call("create_scene", { scene: { id: startSceneId, title: "隔离开始条件" }, workflow: startFlow });
+  // A start condition referencing a later step or with no rules is rejected at draft write time, before publication.
+  const forward = structuredClone(startDraft.workflow); forward.steps[1].startCondition = { match: "all", rules: [{ id: "rule_forward", leftRef: "step.merge.outputs.text", operator: "is_not_empty", valueSource: "literal", rightValue: "", rightRef: "" }] };
+  assert.equal((await raw("update_scene_draft", { sceneId: startSceneId, revision: startDraft.revision, workflow: forward })).error.code, "INVALID_WORKFLOW_REFERENCE");
+  const invalidRules = structuredClone(startDraft.workflow); invalidRules.steps[0].startCondition = { match: "all", rules: [] };
+  assert.equal((await raw("update_scene_draft", { sceneId: startSceneId, revision: startDraft.revision, workflow: invalidRules })).error.code, "INVALID_WORKFLOW");
+  const startFinal = await call("get_scene_draft", { sceneId: startSceneId });
+  await call("validate_scene_draft", { sceneId: startSceneId, revision: startFinal.revision });
+  const startVersionId = randomUUID(); const startPublication = { sceneId: startSceneId, revision: startFinal.revision, publicationId: startVersionId };
+  await call("publish_scene", startPublication); assert.equal((await call("publish_scene", startPublication)).versionId, startVersionId);
+  const startPrepared = await call("prepare_scene", { sceneId: startSceneId, versionId: startVersionId, inputValues: { flag: false } });
+  assert.deepEqual(startPrepared.boundaries.externalSteps, [], "开始条件场景不应包含外部/计费步骤");
+  const startRunTrue = randomUUID(); await call("submit_scene", { sceneId: startSceneId, versionId: startVersionId, runId: startRunTrue, inputValues: { flag: true } });
+  assert.equal((await call("wait_run", { runId: startRunTrue, timeoutSeconds: 20 })).status, "completed");
+  assert.equal((await call("get_run", { runId: startRunTrue })).outputs[0].value, "已执行");
+  assert.equal((await call("get_run", { runId: startRunTrue })).steps[0].status, "completed");
+  const startRunFalse = randomUUID(); await call("submit_scene", { sceneId: startSceneId, versionId: startVersionId, runId: startRunFalse, inputValues: { flag: false } });
+  const startFalseRun = await call("get_run", { runId: startRunFalse });
+  assert.equal((await call("wait_run", { runId: startRunFalse, timeoutSeconds: 20 })).status, "completed");
+  assert.equal((await call("get_run", { runId: startRunFalse })).outputs[0].value, "未执行");
+  assert.equal((await call("get_run", { runId: startRunFalse })).steps[0].status, "skipped");
+  assert.equal((await call("get_run", { runId: startRunFalse })).steps[0].message, "开始条件未满足");
+  assert.deepEqual((await call("get_run_outputs", { runId: startRunFalse, outputKey: "text", includeValues: true })).outputs[0].value, "未执行");
+  console.log("Generic start condition real stdio MCP passed: any-step gating -> skip with null outputs -> downstream default -> invalid rule/later-reference rejected before publication; no models, isolated data.");
+  const report = { status: "passed", compiledBackend: true, realStdioMcp: true, isolated: true, baseUrl: base, temporary, sceneId: pkg.scene.id, versionId, runId, rerunId, imageCount: media.length, media, generationExecuted: false, externalSteps: [], checks: ["catalog-pagination-and-schema", "legacy-compatibility-discovery", "HTTP-MCP-shared-catalog", "asset-upload", "draft-revision-conflict", "publish-id-reconciliation", "fixed-publication-preflight", "run-id-reconciliation", "parallel-basic-composition", "output-and-step-pagination", "image-dimensions-sha256-HEAD-Range", "selective-item-rerun", "original-run-and-artifact-immutability"] };
   console.log(JSON.stringify(report, null, 2));
   if (process.argv.includes("--hold-ui")) {
     console.log("UI E2E ready: " + base + "; finish by creating " + path.join(temporary, "ui-finished"));

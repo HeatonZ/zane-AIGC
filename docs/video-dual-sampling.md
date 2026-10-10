@@ -48,7 +48,7 @@ node --import tsx scripts/migrate-video-dual-sampling.mjs --apply --publish
 
 - `npm run check`：285项测试全部通过，包含类型检查、前后端构建、既有隔离冒烟、AI文档漂移检查，以及新增真实 stdio MCP 四场景迁移闭环。
 - 新增闭环覆盖：文本/参考/无设计/长文四种流程，所有新节点绑定通过 MCP 到达权威业务服务；无效绑定、旧 revision 冲突、发布响应对账、同 ID 发布去重、旧发布快照保留、其他草稿不变，以及未产生任何运行。
-- `npm run test:long-video:smoke`：模拟 Writer/ComfyUI 与真实 FFmpeg，验证201号JSON入口、采样器未被写入String、原生24fps、逐镜素材与音色选择、有声拼接和失败片段恢复。没有调用实际模型。
+- `npm run test:long-video:smoke`：模拟 Writer/ComfyUI 与真实 FFmpeg，验证201号JSON入口、采样器未被写入String、原生24fps、逐镜素材与音色选择、成片顺序和失败片段恢复。没有调用实际模型。
 - 正式工作台 SQLite 一致性在线备份 `quick_check = ok`；修改前后双采图 SHA-256 相同。正式服务仍为原进程，worker queued/active/preparing 均为0。
 - **未运行真实模型生成，不能将配置/隔离验收等同于新双采成片质量验收。**
 

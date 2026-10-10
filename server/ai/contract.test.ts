@@ -90,10 +90,10 @@ test("预设读写契约分离：读模型允许revision，写模型拒绝派生
 });
 
 
-test("基础优先目录请求/响应契约包含tier分页与通用媒体值schema", () => {
+test("统一能力目录请求/响应契约包含revision分页与通用媒体值schema", () => {
   const operation = aiOperations.find((item) => item.name === "list_capabilities")!;
-  assert.equal(operation.effect, "read"); assert.deepEqual(operation.schema.parse({}), { tier: "all", limit: 50 });
-  assert.equal(operation.schema.safeParse({ tier: "basic", limit: 1 }).success, true); assert.equal(operation.schema.safeParse({ tier: "unknown" }).success, false);
+  assert.equal(operation.effect, "read"); assert.deepEqual(operation.schema.parse({}), { limit: 50 });
+  assert.equal(operation.schema.safeParse({ limit: 1 }).success, true); assert.equal(operation.schema.safeParse({ tier: "basic" }).success, false); assert.equal(operation.schema.safeParse({ limit: 0 }).success, false);
   const api = createAiOpenApi();
   assert.ok(api.components.schemas.CapabilityCatalog); assert.ok(api.components.schemas.MediaReferenceGroups); assert.ok(api.components.schemas.ImageLayout);
   const response = (api.paths["/api/v1/capabilities"].get as { responses: Record<string, any> }).responses["200"].content["application/json"].schema;
@@ -177,6 +177,24 @@ test("系统反馈机器契约与普通审核边界：唯一原子工具、默�
   assert.ok(api.components.schemas.SystemFeedbackPage); assert.ok(api.components.schemas.SystemFeedbackEnvelope);
 });
 
+
+test("AI机器契约：通用开始条件进入步骤schema，拒绝无效规则并保留旧条件兼容", () => {
+  const operation = aiOperations.find(item => item.name === "update_scene_draft")!;
+  const base = { sceneId: "scene", revision: "a".repeat(64), workflow: { inputs: [], outputs: [], steps: [{ id: "step", name: "step", kind: "hermes", startCondition: { match: "all", rules: [{ id: "r1", leftRef: "input.reference", operator: "is_not_empty", valueSource: "literal", rightValue: "", rightRef: "" }] } }] } };
+  assert.equal(operation.schema.safeParse(base).success, true);
+  const referenced = { match: "any", rules: [{ id: "r1", leftRef: "input.flag", operator: "equals", valueSource: "reference", rightRef: "step.other.outputs.value", rightValue: "" }] };
+  assert.equal(operation.schema.safeParse({ ...base, workflow: { inputs: [], outputs: [], steps: [{ id: "step", name: "step", kind: "hermes", startCondition: referenced }] } }).success, true);
+  for (const startCondition of [
+    { match: "all" },
+    { match: "all", rules: [{ leftRef: "input.reference" }] },
+    { match: "sometimes", rules: [{ id: "r1", leftRef: "input.reference", operator: "is_not_empty", valueSource: "literal", rightValue: "", rightRef: "" }] },
+    { match: "all", rules: [{ id: "r1", leftRef: "input.reference", operator: "is_not_empty", valueSource: "maybe", rightValue: "", rightRef: "" }] },
+  ]) assert.equal(operation.schema.safeParse({ ...base, workflow: { inputs: [], outputs: [], steps: [{ id: "step", name: "step", kind: "hermes", startCondition }] } }).success, false, JSON.stringify(startCondition));
+  const legacy = { id: "cond", name: "判断", kind: "control", control: { type: "condition", match: "all", rules: [{ id: "r1", leftRef: "input.flag", operator: "is_not_empty", valueSource: "literal", rightValue: "", rightRef: "" }] }, outputs: [{ key: "result", type: "boolean" }] };
+  assert.equal(operation.schema.safeParse({ ...base, workflow: { inputs: [], outputs: [], steps: [legacy] } }).success, true);
+  assert.ok(JSON.stringify(createAiOpenApi()).includes("startCondition"), "OpenAPI 必须包含开始条件");
+  assert.match(AI_OPERATOR_GUIDE, /通用开始条件（1\.5\.32）/);
+});
 
 test("AI草稿媒体引用类型字段显式可操作，拒绝未声明类型与伪造配置", () => {
   const operation = aiOperations.find(item => item.name === "update_scene_draft")!;

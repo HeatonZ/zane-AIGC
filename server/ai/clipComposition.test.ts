@@ -16,7 +16,7 @@ test("选片合成提交客户端固定runId，清单lastRunId可对账；旧rev
   const saved = clips.put(h.settings.projectDirectory, selection, 0);
   const runId = id("composition-stable-id"); const composed = await clips.compose(saved.id, { revision: saved.revision, runId });
   assert.equal(received!.runId, runId); assert.equal(composed.runId, runId); assert.equal(composed.selection.lastRunId, runId); assert.equal(calls, 1);
-  const workflow = received!.workflow as RunWorkflowDefinition; assert.equal(workflow.steps[0].capabilityId, "media.video_concat"); assert.equal(workflow.steps.length, 1);
+  const workflow = received!.workflow as RunWorkflowDefinition; assert.equal(workflow.steps.length, 1); assert.equal(workflow.steps[0]!.capabilityId, "core.code"); assert.equal(workflow.steps[0]!.kind, "capability"); assert.equal(workflow.steps[0]!.comfyui, undefined); assert.ok(String(workflow.steps[0]!.capabilityConfig?.code ?? "").includes("不能静默漏掉片段或乱序")); assert.deepEqual((workflow.steps[0]!.outputs ?? []).map(output => [output.key, output.type]), [["video", "video_list"], ["manifest", "json"]]);
   assert.deepEqual((received!.inputValues as { clips: unknown[] }).clips, [{ assetId: "asset-fixed", assetVersion: 2 }]);
   await assert.rejects(clips.compose(saved.id, { revision: saved.revision, runId }), /已变化/); assert.equal(calls, 1);
 });

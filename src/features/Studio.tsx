@@ -54,7 +54,7 @@ function DynamicField({
   value: string;
   onChange: (value: string) => void;
   onPickFile: (type: "image" | "video") => void;
-  onPickImage: (file: File) => void;
+  onPickImage: (files: File[]) => void;
   onPickAudio: (file: File) => void;
   picking: boolean;
   pickerBusy: boolean;
@@ -97,16 +97,16 @@ function DynamicField({
         </select><ChevronDown size={15} /></div>
       ) : mediaType === "image_list" ? (
         <div className="studio-image-list-control">
-          <input ref={imageFileInputRef} className="studio-hidden-file-input" type="file" accept="image/*" onChange={(event) => {
-            const file = event.target.files?.[0];
+          <input ref={imageFileInputRef} className="studio-hidden-file-input" type="file" accept="image/*" multiple onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
             event.target.value = "";
-            if (file) onPickImage(file);
+            if (files.length) onPickImage(files);
           }} />
           <div className="studio-image-list-toolbar">
             <span>{imageValues.length ? `已添加 ${imageValues.length} 张，按序作为参考图` : "还没有添加参考图"}</span>
             <div className="studio-image-list-actions"><button className="button button-outline studio-add-image" type="button" onClick={() => imageFileInputRef.current?.click()} disabled={pickerBusy}>
               {picking ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}
-              <span>{picking ? "上传中" : "逐张添加"}</span>
+              <span>{picking ? "上传中" : "添加图片"}</span>
             </button><button className="button button-outline studio-add-image" type="button" onClick={() => onPickFile("image")} disabled={pickerBusy}><FolderOpen size={14} /><span>添加路径</span></button></div>
           </div>
           {imageValues.length > 0 && <ol className="studio-image-list">
@@ -330,12 +330,16 @@ export default function Studio({ sceneId, scene, workflow, publication, draft, o
     if (currentRunIdRef.current) onCancelRun(currentRunIdRef.current);
   }
 
-  async function addImage(key: string, file: File) {
+  async function addImage(key: string, files: File[]) {
+    if (files.length === 0) return;
     setPickingField(key);
     setFormError("");
     try {
-      const attachment = await uploadComfyUIImage(file);
-      updateValue(key, (current) => appendMediaInputValue(current, { ...attachment }));
+      // Each selected file uploads on its own so a later failure keeps the sources already added.
+      for (const file of files) {
+        const attachment = await uploadComfyUIImage(file);
+        updateValue(key, (current) => appendMediaInputValue(current, { ...attachment }));
+      }
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "无法上传图片");
     } finally {
@@ -380,7 +384,7 @@ export default function Studio({ sceneId, scene, workflow, publication, draft, o
               <label className="field-label" htmlFor="studio-run-title">作品标题（可选）</label>
               <input id="studio-run-title" className="text-input studio-dynamic-control" type="text" maxLength={120} value={runTitle} onChange={(event) => { setRunTitle(event.target.value); setFormError(""); setRunResult(null); }} placeholder="方便在运行记录中查找" />
             </div>
-            {visibleInputFields(studioWorkflow.inputs).map((field) => <DynamicField key={field.key} field={field} value={values[field.key] ?? ""} onChange={(value) => updateValue(field.key, value)} onPickFile={(type) => void pickFile(field.key, type)} onPickImage={(file) => void addImage(field.key, file)} onPickAudio={(file) => void addAudio(field.key, file)} picking={pickingField === field.key} pickerBusy={pickingField !== null} />)}
+            {visibleInputFields(studioWorkflow.inputs).map((field) => <DynamicField key={field.key} field={field} value={values[field.key] ?? ""} onChange={(value) => updateValue(field.key, value)} onPickFile={(type) => void pickFile(field.key, type)} onPickImage={(files) => void addImage(field.key, files)} onPickAudio={(file) => void addAudio(field.key, file)} picking={pickingField === field.key} pickerBusy={pickingField !== null} />)}
           </div>
 
           <div className="workflow-preview">

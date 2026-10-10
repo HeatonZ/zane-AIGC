@@ -40,6 +40,7 @@ import type {
   WorkflowConditionOperator,
   WorkflowConditionRule,
   WorkflowControlConfig,
+  WorkflowStartCondition,
   WorkflowFieldType,
   WorkflowInputField,
   WorkflowObjectArrayItemField,
@@ -239,6 +240,10 @@ function newConditionRule(index: number): WorkflowConditionRule {
 
 function defaultControlConfig(): WorkflowControlConfig {
   return { type: "condition", match: "all", rules: [newConditionRule(1)] };
+}
+
+function defaultStartCondition(): WorkflowStartCondition {
+  return { match: "all", rules: [newConditionRule(1)] };
 }
 
 function inputReferenceOptions(workflow: WorkflowDefinition): ReferenceOption[] {
@@ -1191,6 +1196,22 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
     }));
   }
 
+  function updateStartCondition(stepId: string, mutate: (condition: WorkflowStartCondition) => WorkflowStartCondition) {
+    updateStep(stepId, (step) => ({ ...step, startCondition: mutate(step.startCondition ?? defaultStartCondition()) }));
+  }
+
+  function updateStartConditionRule(index: number, changes: Partial<WorkflowConditionRule>) {
+    if (!selectedStep) return;
+    updateStartCondition(selectedStep.id, (condition) => ({
+      ...condition,
+      rules: condition.rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, ...changes } : rule),
+    }));
+  }
+
+  function clearStartCondition(stepId: string) {
+    updateStep(stepId, (step) => { const next = { ...step }; delete next.startCondition; return next; });
+  }
+
   function setRunCondition(stepId: string, conditionStepId: string) {
     updateStep(stepId, (step) => ({
       ...step,
@@ -1540,6 +1561,34 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
                 </>}
               </div>
               {selectedStep.execution?.mode === "for_each" && <div className="designer-field-explainer execution-config-note"><Braces size={14} /><span>{selectedStep.execution.carry ? "下方可引用上一项输出、是否有上一项、当前序号；串行且失败停止，重做某项会重算后续项。输出仍按原顺序聚合。" : "下方输入可引用当前遍历项；步骤输出会按原列表顺序聚合，最多同时执行指定数量的项目。"}</span></div>}
+            </div>
+            <div className="designer-subsection start-condition-section">
+              <div className="designer-subsection-heading"><div><h3>开始条件</h3><p>所有步骤通用：规则不满足时本步骤跳过，其输出按 null 参与下游引用，无需再建条件节点</p></div></div>
+              <div className="condition-match-row">
+                <span>规则关系</span>
+                <div className="select-wrap"><select value={selectedStep.startCondition?.match ?? "all"} onChange={(event) => updateStartCondition(selectedStep.id, (condition) => ({ ...condition, match: event.target.value as "all" | "any" }))} aria-label="开始条件匹配方式">
+                  <option value="all">全部满足</option><option value="any">任一满足</option>
+                </select></div>
+                {selectedStep.startCondition && <button type="button" className="text-button" onClick={() => clearStartCondition(selectedStep.id)}>移除开始条件</button>}
+              </div>
+              {(selectedStep.startCondition?.rules ?? []).map((rule, index) => {
+                const leftType = referenceOption(rule.leftRef, selectedStepReferenceOptions)?.type;
+                const operators = conditionOperators(leftType);
+                const availableOperators = operators.includes(rule.operator) ? operators : [rule.operator, ...operators];
+                const needsRightValue = rule.operator !== "is_empty" && rule.operator !== "is_not_empty";
+                return <div className="condition-rule-row" key={rule.id || index}>
+                  <div className="condition-rule-main">
+                    <ReferenceSelect value={rule.leftRef} options={selectedStepReferenceOptions} onChange={(leftRef) => updateStartConditionRule(index, { leftRef, operator: "equals", valueSource: "literal", rightValue: "", rightRef: "" })} />
+                    <div className="select-wrap"><select value={rule.operator} onChange={(event) => updateStartConditionRule(index, { operator: event.target.value as WorkflowConditionOperator })} aria-label="开始条件运算符">{availableOperators.map((operator) => <option key={operator} value={operator}>{conditionOperatorLabels[operator]}</option>)}</select></div>
+                    <button className="icon-button schema-delete" onClick={() => updateStartCondition(selectedStep.id, (condition) => ({ ...condition, rules: condition.rules.filter((_, ruleIndex) => ruleIndex !== index) }))} aria-label="删除开始条件规则">×</button>
+                  </div>
+                  {needsRightValue ? <div className="condition-rule-value">
+                    <div className="select-wrap condition-value-source"><select value={rule.valueSource} onChange={(event) => updateStartConditionRule(index, { valueSource: event.target.value as "literal" | "reference" })} aria-label="开始条件值来源"><option value="literal">固定值</option><option value="reference">引用</option></select></div>
+                    {rule.valueSource === "reference" ? <ReferenceSelect value={rule.rightRef} options={selectedStepReferenceOptions} onChange={(rightRef) => updateStartConditionRule(index, { rightRef })} /> : <input className="text-input" value={rule.rightValue} onChange={(event) => updateStartConditionRule(index, { rightValue: event.target.value })} aria-label="开始条件比较值" />}
+                  </div> : <div className="condition-no-value">无需比较值</div>}
+                </div>;
+              })}
+              <button className="designer-add-field" onClick={() => updateStartCondition(selectedStep.id, (condition) => ({ ...condition, rules: [...condition.rules, newConditionRule(condition.rules.length + 1)] }))}>添加规则</button>
             </div>
             {(priorConditionSteps.length > 0 || selectedStep.runCondition) && <div className="designer-subsection run-condition-section">
               <div className="designer-subsection-heading"><div><h3>执行条件</h3><p>此步骤仅在指定条件节点返回对应结果时执行</p></div></div>

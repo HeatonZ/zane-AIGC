@@ -94,8 +94,10 @@ test("scene separates Writer content, per-shot AIXG prompts, categorized generat
   assert.equal(generation.comfyui?.adapter, "long_text_video");
   assert.ok(generation.comfyui?.bindings.some((binding) => binding.property === "ref_audios" && binding.type === "audio_list"));
   assert.equal(generation.comfyui?.bindings.find((binding) => binding.key === "fps")?.literalValue, "24");
-  assert.equal(pkg.workflow.steps[3].comfyui?.adapter, "video_concat");
-  assert.equal(pkg.workflow.steps[3].kind, "comfyui");
+  assert.equal(pkg.workflow.steps[3].capabilityId, "core.code");
+  assert.equal(pkg.workflow.steps[3].kind, "capability");
+  assert.ok(String(pkg.workflow.steps[3].capabilityConfig?.code ?? "").includes("不能静默漏掉片段或乱序"));
+  assert.deepEqual(pkg.workflow.steps[3].outputs.map(output => [output.key, output.type]), [["video", "video_list"], ["manifest", "json"]]);
 });
 
 

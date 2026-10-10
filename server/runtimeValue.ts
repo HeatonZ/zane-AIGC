@@ -35,6 +35,22 @@ function record(value: unknown): Record<string, unknown> | undefined {
 function fileNameFromUrl(value: string) {
   try {
     return decodeURIComponent(new URL(value).pathname.split("/").pop() ?? "") || undefined;
+  } catch { /* Not an absolute URL; a relative reference is resolved below. */ }
+  // Workbench media is also published as canonical *relative* paths, such as
+  // `/api/v1/runs/<runId>/media/<file>`; `new URL` rejects those without a base.
+  // Only a file-like last segment counts, so an endpoint path such as
+  // `.../output-media` never invents a file name. A query or fragment is
+  // dropped by `pathname`.
+  let pathname: string;
+  try {
+    pathname = new URL(value, "http://localhost").pathname;
+  } catch {
+    return undefined;
+  }
+  const candidate = pathname.split("/").pop() ?? "";
+  if (candidate === "." || candidate === ".." || !candidate.includes(".")) return undefined;
+  try {
+    return decodeURIComponent(candidate) || undefined;
   } catch {
     return undefined;
   }

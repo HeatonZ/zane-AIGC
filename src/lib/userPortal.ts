@@ -43,6 +43,22 @@ export function uploadedInput(current: unknown, type: string, reference: unknown
   return /\[\]|_list|images|videos|audios/.test(type)
     ? [...(Array.isArray(current) ? current : []), reference] : reference;
 }
+export type UploadedMediaKind = "image" | "video" | "audio";
+/** Field type decides the asset kind; list fields and single fields follow the same rule. */
+export function mediaKindByType(type: string): UploadedMediaKind {
+  return /audio/.test(type) ? "audio" : /video/.test(type) ? "video" : "image";
+}
+export function mediaKindLabel(kind: UploadedMediaKind): string {
+  return kind === "image" ? "图片" : kind === "video" ? "视频" : "音频";
+}
+export function uploadedBatchNotice(uploaded: number, label: string): string {
+  return uploaded > 1 ? `已上传 ${uploaded} 个${label}并添加到任务输入` : "媒体已上传并添加到任务输入";
+}
+/** A batch keeps every unconfirmed file visible instead of collapsing failures into one line. */
+export function uploadFailureMessage(failures: string[], label: string): string {
+  if (!failures.length) return "";
+  return failures.length === 1 ? failures[0] : `有 ${failures.length} 个${label}上传失败：${failures.join("；")}`;
+}
 export function resultPath(runId: string, context: ResultContext, cursor?: string): string {
   const query = new URLSearchParams({ valueOffset: String(context.valueOffset ?? 0) });
   if (context.valueLimit) query.set("valueLimit", String(context.valueLimit));

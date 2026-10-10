@@ -1,8 +1,8 @@
 import { builtinCapabilities } from "../../server/capabilities/definitions.js";
 import type { CapabilityConfigField, CapabilityDefinition } from "../../server/capabilities/contracts.js";
-import { capabilityForStep, capabilityUsage, groupCapabilities, writeCapabilityConfig } from "../../server/capabilities/contracts.js";
+import { capabilityForStep, capabilityUsage, writeCapabilityConfig } from "../../server/capabilities/contracts.js";
 import type { WorkflowStepDefinition } from "../types";
-export { groupCapabilities, capabilityUsage, capabilityForStep, capabilityConfigErrors, readCapabilityConfig, writeCapabilityConfig } from "../../server/capabilities/contracts.js";
+export { capabilityUsage, capabilityForStep, capabilityConfigErrors, readCapabilityConfig, writeCapabilityConfig } from "../../server/capabilities/contracts.js";
 export type { CapabilityCatalogPage, CapabilityUsage, CapabilityDefinition, CapabilityConfigField } from "../../server/capabilities/contracts.js";
 /** Old backends may not return usage; only fill exact-version built-ins from their shared declaration. */
 export function withBuiltinCapabilityUsage(catalog: readonly CapabilityDefinition[]) {
@@ -11,11 +11,10 @@ export function withBuiltinCapabilityUsage(catalog: readonly CapabilityDefinitio
     return known?.usage ? { ...item, usage: structuredClone(known.usage) } : item;
   });
 }
-/** Keep an existing specialized step visible without offering all specialized adapters by default. */
-export function capabilityChoices(catalog: readonly CapabilityDefinition[], selectedId: string | undefined, expanded = false) {
-  const groups = groupCapabilities(catalog);
-  const available = groups.specialized.filter((item) => !capabilityUsage(item).compatibilityOnly);
-  return { basic: groups.basic, specialized: groups.specialized.filter((item) => item.id === selectedId || (expanded && !capabilityUsage(item).compatibilityOnly)), specializedCount: available.length };
+/** One flat catalog: offer every capability that is not retired (compatibilityOnly), and keep an already selected step visible. */
+export function capabilityChoices(catalog: readonly CapabilityDefinition[], selectedId: string | undefined) {
+  // 已退役的执行方式（compatibilityOnly）不再向新步骤推荐，但已选中的必须保留，避免隐藏后丢配置或自动切换。
+  return catalog.filter((item) => !capabilityUsage(item).compatibilityOnly || item.id === selectedId);
 }
 /** Only a serializable manifest is needed to configure a newly installed capability. */
 export function applyCapabilityToStep(step: WorkflowStepDefinition, definition: CapabilityDefinition): WorkflowStepDefinition {

@@ -8,9 +8,9 @@ const configSchema = z.toJSONSchema(dataZipConfigSchema) as unknown as { propert
 const configProperties = configSchema.properties;
 const factory: CapabilityFactory = () => ({
   definition: {
-    id: "data.zip", version: "1", label: "列表对齐", category: "数据", legacy: { kind: "capability" }, dependencyMode: "declared",
-    usage: { tier: "basic", whenToUse: "逐项步骤之间按位置严格关联计划、素材与提示词，校验数量/标识/数据结构，并拆分首项样张与后续批次；不调用模型。" },
-    description: "items为主列表，其他自定义输入为等长列表；expected_count可校验用户期望项数。输出rows/first/rest。数量不等、空项、重复标识或结构不符报错，不截断补齐。仅支持本地有限JSON Schema，不执行代码。",
+    id: "data.zip", version: "1", label: "列表对齐（旧版兼容）", category: "数据", legacy: { kind: "capability" }, dependencyMode: "declared",
+    usage: { compatibilityOnly: true, whenToUse: "仅兼容已有发布快照与历史运行；新场景不再新增列表对齐步骤：用 core.code 自定义代码声明输入/输出端口，在隔离沙箱中按同一位置配对两个列表并校验数量，不受固定 rows/first/rest 契约限制。" },
+    description: "旧版列表对齐步骤：items为主列表，其他自定义输入为等长列表；expected_count可校验用户期望项数。输出rows/first/rest。数量不等、空项、重复标识或结构不符报错，不截断补齐。仅支持本地有限JSON Schema，不执行代码。新场景改用 core.code 自定义代码完成同类配对与校验。",
     inputs: [{ key: "items", label: "主列表", type: "json", required: true }, { key: "expected_count", label: "预期项数（整数或数字字符串）", type: "json", valueSchema: z.toJSONSchema(expectedCountSchema) as Record<string, CapabilityValue> }],
     outputs: [{ key: "rows", label: "对齐后的记录", type: "json" }, { key: "first", label: "首项", type: "json", required: false }, { key: "rest", label: "剩余记录", type: "json", required: false }],
     config: [

@@ -209,7 +209,7 @@ try {
   assert.doesNotMatch(captured[2]["138"].inputs.value, /<Character|<Scene|<Voice/);
   let cursor; const items = []; do { const page = await call("get_step_result", { runId: resumedId, stepId: "generate", limit: 1, includeValues: false, ...(cursor ? { cursor } : {}) }); items.push(...page.items); cursor = page.nextCursor; } while (cursor);
   assert.deepEqual(items.map(item => item.index), [0, 1]); assert.equal((await raw("get_step_result", { runId: resumedId, stepId: "generate", itemIndex: 9 })).ok, false);
-  const manifest = resumed.outputs.find(output => output.key === "manifest").value; assert.equal(manifest.count, 2); assert.equal(manifest.native_audio_preserved, true); assert.equal(manifest.fps, 24);
+  const manifest = resumed.outputs.find(output => output.key === "manifest").value; assert.equal(manifest.count, 2); assert.deepEqual(manifest.shots.map(row => row.index), [1, 2]);
   const media = resumed.outputs.find(output => output.key === "video").value[0]; const response = await fetch(base + (typeof media === "string" ? media : media.url)); assert.ok(response.ok);
   const final = path.join(temporary, "final.mp4"); await writeFile(final, Buffer.from(await response.arrayBuffer()));
   const probe = JSON.parse((await exec(process.env.FFPROBE_BIN || "ffprobe", ["-v", "error", "-show_streams", "-of", "json", final], { windowsHide: true })).stdout);
@@ -227,7 +227,7 @@ try {
   const legacyId = randomUUID(); await call("submit_scene", {sceneId,versionId:publicationId,runId:legacyId,inputValues:{...values,voice_reference_audio:[attachment("voice.wav"),attachment("voice.wav")]}});
   const legacy = await finished(base,legacyId); assert.equal(legacy.status,"completed",legacy.error);
   assert.equal(workflowReads.size, 1, "one physical workflow for every item");
-  console.log("PASS: isolated real stdio MCP / 7 basic steps / Writer script then batch AIXG once each / original script preservation / fixed audio assets through selection/zip to exact ordered ComfyUI uploads, no credential forwarding, unchanged legacy attachments / one original UI workflow / static false requires no sample video / true uploads exact immediate predecessor / declared unconnected math Boolean binding / revision conflict and lost-write receipt / invalid carry and model output / paged items / failed suffix resume without model replay / single and triple chain / real FFmpeg audio-video output; no real model calls");
+  console.log("PASS: isolated real stdio MCP / 7 basic steps / Writer script then batch AIXG once each / original script preservation / fixed audio assets through selection/zip to exact ordered ComfyUI uploads, no credential forwarding, unchanged legacy attachments / one original UI workflow / static false requires no sample video / true uploads exact immediate predecessor / declared unconnected math Boolean binding / revision conflict and lost-write receipt / invalid carry and model output / paged items / failed suffix resume without model replay / single and triple chain / ordered archived FFmpeg fixture clip with audio; no real model calls");
 } finally {
   await client.close().catch(() => {});
   if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); try { await bounded(exited, 15000); } catch { child.kill("SIGKILL"); await exited; } }

@@ -31,6 +31,7 @@ function references(step: RunStep, catalog: readonly CapabilityDefinition[]) {
   add(step.execution?.sourceRef);
   add(step.execution?.carry?.initialSourceRef);
   for (const rule of step.control?.rules ?? []) { add(rule.leftRef); if (rule.valueSource === "reference") add(rule.rightRef); }
+  for (const rule of step.startCondition?.rules ?? []) { add(rule.leftRef); if (rule.valueSource === "reference") add(rule.rightRef); }
   if (step.runCondition) add("step." + step.runCondition.conditionStepId + ".outputs.result");
   for (const match of step.promptTemplate?.matchAll(/\{\{([^{}]+)\}\}/g) ?? []) add(match[1].trim());
   const definition = capabilityForStep(step, catalog);

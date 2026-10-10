@@ -13,7 +13,7 @@ import {
   type AvailableScene, type UserScene, type OwnRun, type OwnDraft,
 } from "../lib/accessApi";
 import {
-  isDefiniteRunRejection, uploadedInput,
+  isDefiniteRunRejection, mediaKindByType, mediaKindLabel, uploadedBatchNotice, uploadedInput, uploadFailureMessage,
 } from "../lib/userPortal";
 import UserRunDetail from "../components/UserRunDetail";
 import { runDate, runStatusLabels } from "../lib/runDetails";
@@ -58,7 +58,8 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   const [runs, setRuns] = useState<OwnRun[]>([]);
   const [runCursor, setRunCursor] = useState<string>();
   const [run, setRun] = useState<OwnRun>();
-  const [uploadUnknown, setUploadUnknown] = useState<PendingUpload>();
+  const [uploadUnknown, setUploadUnknown] = useState<PendingUpload[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number }>();
   const pendingKey = "zane-studio:run-intent:v1:" + user.id;
   const [pendingRun, setPendingRun] = useState(() => {
     try { return localStorage.getItem(pendingKey) ?? ""; } catch { return ""; }
@@ -396,29 +397,45 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
       setError((e as Error).message + "；请先刷新任务状态或按原提交ID对账。");
     } finally { setBusy(false); }
   }
-  async function upload(key: string, type: string, file: File) {
-    if (!scene) return;
-    setBusy(true); setUploadingKey(key); setError("");
-    const id = crypto.randomUUID();
-    try {
-      const kind = /audio/.test(type) ? "audio" : /video/.test(type) ? "video" : "image";
-      const data = await api<{ reference: unknown }>("/api/v1/self/assets/upload?" + new URLSearchParams({ assetId: id, name: file.name, kind }), {
-        method: "POST", body: file, headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
-      });
-      updateValues(current => ({ ...current, [key]: uploadedInput(current[key], type, data.reference) }));
-      setNotice("媒体已上传并添加到任务输入");
-    } catch (e) {
-      if (e instanceof AccessApiError && e.status === 0) setUploadUnknown({ id, key, type, sceneId: scene.sceneId });
-      setError((e as Error).message + " 素材ID：" + id);
-    } finally { setBusy(false); setUploadingKey(""); }
-  }
-  async function reconcileUpload() {
-    if (!uploadUnknown) return;
-    const data = await api<{ reference: unknown }>("/api/v1/self/assets/" + uploadUnknown.id);
-    if (scene?.sceneId === uploadUnknown.sceneId) {
-      updateValues(current => ({ ...current, [uploadUnknown.key]: uploadedInput(current[uploadUnknown.key], uploadUnknown.type, data.reference) }));
+  async function upload(key: string, type: string, files: File[]) {
+    if (!scene || files.length === 0) return;
+    const kind = mediaKindByType(type), label = mediaKindLabel(kind);
+    setBusy(true); setUploadingKey(key); setError(""); setUploadProgress({ completed: 0, total: files.length });
+    const pending: PendingUpload[] = [], failures: string[] = [];
+    let uploaded = 0, settled = 0;
+    // One selected file is one asset upload with its own assetId; a batch never merges or drops receipts.
+    for (const file of files) {
+      const id = crypto.randomUUID();
+      try {
+        const data = await api<{ reference: unknown }>("/api/v1/self/assets/upload?" + new URLSearchParams({ assetId: id, name: file.name, kind }), {
+          method: "POST", body: file, headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
+        });
+        updateValues(current => ({ ...current, [key]: uploadedInput(current[key], type, data.reference) }));
+        uploaded += 1;
+      } catch (e) {
+        if (e instanceof AccessApiError && e.status === 0) pending.push({ id, key, type, sceneId: scene.sceneId });
+        failures.push((e as Error).message + " 素材ID：" + id);
+      } finally { settled += 1; setUploadProgress({ completed: settled, total: files.length }); }
     }
-    setUploadUnknown(undefined); setNotice("已核验原素材ID，未重复上传");
+    if (pending.length) setUploadUnknown(current => [...current, ...pending]);
+    if (uploaded) setNotice(uploadedBatchNotice(uploaded, label));
+    if (failures.length) setError(uploadFailureMessage(failures, label));
+    setBusy(false); setUploadingKey(""); setUploadProgress(undefined);
+  }
+  async function reconcileUploads() {
+    if (!uploadUnknown.length) return;
+    const remaining: PendingUpload[] = []; let reconciled = 0;
+    for (const item of uploadUnknown) {
+      try {
+        const data = await api<{ reference: unknown }>("/api/v1/self/assets/" + encodeURIComponent(item.id));
+        if (scene?.sceneId === item.sceneId) {
+          updateValues(current => ({ ...current, [item.key]: uploadedInput(current[item.key], item.type, data.reference) }));
+        }
+        reconciled += 1;
+      } catch { remaining.push(item); }
+    }
+    setUploadUnknown(remaining);
+    setNotice(remaining.length ? `已核验 ${reconciled} 个原素材ID，未重复上传；${remaining.length} 个回执仍待核验` : "已核验原素材ID，未重复上传");
   }
   async function backToSceneList() {
     const session = draftSessionRef.current;
@@ -443,7 +460,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     await flushDraftAutosave();
     onAdmin?.();
   }
-  const lockedForm = busy || draftSaving || draftUnknown || !!uploadUnknown;
+  const lockedForm = busy || draftSaving || draftUnknown || uploadUnknown.length > 0;
 
   return <div className="access-shell">
     <aside className="access-sidebar">
@@ -464,9 +481,9 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
         <strong>有一条提交等待核验</strong><p>任务ID：{pendingRun}。不要重复提交。</p>
         <button className="button button-outline" onClick={() => void attempt(reconcileRun)}>查询原任务ID</button>
       </section>}
-      {uploadUnknown && <section className="access-card">
-        <p>媒体上传回执待核验：{uploadUnknown.id}</p>
-        <button className="button button-outline" onClick={() => void attempt(reconcileUpload)}>读取原素材ID</button>
+      {uploadUnknown.length > 0 && <section className="access-card">
+        <p>媒体上传回执待核验（{uploadUnknown.length}）：{uploadUnknown.map(item => item.id).join("、")}</p>
+        <button className="button button-outline" onClick={() => void attempt(reconcileUploads)}>读取原素材ID</button>
       </section>}
       {page === "scenes" && <>
         <div className="access-inline">
@@ -483,6 +500,12 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
         {scene && <section className="access-card">
           <h2>{scene.title}</h2><p>{scene.description || scene.summary}</p><small>固定发布版：{scene.version} · {scene.versionId}</small>
           <form noValidate onSubmit={e => { e.preventDefault(); void save(); }}>
+            <label className="access-run-title-field" onBlur={handleDraftFieldBlur}>任务标题（可选）
+              <input className="text-input" type="text" maxLength={120} value={runTitle}
+                onChange={event => updateRunTitle(event.target.value)}
+                placeholder="留空则任务记录使用场景标题" aria-label="任务标题（可选）" />
+              <small className="access-muted">最多120个字符；保存在本场景的输入草稿中，提交时作为任务标题。</small>
+            </label>
             {visibleInputFields(scene.fields).map(field => field.inputMode === "object_array" ? <div className="access-media-field" key={field.key} onBlur={handleDraftFieldBlur}>
               <div className="access-media-field-label">{field.label}{field.required && <span> *</span>}</div>
               <ObjectArrayInput field={{ ...field, type: "json" } as WorkflowInputField} value={values[field.key]} disabled={lockedForm} onChange={rows => updateValues(current => ({ ...current, [field.key]: rows }))} />
@@ -496,7 +519,8 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
                 userId={user.id}
                 disabled={lockedForm}
                 uploading={uploadingKey === field.key}
-                onUpload={file => void upload(field.key, field.type, file)}
+                uploadProgress={uploadingKey === field.key ? uploadProgress : undefined}
+                onUpload={files => void upload(field.key, field.type, files)}
                 onSelect={reference => {
                   updateValues(current => ({ ...current, [field.key]: uploadedInput(current[field.key], field.type, reference) }));
                   setNotice("已从我的素材库选择素材");
@@ -527,12 +551,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
                   : values[field.key] === undefined || values[field.key] === null ? "" : field.type === "json" ? JSON.stringify(values[field.key], null, 2) : String(values[field.key])}
                   placeholder={field.placeholder} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))} />}
             </label>)}
-            <label className="access-run-title-field" onBlur={handleDraftFieldBlur}>任务标题（可选）
-              <input className="text-input" type="text" maxLength={120} value={runTitle}
-                onChange={event => updateRunTitle(event.target.value)}
-                placeholder="留空则任务记录使用场景标题" aria-label="任务标题（可选）" />
-              <small className="access-muted">最多120个字符；保存在本场景的输入草稿中，提交时作为任务标题。</small>
-            </label>
             <div className="access-inline">
               <button className="button button-outline" type="submit" disabled={lockedForm}>保存我的草稿</button>
               <button className="button button-dark" type="button" disabled={lockedForm || !!pendingRun} onClick={() => void submit()}>{busy ? "处理中…" : "提交任务"}</button>

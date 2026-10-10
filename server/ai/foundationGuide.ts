@@ -6,7 +6,7 @@ export const AI_FOUNDATION_GUIDE = [
   ...AI_FOUNDATION_FEATURES.flatMap(feature => ["### " + feature.id, "", feature.description, "", "| 工具 | HTTP | 副作用 |", "| --- | --- | --- |", ...feature.operations.map(name => { const operation = aiOperations.find(item => item.name === name); return operation ? "| `" + name + "` | `" + operation.method + " " + operation.path + "` | " + operation.effect + " |" : "| `" + name + "` | 缺失（验收失败） | — |"; }), ""]),
   "## 最小使用闭环", "",
   "- 已有场景：get_workbench → list_scenes → get_scene（固定版本的输入schema/默认值/示例）→ prepare_scene → submit_scene（先保存UUID runId）→ wait_run → get_run_outputs/get_step_result。",
-  "- 能力选型：list_capabilities({tier:basic})优先复用；通用素材映射/图片排版使用media.select_references / media.image_layout；逐项计划/素材/提示词严格对齐用data.zip（rows/first/rest）；复杂数据变换与控制流用core.code本地沙箱执行（不联网、不计费，契约x-code-step）；精确JSON值schema随目录返回。基础缺口先补强，专用仅做定制节点适配；compatibilityOnly:true只保留旧流程。",
+  "- 能力选型：list_capabilities 读取统一目录，能力不分基础/专用等级；新场景的数据传递、模板拼装和结构化控制使用core.code本地沙箱执行（不联网、不计费，契约x-code-step）；已授权媒体直接绑定到模型或ComfyUI步骤；逐项计划/素材/提示词的对齐、数量与唯一ID校验用core.code。media.select_references、media.image_layout、text.template、core.manual、core.condition、data.select、data.zip、comfyui.h3_long_video、comfyui.long_text_video、comfyui.commerce_pack均标记compatibilityOnly:true，仅保留已有发布快照与历史运行，不再作为新步骤推荐。分支跳过用任意步骤的startCondition开始条件（被跳过步骤输出为null，不再需要条件判断/条件选择步骤）；精确JSON值schema随目录返回。不再新增场景专用步骤；能力缺口先补强或拆出可复用能力，场景特有的数据编排用core.code表达。",
   "- 新业务：create_scene（先保存scene.id）→ get_scene_draft → update_scene_draft（当前revision）→ validate_scene_draft → publish_scene（先保存UUID publicationId）→ get_scene读取真实发布版；发布不执行生成。",
   "- 共享选项：list_option_presets查看revision/使用场景 → save_option_preset；恢复旧发布版时共享选项冲突会克隆，已发布快照不变。",
   "- 局部修订：preview_rerun确认影响范围 → rerun（先保存新runId）；审核用最新reviewId，不绕过waiting。",

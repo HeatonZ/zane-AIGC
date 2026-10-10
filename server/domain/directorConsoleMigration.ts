@@ -1,101 +1,140 @@
 import assert from "node:assert/strict";
-import type { ComfyUIWorkflowNode, RunWorkflowDefinition } from "./types.js";
+import type { ComfyUIWorkflowNode, RunComfyBinding, RunStep, RunWorkflowDefinition } from "./types.js";
 import { validateWorkflowShape } from "./workflowValidation.js";
 
-/** Director-console workflow (ComfyUI-Easy-Media multi-track project) driving the whole film in one run. */
+/** Director-console workflow (ComfyUI-Easy-Media multi-track project) drives the whole film in one run. */
 export const DIRECTOR_CONSOLE_WORKFLOW_FILE = "Zane/MiniMaxH3-极简导演台+.json";
-const LEGACY_GENERATE_WORKFLOW_FILE = "Zane/MiniMax+H3+真·上下文无缝无色差长视频，SelfLift双采(简易版)+.json";
 const DIRECTOR_EDITOR_NODE_ID = "14";
 const DIRECTOR_PROJECT_NODE_ID = "15";
 const DIRECTOR_SAVE_NODE_ID = "63";
-const FRAME_RATE = 24;
+const DIRECTOR_AUDIO_SLOTS = 10;
 
 /**
- * core.code sandbox source for the director-console plan. It turns the aligned
- * per-shot records (Writer shot + final local-marker prompt + selected media)
- * into the console TRACK_DATA, an isolated project name and a plan manifest.
- * Media reaches the console as local asset files, so no upload or extra graph
- * node is needed; the task prompt keeps the references step's local markers.
+ * core.code sandbox source for the merged director-console preparation. It consumes the
+ * Writer shots, the AIXG prompts and the read-only media projections, and emits the
+ * console TRACK_DATA, an isolated project name and a plan manifest.
+ *
+ * Media files never enter the sandbox: only their count, order and file name do. The step
+ * therefore emits slot references (`imageN` / `audioN`) instead of paths, and the final
+ * ComfyUI step binds the original asset lists straight into the editor node. Slot order is
+ * fixed by the binding order of that step: characters, then scenes, then props for images,
+ * and the global voice order for audio.
  */
-export const DIRECTOR_CONSOLE_PLAN_CODE = [
-  "// 导演台（Easy-Media 多轨工程）时间线构建。输入：records 行（序列化后带本地资产路径）。",
+export const DIRECTOR_CONSOLE_PREPARE_CODE = [
+  "// 导演台（Easy-Media 多轨工程）时间线构建。媒体只以 [{filename}] 只读投影进入，",
+  "// 因此这里只生成槽位引用；真实文件由最终 ComfyUI 步骤绑定到编辑器的 image/audio 输入。",
   "const FRAME_RATE = 24;",
+  "const IMAGE_KEYS = [\"characters\", \"scenes\", \"props\"];",
+  "const GROUP_KEYS = [\"characters\", \"scenes\", \"props\", \"voices\"];",
   "const fail = (message) => { throw new Error(message); };",
-  "const raw = typeof inputs.rows === \"string\" ? inputs.rows : \"\";",
-  "let rows;",
-  "try { rows = JSON.parse(raw); } catch (error) { fail(\"分镜记录不是有效 JSON\"); }",
-  "if (!Array.isArray(rows) || !rows.length) fail(\"制作分镜记录不能为空\");",
-  "if (rows.length > 360) fail(\"导演台单次运行最多 360 个分镜，请拆成多集\");",
   "const record = (value) => (value && typeof value === \"object\" && !Array.isArray(value) ? value : null);",
-  "const localPath = (item, label) => {",
-  "  const entry = record(item);",
-  "  if (typeof item === \"string\" && item.trim()) return item;",
-  "  if (entry && typeof entry.path === \"string\" && entry.path.trim()) return entry.path;",
-  "  if (entry && entry.locator && entry.locator.type === \"path\" && typeof entry.locator.value === \"string\" && entry.locator.value.trim()) return entry.locator.value;",
-  "  fail(label + \" 必须是资产库中的文件；运行输出媒体请先归档为资产再作为参考\");",
-  "};",
-  "const fileName = (item, fallback) => {",
-  "  const entry = record(item);",
-  "  if (entry && typeof entry.filename === \"string\" && entry.filename) return entry.filename;",
-  "  if (entry && typeof entry.name === \"string\" && entry.name) return entry.name;",
-  "  if (typeof item === \"string\") { const parts = item.split(/[\\\\/]/); return parts[parts.length - 1] || fallback; }",
-  "  return fallback;",
-  "};",
   "const integerList = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === \"number\" && Number.isSafeInteger(item)) : []);",
-  "// Live runs carry runtime media wrappers ({items:[...]}); resumed runs carry the externalized array.",
-  "const mediaItems = (value) => Array.isArray(value) ? value : (record(value) && Array.isArray(value.items) ? value.items : []);",
-  "let cursor = 0;",
-  "const taskSegments = [];",
-  "const audioTracks = new Map();",
-  "const planSegments = [];",
-  "for (let position = 0; position < rows.length; position += 1) {",
-  "  const row = record(rows[position]) || fail(\"第 \" + (position + 1) + \" 条分镜记录无效\");",
-  "  const shot = record(row.shot) || fail(\"第 \" + (position + 1) + \" 条分镜缺少 shot\");",
-  "  const index = shot.index;",
-  "  if (index !== position + 1) fail(\"分镜 index 必须从 1 开始连续递增，第 \" + (position + 1) + \" 条为 \" + index);",
+  "const fileNames = (value) => (Array.isArray(value) ? value.map((item) => { const entry = record(item); return entry && typeof entry.filename === \"string\" ? entry.filename : \"\"; }).filter((name) => Boolean(name)) : []);",
+  "const shots = inputs.shots;",
+  "const prompts = inputs.prompts;",
+  "if (!Array.isArray(shots) || !shots.length) fail(\"Writer 分镜不能为空\");",
+  "if (!Array.isArray(prompts)) fail(\"AIXG 提示词必须是与分镜等长的数组\");",
+  "if (prompts.length !== shots.length) fail(\"AIXG 提示词数量（\" + prompts.length + \"）与 Writer 分镜数量（\" + shots.length + \"）不一致\");",
+  "if (shots.length > 360) fail(\"导演台单次运行最多 360 个分镜，请拆成多集\");",
+  "const characters = fileNames(inputs.characters);",
+  "const scenes = fileNames(inputs.scenes);",
+  "const props = fileNames(inputs.props);",
+  "const voices = fileNames(inputs.voices);",
+  "const bases = { characters: 1, scenes: 1 + characters.length, props: 1 + characters.length + scenes.length };",
+  "const labels = { characters: \"人物\", scenes: \"场景\", props: \"道具\", voices: \"参考音色\" };",
+  "const limits = { characters: 4, scenes: 1, props: 4, voices: 3 };",
+  "const tags = { characters: \"Character\", scenes: \"Scene\", props: \"Prop\", voices: \"Voice\" };",
+  "const counts = { characters: characters.length, scenes: scenes.length, props: props.length, voices: voices.length };",
+  "const plans = [];",
+  "for (let position = 0; position < shots.length; position += 1) {",
+  "  const index = position + 1;",
+  "  const shot = record(shots[position]);",
+  "  if (!shot) fail(\"第 \" + index + \" 条分镜无效\");",
+  "  if (shot.index !== index) fail(\"分镜 index 必须从 1 开始连续递增，第 \" + index + \" 条为 \" + shot.index);",
   "  const seconds = shot.seconds;",
   "  if (typeof seconds !== \"number\" || !(seconds >= 5 && seconds <= 15)) fail(\"分镜 \" + index + \" 的时长需要在 5 到 15 秒之间\");",
-  "  const selection = record(shot.selection) || {};",
-  "  const characters = integerList(selection.characters);",
-  "  const scenes = integerList(selection.scenes);",
-  "  const props = integerList(selection.props);",
-  "  const voices = integerList(selection.voices);",
-  "  const pictures = characters.length + scenes.length + props.length;",
+  "  const selection = record(shot.selection);",
+  "  if (!selection) fail(\"分镜 \" + index + \" 缺少素材选择 selection\");",
+  "  const chosen = {};",
+  "  let pictures = 0;",
+  "  for (const key of GROUP_KEYS) {",
+  "    const list = [...integerList(selection[key])].sort((left, right) => left - right);",
+  "    if (list.length > limits[key]) fail(\"分镜 \" + index + \" 最多引用 \" + limits[key] + \" 项\" + labels[key]);",
+  "    if (new Set(list).size !== list.length) fail(\"分镜 \" + index + \" 的\" + labels[key] + \"引用编号重复\");",
+  "    for (const ordinal of list) if (ordinal < 1 || ordinal > counts[key]) fail(\"分镜 \" + index + \" 引用了不存在的\" + labels[key] + \"素材 \" + ordinal + \"（共 \" + counts[key] + \" 项）\");",
+  "    chosen[key] = list;",
+  "    if (key !== \"voices\") pictures += list.length;",
+  "  }",
   "  if (pictures > 9) fail(\"分镜 \" + index + \" 最多引用 9 张人物/场景/道具图，请拆镜头\");",
-  "  if (voices.length > 3) fail(\"分镜 \" + index + \" 最多引用 3 个参考音色，请拆分多人对白\");",
-  "  if (new Set([...characters, ...scenes, ...props]).size !== pictures) fail(\"分镜 \" + index + \" 的图片引用重复\");",
-  "  const references = record(row.references) || {};",
-  "  const images = mediaItems(references.images);",
-  "  const audios = mediaItems(references.audios);",
-  "  if (images.length !== pictures) fail(\"分镜 \" + index + \" 的图片引用与素材映射结果数量不一致\");",
-  "  if (audios.length !== voices.length) fail(\"分镜 \" + index + \" 的音色引用与素材映射结果数量不一致\");",
-  "  const prompt = typeof row.prompt === \"string\" ? row.prompt : \"\";",
-  "  if (!prompt.trim()) fail(\"分镜 \" + index + \" 缺少最终提示词\");",
-  "  for (const match of prompt.matchAll(/<Picture\\s+(\\d+)>/g)) if (Number(match[1]) > pictures) fail(\"分镜 \" + index + \" 引用了不存在的图片 <Picture \" + match[1] + \">\");",
-  "  for (const match of prompt.matchAll(/<Audio\\s+(\\d+)>/g)) if (Number(match[1]) > voices.length) fail(\"分镜 \" + index + \" 引用了不存在的音色 <Audio \" + match[1] + \">\");",
-  "  const frames = Math.max(1, Math.round(seconds * FRAME_RATE));",
+  "  const prompt = prompts[position];",
+  "  if (typeof prompt !== \"string\" || !prompt.trim()) fail(\"分镜 \" + index + \" 缺少 AIXG 提示词\");",
+  "  if (prompt.length > 32000) fail(\"分镜 \" + index + \" 的提示词超过 32000 字\");",
+  "  plans.push({ index, seconds, chosen, pictures, prompt });",
+  "}",
+  "// 工程节点把全部公用音色一次性交给每个镜头，因此 <Audio n> 按全局使用序号升序编号。",
+  "const usedVoices = [...new Set(plans.flatMap((plan) => plan.chosen.voices))].sort((left, right) => left - right);",
+  "const audioRank = new Map(usedVoices.map((ordinal, position) => [ordinal, position + 1]));",
+  "const audioSlotOf = (ordinal) => \"audio\" + audioRank.get(ordinal);",
+  "let cursor = 0;",
+  "const taskSegments = [];",
+  "const planSegments = [];",
+  "const audioRanges = new Map();",
+  "for (const plan of plans) {",
+  "  const index = plan.index;",
+  "  const frames = Math.max(1, Math.round(plan.seconds * FRAME_RATE));",
   "  const startFrame = cursor;",
-  "  const endFrame = cursor + frames;",
-  "  cursor = endFrame;",
-  "  const imageItems = images.map((item, imageIndex) => ({",
-  "    id: \"shot-\" + index + \"-image-\" + (imageIndex + 1),",
-  "    source_type: \"local\",",
-  "    local_path: localPath(item, \"分镜 \" + index + \" 的第 \" + (imageIndex + 1) + \" 张参考图\"),",
-  "    file_name: fileName(item, \"image-\" + (imageIndex + 1)),",
+  "  cursor += frames;",
+  "  const pictureSlots = [];",
+  "  for (const key of IMAGE_KEYS) plan.chosen[key].forEach((ordinal) => {",
+  "    pictureSlots.push({ tag: tags[key], ordinal, slot: \"image\" + (bases[key] + ordinal - 1) });",
+  "  });",
+  "  const images = pictureSlots.map((entry, pictureIndex) => ({",
+  "    id: \"shot-\" + index + \"-image-\" + (pictureIndex + 1),",
+  "    source_type: \"slot\",",
+  "    slot_name: entry.slot,",
+  "    file_name: entry.slot,",
   "  }));",
-  "  const taskType = imageItems.length || audios.length ? \"r2v\" : \"t2v\";",
+  "  const audioSlots = [];",
+  "  const audioReferences = [];",
+  "  for (const ordinal of plan.chosen.voices) {",
+  "    const slot = audioSlotOf(ordinal);",
+  "    audioSlots.push(slot);",
+  "    audioReferences.push(\"<Audio \" + audioRank.get(ordinal) + \">\");",
+  "    const ranges = audioRanges.get(slot) ?? [];",
+  "    ranges.push([startFrame, cursor]);",
+  "    audioRanges.set(slot, ranges);",
+  "  }",
+  "  // 全局资产标记按本镜头选中顺序编译成局部编号；图片槽位即全局合并顺序。",
+  "  const prompt = plan.prompt.replace(/<(Character|Scene|Prop|Voice)\\s+(\\d+)>/g, (match, tag, number) => {",
+  "    void match;",
+  "    const ordinal = Number(number);",
+  "    if (tag === \"Voice\") {",
+  "      if (!plan.chosen.voices.includes(ordinal)) fail(\"分镜 \" + index + \" 的提示词引用了未选中的 <Voice \" + ordinal + \">\");",
+  "      return \"<Audio \" + audioRank.get(ordinal) + \">\";",
+  "    }",
+  "    const pictureIndex = pictureSlots.findIndex((entry) => entry.tag === tag && entry.ordinal === ordinal);",
+  "    if (pictureIndex < 0) fail(\"分镜 \" + index + \" 的提示词引用了未选中的 <\" + tag + \" \" + ordinal + \">\");",
+  "    return \"<Picture \" + (pictureIndex + 1) + \">\";",
+  "  });",
+  "  for (const match of prompt.matchAll(/<Picture\\s+(\\d+)>/g)) if (Number(match[1]) < 1 || Number(match[1]) > plan.pictures) fail(\"分镜 \" + index + \" 引用了不存在的图片 <Picture \" + match[1] + \">\");",
+  "  for (const match of prompt.matchAll(/<Audio\\s+(\\d+)>/g)) {",
+  "    const rank = Number(match[1]);",
+  "    if (!audioReferences.includes(\"<Audio \" + rank + \">\")) fail(\"分镜 \" + index + \" 引用了不存在的参考音色 <Audio \" + rank + \">\");",
+  "  }",
+  "  const taskType = images.length || audioSlots.length ? \"r2v\" : \"t2v\";",
+  "  const continuityMode = taskSegments.length === 0 ? \"shot\" : \"context\";",
   "  taskSegments.push({",
   "    id: \"shot-\" + index,",
   "    start_frame: startFrame,",
-  "    end_frame: endFrame,",
+  "    end_frame: cursor,",
   "    color: \"var(--multitrack-task-bg)\",",
   "    content: {",
   "      media_type: \"none\",",
   "      task_mode: taskType === \"r2v\" ? \"ref\" : \"default\",",
   "      task_type: taskType,",
-  "      continuity_mode: position === 0 ? \"shot\" : \"context\",",
+  "      continuity_mode: continuityMode,",
   "      ref_image_size: \"match\",",
-  "      images: imageItems,",
+  "      images,",
   "      user_prompt: prompt,",
   "      system_prompt: \"\",",
   "      user_prompt_variant: \"a\",",
@@ -104,33 +143,27 @@ export const DIRECTOR_CONSOLE_PLAN_CODE = [
   "      volume_db: 0,",
   "    },",
   "  });",
-  "  voices.forEach((voiceIndex, audioPosition) => {",
-  "    const audio = audios[audioPosition];",
-  "    const label = \"分镜 \" + index + \" 的第 \" + (audioPosition + 1) + \" 个参考音色\";",
-  "    const track = audioTracks.get(voiceIndex) || { name: \"Voice \" + voiceIndex, path: localPath(audio, label), file_name: fileName(audio, \"voice-\" + voiceIndex + \".wav\"), ranges: [] };",
-  "    track.ranges.push([startFrame, endFrame]);",
-  "    audioTracks.set(voiceIndex, track);",
-  "  });",
-  "  planSegments.push({ index, seconds, frames, start_frame: startFrame, end_frame: endFrame, continuity_mode: position === 0 ? \"shot\" : \"context\", characters, scenes, props, voices });",
+  "  planSegments.push({ index, seconds: plan.seconds, frames, start_frame: startFrame, end_frame: cursor, continuity_mode: continuityMode, characters: plan.chosen.characters, scenes: plan.chosen.scenes, props: plan.chosen.props, voices: plan.chosen.voices, picture_slots: pictureSlots.map((entry) => entry.slot), audio_slots: audioSlots });",
   "}",
   "const tracks = [{ id: \"task-track\", name: \"Tasks\", type: \"task\", color: \"var(--multitrack-task-bg)\", muted: false, locked: false, segments: taskSegments }];",
-  "for (const [voiceIndex, track] of [...audioTracks.entries()].sort((left, right) => left[0] - right[0])) {",
+  "for (const ordinal of usedVoices) {",
+  "  const slot = audioSlotOf(ordinal);",
   "  tracks.push({",
-  "    id: \"audio-track-\" + voiceIndex,",
-  "    name: track.name,",
+  "    id: \"audio-track-\" + ordinal,",
+  "    name: \"Voice \" + ordinal,",
   "    type: \"audio\",",
   "    color: \"var(--highlight)\",",
   "    muted: false,",
   "    solo: false,",
   "    volume_db: 0,",
   "    locked: false,",
-  "    segments: track.ranges.map((range, rangeIndex) => ({",
-  "      id: \"audio-\" + voiceIndex + \"-\" + (rangeIndex + 1),",
+  "    segments: (audioRanges.get(slot) ?? []).map((range, rangeIndex) => ({",
+  "      id: \"audio-\" + ordinal + \"-\" + (rangeIndex + 1),",
   "      start_frame: range[0],",
   "      end_frame: range[1],",
   "      origin_start_frame: range[0],",
   "      color: \"var(--highlight)\",",
-  "      content: { media_type: \"audio\", source_type: \"local\", local_path: track.path, file_name: track.file_name, shared_reference: true, muted: false, volume_db: 0 },",
+  "      content: { media_type: \"audio\", source_type: \"slot\", slot_name: slot, file_name: slot, shared_reference: true, muted: false, volume_db: 0 },",
   "    })),",
   "  });",
   "}",
@@ -139,47 +172,69 @@ export const DIRECTOR_CONSOLE_PLAN_CODE = [
   "const manifest = {",
   "  format: \"zane.director-console-plan/v1\",",
   "  frame_rate: FRAME_RATE,",
-  "  segment_count: rows.length,",
+  "  segment_count: plans.length,",
   "  total_frames: cursor,",
   "  total_seconds: cursor / FRAME_RATE,",
   "  music_added: false,",
   "  native_audio: true,",
+  "  image_slot_count: characters.length + scenes.length + props.length,",
+  "  audio_slot_count: usedVoices.length,",
   "  segments: planSegments,",
   "};",
   "return { track_data: JSON.stringify(trackData), project_name: projectName, manifest };",
 ].join("\n");
 
-function buildConsoleInputStep(): RunWorkflowDefinition["steps"][number] {
+/** One custom-code step replaces alignment, reference mapping, record building and the old plan step. */
+function buildPrepareConsoleStep(): RunWorkflowDefinition["steps"][number] {
   return {
-    id: "console_input",
-    name: "数据 · 导演台输入序列化（分镜与本地资产路径）",
-    kind: "capability",
-    capabilityId: "text.template",
-    capabilityVersion: "1",
-    inputs: [{ key: "rows", label: "制作分镜记录", sourceRef: "step.records.outputs.rows", valueSource: "reference" }],
-    capabilityConfig: { template: "{{rows}}" },
-    outputs: [{ key: "rows_json", label: "分镜与资产路径 JSON", type: "text", description: "records 行的 JSON 序列化；本地资产路径只在本运行内供导演台时间线使用" }],
-  };
-}
-
-function buildConsolePlanStep(): RunWorkflowDefinition["steps"][number] {
-  return {
-    id: "console_plan",
-    name: "导演台 · 生成多轨时间线与工程参数",
+    id: "prepare_console",
+    name: "导演台 · 分镜对齐、素材映射与多轨时间线",
     kind: "capability",
     capabilityId: "core.code",
     capabilityVersion: "1",
-    inputs: [{ key: "rows", label: "分镜与资产路径 JSON", sourceRef: "step.console_input.outputs.rows_json", valueSource: "reference" }],
-    capabilityConfig: { code: DIRECTOR_CONSOLE_PLAN_CODE, timeoutMs: 10000 },
+    inputs: [
+      { key: "shots", label: "Writer 制作分镜", sourceRef: "step.writer.outputs.shots", valueSource: "reference" },
+      { key: "prompts", label: "AIXG 逐镜提示词", sourceRef: "step.aixg.outputs.prompts", valueSource: "reference" },
+      { key: "characters", label: "人物资产（图片槽位从 1 开始）", sourceRef: "input.character_assets", valueSource: "reference" },
+      { key: "scenes", label: "场景资产（紧随人物图片）", sourceRef: "input.scene_assets", valueSource: "reference" },
+      { key: "props", label: "道具资产（紧随场景图片）", sourceRef: "input.prop_assets", valueSource: "reference" },
+      { key: "voices", label: "参考音色（按上传顺序编号）", sourceRef: "input.voice_reference_audio", valueSource: "reference" },
+    ],
+    capabilityConfig: { code: DIRECTOR_CONSOLE_PREPARE_CODE, timeoutMs: 20000 },
     outputs: [
-      { key: "track_data", label: "导演台时间线 TRACK_DATA", type: "text", description: "任务轨按分镜时长连续排布，首镜 shot、其余 context；图片走本地资产路径，音色按全局序号建共享音轨" },
+      { key: "track_data", label: "导演台时间线 TRACK_DATA", type: "text", description: "任务轨按分镜时长连续排布，首镜 shot、其余 context；图片与音色用槽位引用，实际媒体由最终 ComfyUI 步骤绑定" },
       { key: "project_name", label: "ComfyUI 工程名", type: "text", description: "按运行隔离，避免并发或重跑相互覆盖" },
-      { key: "manifest", label: "生成计划", type: "json", description: "分段帧数与素材引用计划；非探测值" },
+      { key: "manifest", label: "生成计划", type: "json", description: "分段帧数、衔接模式与素材槽位映射；不含提示词正文" },
     ],
   };
 }
 
-function buildConsoleStep(): RunWorkflowDefinition["steps"][number] {
+function buildConsoleStep(audioListNodeId: string): RunStep {
+  const bindings: RunComfyBinding[] = [
+    { key: "track_data", label: "导演台时间线", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "track_data", type: "text", required: true, sourceRef: "step.prepare_console.outputs.track_data", valueSource: "reference" },
+    { key: "ratio", label: "画幅", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "resolution.aspect_ratio", type: "text", required: true, sourceRef: "input.ratio", valueSource: "reference" },
+    { key: "mp", label: "生成像素（百万像素）", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "resolution.megapixels", type: "number", required: true, sourceRef: "input.mp", valueSource: "reference" },
+    // Image bindings share one port and are appended in binding order: characters → scenes → props.
+    { key: "characters", label: "人物资产图片", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "image", type: "image_list", required: true, sourceRef: "input.character_assets", valueSource: "reference" },
+    { key: "scenes", label: "场景资产图片", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "image", type: "image_list", required: false, sourceRef: "input.scene_assets", valueSource: "reference" },
+    { key: "props", label: "道具资产图片", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "image", type: "image_list", required: false, sourceRef: "input.prop_assets", valueSource: "reference" },
+    ...Array.from({ length: DIRECTOR_AUDIO_SLOTS }, (_unused, index) => ({
+      key: `voice_${index + 1}`,
+      label: `参考音色 ${index + 1}`,
+      direction: "input" as const,
+      nodeId: audioListNodeId,
+      property: `audio${index + 1}`,
+      type: "audio",
+      required: false,
+      sourceRef: "input.voice_reference_audio",
+      valueSource: "reference" as const,
+      selection: { mode: "item" as const, index },
+    })),
+    { key: "project_name", label: "工程名（按运行隔离）", direction: "input", nodeId: DIRECTOR_PROJECT_NODE_ID, property: "project_name", type: "text", required: true, sourceRef: "step.prepare_console.outputs.project_name", valueSource: "reference" },
+    { key: "segment_start_number", label: "起始分镜号", direction: "input", nodeId: DIRECTOR_PROJECT_NODE_ID, property: "segment_start_number", type: "number", required: true, valueSource: "literal", literalValue: "1" },
+    { key: "segment_count", label: "生成分镜数（-1 为全部）", direction: "input", nodeId: DIRECTOR_PROJECT_NODE_ID, property: "segment_count", type: "number", required: true, valueSource: "literal", literalValue: "-1" },
+    { key: "result", label: "完整成片（原生有声）", direction: "output", nodeId: DIRECTOR_SAVE_NODE_ID, property: "video", type: "video_list" },
+  ];
   return {
     id: "console",
     name: "导演台 · 单工作流整片顺序续接（原生有声）",
@@ -187,24 +242,16 @@ function buildConsoleStep(): RunWorkflowDefinition["steps"][number] {
     capabilityId: "core.comfyui",
     capabilityVersion: "1",
     inputs: [
-      { key: "track_data", label: "导演台时间线", sourceRef: "step.console_plan.outputs.track_data", valueSource: "reference" },
+      { key: "track_data", label: "导演台时间线", sourceRef: "step.prepare_console.outputs.track_data", valueSource: "reference" },
       { key: "ratio", label: "画幅", sourceRef: "input.ratio", valueSource: "reference" },
       { key: "mp", label: "生成像素（百万像素）", sourceRef: "input.mp", valueSource: "reference" },
-      { key: "project_name", label: "工程名", sourceRef: "step.console_plan.outputs.project_name", valueSource: "reference" },
+      { key: "characters", label: "人物资产图片", sourceRef: "input.character_assets", valueSource: "reference" },
+      { key: "scenes", label: "场景资产图片", sourceRef: "input.scene_assets", valueSource: "reference" },
+      { key: "props", label: "道具资产图片", sourceRef: "input.prop_assets", valueSource: "reference" },
+      { key: "project_name", label: "工程名", sourceRef: "step.prepare_console.outputs.project_name", valueSource: "reference" },
     ],
     capabilityConfig: { outputMediaCounts: { result: 1 } },
-    comfyui: {
-      workflowFile: DIRECTOR_CONSOLE_WORKFLOW_FILE,
-      bindings: [
-        { key: "track_data", label: "导演台时间线", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "track_data", type: "text", required: true, sourceRef: "step.console_plan.outputs.track_data", valueSource: "reference" },
-        { key: "ratio", label: "画幅", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "resolution.aspect_ratio", type: "text", required: true, sourceRef: "input.ratio", valueSource: "reference" },
-        { key: "mp", label: "生成像素（百万像素）", direction: "input", nodeId: DIRECTOR_EDITOR_NODE_ID, property: "resolution.megapixels", type: "number", required: true, sourceRef: "input.mp", valueSource: "reference" },
-        { key: "project_name", label: "工程名（按运行隔离）", direction: "input", nodeId: DIRECTOR_PROJECT_NODE_ID, property: "project_name", type: "text", required: true, sourceRef: "step.console_plan.outputs.project_name", valueSource: "reference" },
-        { key: "segment_start_number", label: "起始分镜号", direction: "input", nodeId: DIRECTOR_PROJECT_NODE_ID, property: "segment_start_number", type: "number", required: true, valueSource: "literal", literalValue: "1", literalType: "number" },
-        { key: "segment_count", label: "生成分镜数（-1 为全部）", direction: "input", nodeId: DIRECTOR_PROJECT_NODE_ID, property: "segment_count", type: "number", required: true, valueSource: "literal", literalValue: "-1", literalType: "number" },
-        { key: "result", label: "完整成片（原生有声）", direction: "output", nodeId: DIRECTOR_SAVE_NODE_ID, property: "video", type: "video_list" },
-      ],
-    },
+    comfyui: { workflowFile: DIRECTOR_CONSOLE_WORKFLOW_FILE, bindings },
     outputs: [{ key: "result", label: "完整成片（原生有声）", type: "video_list", description: "导演台按分镜顺序生成并自动拼接的整片；上下文续接与帧网格由工程节点内部处理" }],
     review: { enabled: false },
   };
@@ -213,20 +260,32 @@ function buildConsoleStep(): RunWorkflowDefinition["steps"][number] {
 export const DIRECTOR_CONSOLE_OUTPUTS = [
   { key: "video", label: "完整成片", type: "video_list" as const, sourceRef: "step.console.outputs.result" },
   { key: "storyboard", label: "制作级分镜脚本", type: "text" as const, sourceRef: "step.writer.outputs.storyboard" },
-  { key: "shots", label: "实际分镜、最终提示词与参考素材映射", type: "json" as const, sourceRef: "step.records.outputs.rows" },
-  { key: "manifest", label: "生成计划", type: "json" as const, sourceRef: "step.console_plan.outputs.manifest" },
+  { key: "manifest", label: "分镜计划与素材槽位映射", type: "json" as const, sourceRef: "step.prepare_console.outputs.manifest" },
 ];
 
-/** Configuration-only migration: per-shot SelfLift run becomes one director-console project run. */
+const KEPT_STEP_IDS = ["writer", "aixg"];
+const MIGRATABLE_STEP_IDS = [
+  ["writer", "aixg", "align", "references", "records", "generate", "assemble"],
+  ["writer", "aixg", "align", "references", "records", "console_input", "console_plan", "console"],
+];
+
+/** Configuration-only migration: the five deterministic steps collapse into one custom-code step. */
 export function migrateLongTextToDirectorConsole(workflow: RunWorkflowDefinition, nodes: ComfyUIWorkflowNode[]) {
   assert.equal(workflow.sceneId, "scene_long_text_to_video", "Only the long-text-to-video scene is migrated");
-  const editor = nodes.find(node => node.type === "easy multiTrackEditor");
-  assert.ok(editor && editor.id === DIRECTOR_EDITOR_NODE_ID, "导演台工作流必须只有一个 id 为 14 的 easy multiTrackEditor");
-  const project = nodes.find(node => node.type === "easy multitrackProject");
-  assert.ok(project && project.id === DIRECTOR_PROJECT_NODE_ID, "导演台工作流必须只有一个 id 为 15 的 easy multitrackProject");
-  const save = nodes.find(node => node.type === "SaveVideo");
-  assert.ok(save && save.id === DIRECTOR_SAVE_NODE_ID, "导演台工作流必须只有一个 id 为 63 的 SaveVideo");
-  for (const [label, property] of [["track_data", "track_data"], ["aspect_ratio", "resolution.aspect_ratio"], ["megapixels", "resolution.megapixels"]] as const) {
+  const single = (type: string, label: string) => {
+    const matches = nodes.filter(node => node.type === type);
+    assert.equal(matches.length, 1, `导演台工作流必须只有一个 ${type} 节点`);
+    assert.ok(matches[0], label);
+    return matches[0]!;
+  };
+  const editor = single("easy multiTrackEditor", "导演台工作流必须只有一个 id 为 14 的 easy multiTrackEditor");
+  assert.equal(editor.id, DIRECTOR_EDITOR_NODE_ID, "导演台编辑器节点 ID 必须是 14");
+  const project = single("easy multitrackProject", "导演台工作流必须只有一个 id 为 15 的 easy multitrackProject");
+  assert.equal(project.id, DIRECTOR_PROJECT_NODE_ID, "导演台工程节点 ID 必须是 15");
+  const save = single("SaveVideo", "导演台工作流必须只有一个 id 为 63 的 SaveVideo");
+  assert.equal(save.id, DIRECTOR_SAVE_NODE_ID, "导演台输出节点 ID 必须是 63");
+  const audioList = single("easy makeAudioList", "导演台工作流必须只有一个 easy makeAudioList 音频列表节点；请先按 scripts/patch-director-console-comfyui-workflow.mjs 打补丁");
+  for (const [label, property] of [["track_data", "track_data"], ["aspect_ratio", "resolution.aspect_ratio"], ["megapixels", "resolution.megapixels"], ["audio", "audio"]] as const) {
     assert.ok(editor.inputProperties.includes(property), `导演台编辑器缺少 ${label} 输入属性`);
   }
   for (const property of ["project_name", "segment_start_number", "segment_count"] as const) {
@@ -236,29 +295,20 @@ export function migrateLongTextToDirectorConsole(workflow: RunWorkflowDefinition
 
   const next = structuredClone(workflow);
   const stepIds = next.steps.map(step => step.id);
-  assert.deepEqual(stepIds, ["writer", "aixg", "align", "references", "records", "generate", "assemble"], "长文出视频步骤结构已变化，请先核对再迁移");
-  const generate = next.steps.find(step => step.id === "generate")!;
-  assert.equal(generate.kind, "comfyui", "generate 步骤类型已变化");
-  assert.equal(generate.capabilityId, "core.comfyui", "generate 步骤能力已变化");
-  assert.equal(generate.comfyui?.workflowFile, LEGACY_GENERATE_WORKFLOW_FILE, "generate 步骤已切换到其他 ComfyUI 工作流，不覆盖自定义配置");
-  assert.equal(generate.execution?.mode, "for_each", "generate 必须仍是逐镜执行才会被迁移");
-  assert.equal(generate.execution?.sourceRef, "step.records.outputs.rows", "generate 遍历来源已变化");
-  const assemble = next.steps.find(step => step.id === "assemble")!;
-  assert.equal(assemble.capabilityId, "media.video_concat", "assemble 步骤已变化");
-  const legacyOutputs = new Map((next.outputs ?? []).map(output => [output.key, output.sourceRef]));
-  assert.deepEqual([...legacyOutputs.keys()].sort(), ["clips", "download", "manifest", "shots", "storyboard", "video"], "场景输出已变化，请先核对再迁移");
-  assert.equal(legacyOutputs.get("video"), "step.assemble.outputs.video", "video 输出来源已变化");
-  assert.equal(legacyOutputs.get("clips"), "step.generate.outputs.result", "clips 输出来源已变化");
-  assert.equal(legacyOutputs.get("manifest"), "step.assemble.outputs.manifest", "manifest 输出来源已变化");
-  assert.equal(legacyOutputs.get("storyboard"), "step.writer.outputs.storyboard", "storyboard 输出来源已变化");
-  assert.equal(legacyOutputs.get("shots"), "step.records.outputs.rows", "shots 输出来源已变化");
-
-  const consoleStep = buildConsoleStep();
-  const index = next.steps.findIndex(step => step.id === "generate");
-  next.steps.splice(index, 1, consoleStep);
-  next.steps.splice(index, 0, buildConsolePlanStep(), buildConsoleInputStep());
-  next.steps = next.steps.filter(step => step.id !== "assemble");
-  next.outputs = DIRECTOR_CONSOLE_OUTPUTS.map(output => ({ ...output, description: (next.outputs ?? []).find(item => item.key === output.key)?.description ?? "" }));
+  assert.ok(MIGRATABLE_STEP_IDS.some(shape => shape.length === stepIds.length && shape.every((id, index) => id === stepIds[index])), "长文出视频步骤结构已变化，请先核对再迁移：" + stepIds.join(" → "));
+  for (const id of KEPT_STEP_IDS) {
+    const step = next.steps.find(candidate => candidate.id === id)!;
+    assert.ok(step, `缺少步骤 ${id}`);
+    assert.equal(step.kind, "hermes", `步骤 ${id} 类型已变化`);
+    assert.equal(step.capabilityId, "core.hermes", `步骤 ${id} 能力已变化`);
+  }
+  next.steps = [
+    ...next.steps.filter(step => KEPT_STEP_IDS.includes(step.id)),
+    buildPrepareConsoleStep(),
+    buildConsoleStep(audioList.id),
+  ];
+  next.name = "长文出视频 · Writer分镜与AIXG提示词 · 导演台单工程续接";
+  next.outputs = DIRECTOR_CONSOLE_OUTPUTS;
   validateWorkflowShape(next as unknown as Record<string, unknown>);
   return next;
 }

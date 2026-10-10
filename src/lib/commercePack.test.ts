@@ -20,9 +20,13 @@ test("独立电商场景包导入/导出保留适配器；商品展示不被覆�
 });
 
 
-test("新默认方案以基础组合为首，旧电商只保留兼容入口，不覆盖已有商品流程", () => {
-  assert.equal(defaultScenes[0].id, "basic_image_layout");
+test("旧版兼容示例集中在目录末尾，新默认方案不再以媒体选择/排版步骤开头", () => {
+  assert.equal(defaultScenes[0].id, "commerce_ai");
+  assert.doesNotMatch(defaultScenes[0].title, /旧版兼容/, "AI电商模板已改用 core.code 媒体输出，不再是旧版兼容入口");
+  // 旧示例流程保持可执行：media.select_references / media.image_layout 仍注册为 compatibilityOnly。
   assert.ok(defaultWorkflows.basic_image_layout.steps.every((step) => ["media.select_references", "media.image_layout"].includes(step.capabilityId!)));
-  assert.match(defaultScenes.find((scene) => scene.id === "commerce_pack")!.title, /旧版兼容/);
+  for (const id of ["basic_image_layout", "commerce_pack"]) assert.match(defaultScenes.find((scene) => scene.id === id)!.title, /旧版兼容/, id);
   assert.equal(defaultScenes.at(-1)!.id, "commerce_pack");
+  const legacyIds = defaultScenes.filter((scene) => /旧版兼容/.test(scene.title)).map((scene) => scene.id);
+  assert.deepEqual(legacyIds, defaultScenes.slice(defaultScenes.length - legacyIds.length).map((scene) => scene.id), "旧版兼容示例只在目录末尾");
 });

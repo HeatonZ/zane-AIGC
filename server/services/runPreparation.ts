@@ -3,13 +3,13 @@ import { archiveRerunMedia } from "../artifacts/rerunMedia.js";
 import { validateWorkflowInputs } from "../domain/inputValidation.js";
 import { planRerun, type PlannedRerun } from "./rerunPlanner.js";
 import type { CapabilityDefinition } from "../capabilities/contracts.js";
-import { validateWorkflowShape, validateCarryReferences } from "../domain/workflowValidation.js";
+import { validateWorkflowShape, validateCarryReferences, validateStartConditionReferences } from "../domain/workflowValidation.js";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { captureStepFeedback } from "../domain/stepFeedback.js";
 import { HttpError } from "../errors.js";
 import { log } from "../observability/logger.js";
-import { asRecord, normalizeMediaList, normalizeRunWorkflow, normalizeWorkflowMediaInputs } from "../domain/workflowValues.js";
+import { asRecord, normalizeRunWorkflow, normalizeWorkflowMediaInputs } from "../domain/workflowValues.js";
 import type { JsonValue, RunRecord, RunWorkflowDefinition, SavedSettings } from "../domain/types.js";
 import type { PreparedRun } from "../execution/workflowExecutor.js";
 import { isActiveRunStatus } from "../domain/types.js";
@@ -22,6 +22,18 @@ export interface PreparationDependencies {
   capabilities?: CapabilityDefinition[];
   resolveAssets?(project: string, workflow: RunWorkflowDefinition, values: Record<string, JsonValue>): Promise<Record<string, JsonValue>>;
   prepareStep?(step: import("../domain/types.js").RunStep): import("../domain/types.js").RunStep;
+}
+/** Point a media input back at the ancestor run's archived copy. Keep the fixed asset
+ * reference recorded beside the path: a bare locator loses which asset and version the task
+ * actually used, and the user-facing input snapshot never shows internal media paths. */
+function restoredArchivedInput(value: JsonValue | undefined, filename: string, index?: number): JsonValue | undefined {
+  if (value === undefined || value === null) return value;
+  const items = Array.isArray(value) ? [...value] : [value];
+  const position = index ?? 0;
+  const current = items[position];
+  if (position >= items.length || typeof current !== "object" || current === null || Array.isArray(current)) return index === undefined ? filename : value;
+  items[position] = { ...(current as Record<string, JsonValue>), path: filename };
+  return index === undefined ? items[0] : items;
 }
 export async function prepareRun(body: unknown, runId: string, settings: SavedSettings, dependencies: PreparationDependencies): Promise<PreparedRun> {
   const input = asRecord(body);
@@ -74,9 +86,9 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
       if (!filename.startsWith(`${path.resolve(sourcePaths.directory)}${path.sep}`)) continue;
       try {
         if (!(await stat(filename)).isFile()) continue;
-        if (typeof file.index === "number" && Number.isSafeInteger(file.index) && file.index >= 0) {
-          const restored = normalizeMediaList(inputValues[file.key]); restored[file.index] = filename; inputValues[file.key] = restored;
-        } else inputValues[file.key] = filename;
+        const index = typeof file.index === "number" && Number.isSafeInteger(file.index) && file.index >= 0 ? file.index : undefined;
+        const restored = restoredArchivedInput(inputValues[file.key], filename, index);
+        if (restored !== undefined) inputValues[file.key] = restored;
       } catch { /* Archived inputs may not exist in older runs; preserve original locators. */ }
     }
   }
@@ -96,6 +108,7 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
   }
   let executionWorkflow = normalizeRunWorkflow(workflowValue as unknown as RunWorkflowDefinition);
   validateCarryReferences(executionWorkflow);
+  validateStartConditionReferences(executionWorkflow);
   if (dependencies.prepareStep) executionWorkflow = { ...executionWorkflow, steps: executionWorkflow.steps.map(dependencies.prepareStep) };
   if (dependencies.resolveAssets) inputValues = await dependencies.resolveAssets(settings.projectDirectory, executionWorkflow, inputValues);
   validateWorkflowInputs(executionWorkflow, inputValues);

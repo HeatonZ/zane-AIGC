@@ -12,15 +12,12 @@ export interface CapabilityConfigField {
   path?: string; required?: boolean; defaultValue?: CapabilityValue; options?: string[]; placeholder?: string; description?: string;
 }
 export interface CapabilityUsage {
-  /** Basic capabilities are reusable across scenes; specialized adapters are opt-in. */
-  tier: "basic" | "specialized";
+  /** When this step fits; scene differences are expressed by configuration and core.code custom code, not by scene-named adapters. */
   whenToUse: string;
-  /** How to meet ordinary needs without this specialized adapter; not an automatic migration. */
-  basicAlternative?: string;
-  /** Retained for existing snapshots; new scenes should use the basic composition instead. */
+  /** Retained for existing snapshots and historical runs; new scenes use core.code and the basic composition instead. */
   compatibilityOnly?: boolean;
 }
-export const CAPABILITY_SELECTION_POLICY = { defaultTier: "basic", specializedOptIn: true, sceneDifferences: "configuration-first" } as const;
+export const CAPABILITY_SELECTION_POLICY = { sceneDifferences: "configuration-first", sceneSpecificLogic: "core.code" } as const;
 export interface CapabilityDefinition {
   id: string; version: string; label: string; description: string; category: string;
   /** Optional for legacy packages; undeclared extensions are conservatively opt-in. */
@@ -33,10 +30,7 @@ export interface CapabilityDefinition {
   result: { renderer: "auto" | "text" | "json" | "media" };
 }
 export function capabilityUsage(definition: CapabilityDefinition): CapabilityUsage {
-  return definition.usage ?? { tier: "specialized", whenToUse: "此扩展尚未声明通用适用范围；仅在确认基础步骤无法满足需求后选用。" };
-}
-export function groupCapabilities(catalog: readonly CapabilityDefinition[]) {
-  return { basic: catalog.filter((item) => capabilityUsage(item).tier === "basic"), specialized: catalog.filter((item) => capabilityUsage(item).tier === "specialized") };
+  return definition.usage ?? { whenToUse: "此扩展尚未声明适用范围；仅在确认基础步骤与 core.code 自定义代码无法满足需求后选用。" };
 }
 export interface CapabilityCatalogPage {
   schemaVersion: 1;

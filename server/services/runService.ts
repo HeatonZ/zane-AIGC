@@ -16,7 +16,7 @@ import { log } from "../observability/logger.js";
 import { writeJsonFile } from "../storage/jsonFileStore.js";
 import { SqliteStore, type RunListQuery } from "../storage/sqliteStore.js";
 import { planRerun } from "./rerunPlanner.js";
-import { validateWorkflowShape, validateCarryReferences } from "../domain/workflowValidation.js";
+import { validateWorkflowShape, validateCarryReferences, validateStartConditionReferences } from "../domain/workflowValidation.js";
 import { validateWorkflowInputs } from "../domain/inputValidation.js";
 import { normalizeRunWorkflow } from "../domain/workflowValues.js";
 import { prepareRun } from "./runPreparation.js";
@@ -218,6 +218,7 @@ export class RunService {
     validateWorkflowShape(planned.workflow as unknown as Record<string, unknown>);
     planned.workflow = normalizeRunWorkflow(planned.workflow);
     validateCarryReferences(planned.workflow);
+    validateStartConditionReferences(planned.workflow);
     validateWorkflowInputs(planned.workflow, planned.inputValues);
     for (const step of planned.workflow.steps) this.options.executors.prepareStep(step);
     for (const item of planned.itemStepOverrides) {

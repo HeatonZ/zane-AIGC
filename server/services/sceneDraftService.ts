@@ -4,7 +4,7 @@ import type { SceneDiffPage, SceneDiffValuePage } from "../domain/sceneDiffContr
 import type { SceneDiffQuery, SceneDiffValueQuery } from "../ai/sceneDiffSchemas.js";
 import { asRecord, splitWorkflowReference } from "../domain/workflowValues.js";
 import { contentRevision, referencedPresetIds, sceneContent, sceneContentHash } from "../domain/sceneContent.js";
-import { validateWorkflowShape, validateCarryReferences } from "../domain/workflowValidation.js";
+import { validateWorkflowShape, validateCarryReferences, validateStartConditionReferences } from "../domain/workflowValidation.js";
 import { isEmptyWorkflowInput, validateWorkflowInputs } from "../domain/inputValidation.js";
 import type { RunWorkflowDefinition } from "../domain/types.js";
 import type { ExecutorRegistry } from "../execution/executorRegistry.js";
@@ -46,6 +46,7 @@ function normalizedWorkflow(sceneId: string, value: Record<string, unknown>) {
     ids.add(step.id);
   }
   validateCarryReferences(flow);
+  validateStartConditionReferences(flow);
   return flow as unknown as Record<string, unknown>;
 }
 function installNewPresets(workspace: Workspace, supplied: Array<Record<string, unknown>>, workflow: Record<string, unknown>) {
