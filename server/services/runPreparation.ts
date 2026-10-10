@@ -25,13 +25,23 @@ export interface PreparationDependencies {
 }
 /** Point a media input back at the ancestor run's archived copy. Keep the fixed asset
  * reference recorded beside the path: a bare locator loses which asset and version the task
- * actually used, and the user-facing input snapshot never shows internal media paths. */
+ * actually used, and the user-facing input snapshot never shows internal media paths.
+ * Legacy records stored plain strings (sometimes several) instead of attachments, so those
+ * positions accept the archived locator as-is; the caller passes an index only for a
+ * multi-file archive, where every entry must be restorable rather than skipped. */
 function restoredArchivedInput(value: JsonValue | undefined, filename: string, index?: number): JsonValue | undefined {
   if (value === undefined || value === null) return value;
   const items = Array.isArray(value) ? [...value] : [value];
   const position = index ?? 0;
+  if (position >= items.length) return index === undefined ? filename : value;
   const current = items[position];
-  if (position >= items.length || typeof current !== "object" || current === null || Array.isArray(current)) return index === undefined ? filename : value;
+  if (typeof current !== "object" || current === null || Array.isArray(current)) {
+    // A plain locator still names this position; replace it with the archived copy so a
+    // deleted or rewritten original cannot make the new run unreadable.
+    if (index === undefined) return filename;
+    items[position] = filename;
+    return items;
+  }
   items[position] = { ...(current as Record<string, JsonValue>), path: filename };
   return index === undefined ? items[0] : items;
 }

@@ -185,3 +185,49 @@ test("局部重做与断点续跑保留输入快照里的固定素材引用", as
   assert.equal(images.present, true);
   assert.equal(projection.inputs.find(field => field.key === "prompt")!.value, "原始提示词");
 });
+
+test("多文件媒体输入在局部重做与断点续跑中都指向本运行的归档副本", async t => {
+  const h = await productionHarness(t);
+  const definition = workflow([{ id: "first", name: "第一步", kind: "fake", inputs: [], outputs: [{ key: "value", type: "text" }] }]);
+  definition.inputs = [{ key: "prompt", type: "text", required: true }, { key: "images", type: "image_list", required: true }];
+  await h.service.start();
+  const first = path.join(h.root, "first.png"); await writeFile(first, "first image");
+  const second = path.join(h.root, "second.png"); await writeFile(second, "second image");
+  const source = await h.service.submit(submission(id("multi-file-input-source"), definition, { prompt: "原始提示词", images: [first, second] } as never));
+  const original = await h.service.wait(h.settings.projectDirectory, source.runId);
+  // Older records kept the caller's plain locators in the snapshot while the copies already
+  // sat in inputs/files; a stale locator must not leave a position unrestored.
+  h.store.saveRun(h.settings.projectDirectory, { ...original, inputValues: { ...original.inputValues, images: [first, second] } as never }, []);
+  const submissionSnapshot = h.store.getSubmission(h.settings.projectDirectory, source.runId) as PreparedRun;
+  submissionSnapshot.inputValues.images = [first, second] as never;
+  h.store.saveRunSubmission(h.settings.projectDirectory, h.store.getRun(h.settings.projectDirectory, source.runId)!, submissionSnapshot, []);
+  await unlink(first); await unlink(second);
+  const revisedId = id("multi-file-input-revised");
+  await h.service.submit({ workflow: h.store.getRun(h.settings.projectDirectory, source.runId)!.workflow, inputValues: h.store.getRun(h.settings.projectDirectory, source.runId)!.inputValues, runId: revisedId, rerunFromRunId: source.runId, rerunRequest: { rerunSteps: [{ stepId: "first" }] } } as never);
+  const revised = await h.service.wait(h.settings.projectDirectory, revisedId);
+  assert.equal(revised.status, "completed", revised.error);
+  assert.equal(revised.inputValues.prompt, "原始提示词");
+  const revisedImages = revised.inputValues.images as string[];
+  assert.equal(revisedImages.length, 2);
+  for (const [index, contents] of ["first image", "second image"].entries()) {
+    assert.equal(await readFile(revisedImages[index], "utf8"), contents);
+    assert.ok(revisedImages[index].startsWith(revised.artifacts.directory));
+  }
+  // A resume of the revision keeps both positions and re-archives them under its own directory.
+  h.store.saveRun(h.settings.projectDirectory, { ...revised, status: "failed", finishedAt: new Date().toISOString(), error: "模拟失败", outputs: [], steps: [] }, []);
+  const resumedId = id("multi-file-input-resumed");
+  await h.service.submit({ workflow: revised.workflow, inputValues: revised.inputValues, runId: resumedId, resumeFromRunId: revised.runId });
+  const resumed = await h.service.wait(h.settings.projectDirectory, resumedId);
+  assert.equal(resumed.status, "completed", resumed.error);
+  const resumedImages = resumed.inputValues.images as string[];
+  assert.equal(await readFile(resumedImages[0], "utf8"), "first image");
+  assert.equal(await readFile(resumedImages[1], "utf8"), "second image");
+  assert.ok(resumedImages.every(filename => filename.startsWith(resumed.artifacts.directory)));
+  // An explicit override still wins over the restored archive.
+  const replacement = path.join(h.root, "replacement.png"); await writeFile(replacement, "replacement image");
+  const overriddenId = id("multi-file-input-overridden");
+  await h.service.submit({ workflow: revised.workflow, inputValues: revised.inputValues, runId: overriddenId, rerunFromRunId: revised.runId, rerunRequest: { inputOverrides: { images: [replacement] }, rerunSteps: [{ stepId: "first" }] } } as never);
+  const overridden = await h.service.wait(h.settings.projectDirectory, overriddenId);
+  assert.equal(overridden.status, "completed", overridden.error);
+  assert.equal(await readFile((overridden.inputValues.images as string[])[0], "utf8"), "replacement image");
+});
