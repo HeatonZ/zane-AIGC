@@ -64,6 +64,8 @@ export interface HermesProfile {
   isDefault: boolean;
 }
 
+export type { HermesModelCatalogPage as HermesModelCatalog, HermesModelProviderSummary as HermesModelProvider } from "../server/domain/hermesModelContracts";
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /**
@@ -234,6 +236,9 @@ export interface WorkflowStepDefinition {
   capabilityVersion?: string;
   capabilityConfig?: Record<string, JsonValue>;
   hermesProfile?: string;
+  /** Optional request-level provider/model override for this Hermes step; both omitted keeps the profile default. */
+  hermesProvider?: string;
+  hermesModel?: string;
   inputs: WorkflowStepInput[];
   outputs: WorkflowStepOutput[];
   promptTemplate: string;
@@ -322,7 +327,7 @@ export interface WorkflowRunStepResult {
   capabilityId?: string;
   capabilityVersion?: string;
   name: string;
-  status: "running" | "completed" | "skipped" | "failed" | "cancelled";
+  status: "running" | "completed" | "completed_with_errors" | "skipped" | "failed" | "cancelled";
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;

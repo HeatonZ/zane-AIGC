@@ -88,7 +88,7 @@ npm run test:hermes:smoke
 - **2026-10-02正式后台升级完成**：8799由新PID 89348提供服务，`/api/v1/ai` 返回契约1.0.0，worker.ready/accepting为true，项目仍为 `F:\project\zane`。不需要再运行本次切换脚本。
 - 切换前重新同步契约并执行全量 `npm run check`：**232个测试通过，0失败、0跳过**，含构建、后台/反馈/电商/AI隔离冒烟与文档一致性；保留了工作区其他业务改动。
 - **16个Python接入回归**及Hermes隔离冒烟通过。正式Node/Hermes MCP只读验收也通过，真实工具、资源、提示词、guide与1.1.1技能可读；当前发布版无同profile自调用节点。
-- 切换前后及最终复查的数据库逐表哈希一致，连接配置哈希一致：10场景/10发布场景/150运行/614事件/157步骤/4生产文档。已保留一致性在线备份及实际停服后的完整数据目录备份（含WAL/SHM）。详见 [后台升级记录](backend-upgrade-2026-10-02.md)。
+- 切换前后及最终复查的数据库逐表哈希一致，连接配置哈希一致：10场景/10发布场景/150运行/614事件/157步骤/4生产文档。已保留一致性在线备份及实际停服后的完整数据目录备份（含WAL/SHM）。详见 [后台升级记录](archive/backend-upgrade-2026-10-02.md)。
 - profile配置字节未变，DaVinci、平台与模型设置保留；没有重启Gateway或ComfyUI，没有真实生成，`hermes-agent` Git工作区未改变。
 - 修复了用户层 `E:\Data\hermes\bin\hermes.cmd` 的源码根路径，保留原wrapper机制并加 `-B`。实际 `hermes -p comfyui-dev chat --help` 返回0；没有修改上游，也没有用真实模型chat做验收。原launcher及回执位于 `E:\Data\hermes\backups\workbench-cli-20261002T020444Z`。
 - 1.1.1技能已安装，备份位于 `E:\Data\hermes\profiles\comfyui-dev\backups\zane-workbench-20261002T020448Z-51b1d1de`。日常从目标场景开始，运行目录分页，`wait_run(timeoutSeconds:0)` 查摘要；只有配置场景才读取完整工作区，截断时不拼凑base。
@@ -98,7 +98,7 @@ npm run test:hermes:smoke
 - 单场景create/draft/update/validate/publish/restore/delete、共享预设、发布输入schema/示例和按需输出已实现。
 - 261项全量测试和16项Python接入回归通过；真实Hermes安装客户端隔离验收发现45工具、4资源、1提示词，契约1.1.0。
 - 1.2.0技能仅更新上述操作规则；config.yaml和SOUL.md字节不变，不调整模型/平台/DaVinci。备份：`E:\Data\hermes\profiles\comfyui-dev\backups\zane-workbench-20261002T035649Z-e9baec0f`。重跑安装器无差异。
-- 最终正式后台PID89640、契约1.1.0，Node/Hermes只读验收通过；数据保留回执见 [基础能力升级记录](backend-foundation-2026-10-02.md)，上下文收益与具体边界见 [AI友好性审查](ai-usability.md)。
+- 最终正式后台PID89640、契约1.1.0，Node/Hermes只读验收通过；数据保留回执见 [基础能力升级记录](archive/backend-foundation-2026-10-02.md)，上下文收益与具体边界见 [AI友好性审查](ai-usability.md)。
 - 无真实模型/媒体生成，未重启Gateway或ComfyUI，上游保持只读。
 
 ## 会话中启用

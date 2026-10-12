@@ -1,5 +1,6 @@
 import { assetSourceSchema } from "../domain/assetLibraryContracts.js";
 import { feedbackMessageMaxLength } from "../domain/feedbackContracts.js";
+import { hermesProviderMaxLength, hermesModelMaxLength } from "../domain/hermesModelSelection.js";
 import * as z from "zod/v4";
 
 export const id = z.string().min(1).max(200);
@@ -8,11 +9,19 @@ export const capabilityQuery = z.object({
   limit: z.int().min(1).max(100).default(50).describe("单页能力数量；默认50，最大100；hasMore时使用同一目录的nextCursor继续读取"),
   cursor: z.string().min(1).max(2048).optional().describe("上页nextCursor，绑定目录revision；409 CAPABILITY_PAGE_CHANGED时重读第一页，不拼接不同目录快照"),
 }).strict();
+export const hermesModelQuery = z.object({
+  profile: z.string().min(1).max(200).describe("要读取模型目录的Hermes Profile（list_hermes_profiles或网页连接设置中的ID）；本机不存在该Profile时返回404 HERMES_PROFILE_NOT_FOUND，不会退化为默认Profile"),
+  q: z.string().max(200).optional().describe("可选关键词，按Provider slug、显示名或模型ID过滤；省略返回全部可见Provider"),
+  limit: z.int().min(1).max(100).default(24).describe("单页Provider数量；默认24，最大100；hasMore时用同一目录revision的nextCursor继续读取"),
+  cursor: z.string().min(1).max(2048).optional().describe("上页nextCursor，绑定profile与目录revision；409 HERMES_MODEL_PAGE_CHANGED时重读第一页，不拼接不同目录快照"),
+  refresh: z.boolean().optional().describe("true时绕过服务端60秒缓存重新读取网关目录；省略使用缓存。只读操作，不修改Profile或网关配置"),
+  includeUnconfigured: z.boolean().optional().describe("true时包含网关列出但当前没有可用模型/凭证的Provider；默认只返回可用Provider与当前Provider"),
+}).strict();
 export const values = z.record(z.string(), z.json());
 export const source = assetSourceSchema;
 export const selection = z.object({ mode: z.enum(["all", "item", "for_each"]), index: z.int().nonnegative().optional() }).strict();
 export const stepInput = z.object({ key: id, label: z.string().optional(), sourceRef: z.string().optional(), valueSource: z.enum(["literal", "reference"]).optional(), literalValue: z.string().optional(), literalType: z.string().optional(), referenceType: z.enum(["image_list", "video_list", "audio_list"]).describe("引用JSON字段中的媒体时显式声明列表类型；恢复/审核后同样作为真实附件，非媒体JSON不要声明。省略保留旧行为，不生成媒体").optional(), selection: selection.optional() }).strict();
-export const stepChanges = z.object({ promptTemplate: z.string().optional(), hermesProfile: z.string().optional(), capabilityConfig: values.describe("能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/apiKeyHeader/apiKeyPrefix/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds/retries/retryDelaySeconds字段契约（密钥值不得写入配置；retries默认0保持单次请求，只重试网络失败、超时和408/429/5xx，重试会重发同一请求，可能重复计费），密钥值不得写入配置；core.code使用code（本地沙箱JavaScript，return输出对象）与timeoutMs（200–60000毫秒，默认5000）字段，输出端口与类型在步骤outputs声明；媒体输出端口（image_list/video_list/audio_list）返回文件名数组，只选择本步骤输入中的既有媒体，契约x-code-step；步骤级startCondition（match+rules）声明开始条件，不满足即跳过且输出为null").optional(), inputs: z.array(stepInput).optional(), comfyui: values.optional() }).strict();
+export const stepChanges = z.object({ promptTemplate: z.string().optional(), hermesProfile: z.string().optional(), hermesProvider: z.string().max(hermesProviderMaxLength).regex(/^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$/).describe("可选：把本Hermes步骤的请求级Provider覆盖为这个网关slug（如custom:my-chat）；空串或省略表示清除覆盖、按Profile默认执行。只改本次修订/重做使用的步骤配置，不改Profile、网关默认值或历史运行快照。").optional(), hermesModel: z.string().max(hermesModelMaxLength).regex(/^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$/).describe("可选：把本Hermes步骤的请求级模型覆盖为这个模型ID（如anthropic/claude-opus-5）；空串或省略表示清除覆盖、按Profile默认执行。建议与hermesProvider同时设置；可用list_hermes_models读取所选Profile的实际目录。").optional(), capabilityConfig: values.describe("能力包配置；core.http_request使用list_capabilities返回的url/method/headers/apiKeyEnv/apiKeyHeader/apiKeyPrefix/bodyFormat/bodyTemplate/multipartImages/responseImages/timeoutSeconds/retries/retryDelaySeconds字段契约（密钥值不得写入配置；retries默认0保持单次请求，只重试网络失败、超时和408/429/5xx，重试会重发同一请求，可能重复计费），密钥值不得写入配置；core.code使用code（本地沙箱JavaScript，return输出对象）与timeoutMs（200–60000毫秒，默认5000）字段，输出端口与类型在步骤outputs声明；媒体输出端口（image_list/video_list/audio_list）返回文件名数组，只选择本步骤输入中的既有媒体，契约x-code-step；步骤级startCondition（match+rules）声明开始条件，不满足即跳过且输出为null").optional(), inputs: z.array(stepInput).optional(), comfyui: values.optional() }).strict();
 export const feedbackMessage = z.string().trim().min(1).max(feedbackMessageMaxLength);
 export const changes = z.object({
   feedback: z.array(z.object({ stepId: id, itemIndex: z.int().nonnegative().optional(), message: feedbackMessage }).strict()).optional(),

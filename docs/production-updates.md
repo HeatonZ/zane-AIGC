@@ -51,7 +51,7 @@ node --import tsx scripts/update-production.mjs recover --id <UUID>
 
 ## 操作回执与 AI 配套
 
-运维记录位于 `APP_DATA_DIR/maintenance/upgrades/<operationId>.json`，含 revision、state、checkPassed、固定 release、原/新实例以及 nextAction。`latest.json` 仅是最近记录指针，`lock.json` 是单一管理进程锁；重复分发相同 ID 被专用 dispatch 标记拒绝。操作日志和验收产物位于 `.local/upgrades/<operationId>`，原生成产物保存在 previous，异常候选保存在 rejected；未自动清理备份或快照。
+运维记录位于 `APP_DATA_DIR/maintenance/upgrades/<operationId>.json`，含 revision、state、checkPassed、固定 release、原/新实例以及 nextAction。`latest.json` 仅是最近记录指针，`lock.json` 是单一管理进程锁；重复分发相同 ID 被专用 dispatch 标记拒绝。操作日志和验收产物位于 `.local/upgrades/<operationId>`，原生成产物保存在 previous，异常候选保存在 rejected；升级完成后自动修剪超出的终态发布目录（保留最近 5 个；`needs_attention` 证据、进行中操作与操作小票永不删除）。
 
 - 管理员 HTTP/MCP：`GET /api/v1/maintenance/upgrade` / `get_workbench_upgrade`，可按原 operationId 精确读取。匿名401、普通用户403；只读、不执行升级。
 - 已认证用户 HTTP/MCP：`GET /api/v1/self/runtime-release` / `get_runtime_release`，只返回当前 release、契约版本、环境及不自动刷新策略，不包含进程、路径或凭据。
@@ -60,3 +60,20 @@ node --import tsx scripts/update-production.mjs recover --id <UUID>
 ## 验收
 
 回归覆盖准备失败不停止旧服务、固定产物哈希、并发锁、原 ID 已确认 busy 重试、等待/取消、旧 revision、停机及激活丢回执、候选隔离、健康失败恢复旧代码、数据库变化禁止回退、权限与只读 API。`test:upgrade:smoke` 使用临时项目/端口/数据库、真实编译后台与 stdio MCP；隔离本地条件任务停在审核，升级等待，显式审核后自动切换，原任务与输出保留，同一 MCP 监督进程无需手动重连。不调用真实模型，不切换正式服务。
+
+## 看门狗调度与降级处置
+
+`npm run watch:prod` 是单次执行的自愈检查（加锁防并发，`APP_DATA_DIR/watchdog.log` 记录事件），不会常驻；定时拉起方式由部署方决定，例如 Windows 计划任务每 1–5 分钟运行一次：
+
+```powershell
+schtasks /Create /TN "Zane Watchdog" /SC MINUTE /MO 2 /TR "cmd /c cd /d F:\code\zane-drama && node scripts\watch-production.mjs"
+```
+
+每次运行都会把最近一次结果写入 `APP_DATA_DIR/watchdog-status.json`（time/event/port），供监控面板或脚本轮询读取。行为语义：
+
+- 健康（/api/health 与 /api/ready 均通过）：直接退出 0，不做任何操作。
+- 端口有监听但不健康（`backend_degraded`）：记录后默认仍退出 0；调度方需要告警时加 `--fail-on-degraded` 让该次运行退出 1。不会自动重启——端口被占用说明进程还在，盲目重启解决不了僵死。
+- 端口空闲且无进行中升级、无遗留生产进程：按正常方式启动后台并轮询就绪；8 秒未确认记 `backend_start_unconfirmed` 并退出 1。
+- 升级进行中（`upgrade_in_progress_skip`）或检测到 `dist-server` 生产进程遗留：不干预，交由升级流程处理。
+
+处置 `backend_degraded`：先用 `npm run update:prod:status` 排除升级中断，再用原服务管理方式查看后台日志与 Hermes/ComfyUI 状态；确认进程僵死需人工正常停止后由看门狗拉起，不要 taskkill 后立刻重启。

@@ -135,6 +135,8 @@ export const defaults: SavedSettings = {
 
 export const databaseFile = path.join(localDirectory, "zane.db");
 export const maxActiveRuns = boundedInteger(process.env.ZANE_MAX_ACTIVE_RUNS, 2, 1, 32);
+// 同一 ComfyUI 上游地址的全局请求并发预算；步骤 for_each 的 maxConcurrency 在此之内生效，防止多任务同时压垮单 GPU。
+export const comfyuiMaxConcurrency = boundedInteger(process.env.ZANE_COMFYUI_MAX_CONCURRENCY, 2, 1, 32);
 export const shutdownTimeoutMs = Math.max(1000, Number.parseInt(process.env.ZANE_SHUTDOWN_TIMEOUT_MS ?? "15000", 10) || 15000);
 
 // Optional second ingress: same process/services/SQLite, ordinary users only. Not enabled by default.

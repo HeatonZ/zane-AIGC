@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { backup, DatabaseSync } from "node:sqlite";
-import { cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ProductionUpdater, databaseFingerprint, type UpgradeDependencies, type UpgradeSettings } from "./productionUpdater.js";
 import { atomicJson } from "./mcpReload.js";
 import { temporaryDirectory, deferred } from "../testing/testSupport.js";
 import { readUpgradeStatus } from "../services/workbenchUpdateService.js";
-import { upgradeStatusSchema } from "../domain/workbenchUpdateContracts.js";
+import { upgradeStatusSchema, type UpgradeRecord } from "../domain/workbenchUpdateContracts.js";
 
 async function fixture(t: test.TestContext) {
   const root=await temporaryDirectory(t), dataDirectory=path.join(root,"data"), leaseFile=path.join(dataDirectory,"production-runtime.json");
@@ -149,4 +149,64 @@ test("首次启动先离线备份，不停止已存在PID或重放未完成任�
   const lease=JSON.parse(await readFile(other.settings.leaseFile,"utf8"));lease.pid=2147483000;await atomicJson(other.settings.leaseFile,lease);
   const db=new DatabaseSync(other.database);db.exec("CREATE TABLE runs (status TEXT); INSERT INTO runs VALUES ('waiting')");db.close();
   await assert.rejects(next.install(nextId),/未完成任务或审核/);assert.equal(other.starts.length,0);
+});
+
+test("验收期间收到取消立即中止检查并记为cancelled，不算失败",async t=>{
+  const h=await fixture(t), updater=h.updater(), id=randomUUID();
+  let aborted=false;
+  h.dependencies.runCheck=async(_snapshot,_log,_release,signal)=>{
+    await new Promise<void>((_resolve,reject)=>{
+      if (signal?.aborted) {aborted=true;return reject(new Error("验收已取消；旧工作台未停止"));}
+      signal?.addEventListener("abort",()=>{aborted=true;reject(new Error("验收已取消；旧工作台未停止"));},{once:true});
+    });
+  };
+  const preparing=updater.prepare(id);
+  let state="";
+  for (let poll=0;poll<200;poll+=1) {
+    try { state=(await updater.status(id)).state; } catch { state=""; }
+    if (state==="checking") break;
+    await new Promise((resolve)=>setTimeout(resolve,10));
+  }
+  assert.equal(state,"checking");
+  await updater.cancel(id,(await updater.status(id)).revision);
+  const record=await preparing;
+  assert.equal(record.state,"cancelled");assert.equal(aborted,true);
+  assert.equal(h.calls.filter(call=>call.action==="shutdown").length,0);
+});
+
+test("升级完成后修剪超出的终态发布目录；needs_attention、进行中与当前操作保留，小票不删除",async t=>{
+  const root=await temporaryDirectory(t), dataDirectory=path.join(root,"data");
+  const records=path.join(dataDirectory,"maintenance/upgrades");await mkdir(records,{recursive:true});
+  const releases=path.join(root,".local/upgrades");await mkdir(releases,{recursive:true});
+  const settings:UpgradeSettings={root,dataDirectory,port:65432,probeHost:"127.0.0.1",leaseFile:path.join(dataDirectory,"lease.json")};
+  const updater=new ProductionUpdater(settings,{verifyProcess:async()=>{},control:async()=>({})});
+  const entry=(state:UpgradeRecord["state"],updatedAt:string):UpgradeRecord=>({schemaVersion:1,operationId:randomUUID(),releaseId:randomUUID(),revision:1,state,createdAt:updatedAt,updatedAt,message:"测试",checkPassed:state==="completed",nextAction:"none"});
+  const entries=[entry("completed","2026-01-01T00:00:00.000Z"),entry("completed","2026-01-02T00:00:00.000Z"),entry("completed","2026-01-03T00:00:00.000Z"),entry("failed","2025-12-01T00:00:00.000Z"),entry("needs_attention","2025-11-01T00:00:00.000Z"),entry("ready","2026-01-04T00:00:00.000Z")];
+  for (const item of entries) {
+    await writeFile(path.join(records,item.operationId+".json"),JSON.stringify(item));
+    await mkdir(path.join(releases,item.operationId),{recursive:true});
+    await writeFile(path.join(releases,item.operationId,"snapshot.txt"),item.operationId);
+  }
+  const [oldest,mid,latest,failed,attention,ready]=entries;
+  (updater as unknown as { record?: UpgradeRecord }).record=ready;
+  await updater.pruneReleases(2);
+  const remaining=new Set(await readdir(releases));
+  assert.ok(remaining.has(latest.operationId)&&remaining.has(mid.operationId),"最近两个终态升级保留");
+  assert.ok(remaining.has(attention.operationId),"needs_attention 证据保留");
+  assert.ok(remaining.has(ready.operationId),"进行中的升级保留");
+  assert.ok(!remaining.has(oldest.operationId)&&!remaining.has(failed.operationId),"超出保留数的终态目录被修剪");
+  assert.equal(JSON.parse(await readFile(path.join(records,oldest.operationId+".json"),"utf8")).operationId,oldest.operationId,"操作小票永不删除");
+});
+
+test("修剪容忍损坏记录与缺失发布目录；发布目录缺失时不报错",async t=>{
+  const root=await temporaryDirectory(t), dataDirectory=path.join(root,"data");
+  const records=path.join(dataDirectory,"maintenance/upgrades");await mkdir(records,{recursive:true});
+  const settings:UpgradeSettings={root,dataDirectory,port:65432,probeHost:"127.0.0.1",leaseFile:path.join(dataDirectory,"lease.json")};
+  const updater=new ProductionUpdater(settings,{verifyProcess:async()=>{},control:async()=>({})});
+  const broken={schemaVersion:1 as const,operationId:randomUUID(),releaseId:randomUUID(),revision:1,state:"failed" as const,createdAt:"2026-01-01T00:00:00.000Z",updatedAt:"2026-01-01T00:00:00.000Z",message:"损坏",checkPassed:false,nextAction:"none"};
+  await writeFile(path.join(records,broken.operationId+".json"),"{broken");
+  const missing={schemaVersion:1 as const,operationId:randomUUID(),releaseId:randomUUID(),revision:1,state:"completed" as const,createdAt:"2026-01-02T00:00:00.000Z",updatedAt:"2026-01-02T00:00:00.000Z",message:"无目录",checkPassed:true,nextAction:"none"};
+  await writeFile(path.join(records,missing.operationId+".json"),JSON.stringify(missing));
+  await updater.pruneReleases(0);
+  assert.ok(await readFile(path.join(records,broken.operationId+".json"),"utf8"));
 });

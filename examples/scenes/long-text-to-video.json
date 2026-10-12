@@ -34,29 +34,25 @@
         "key": "character_assets",
         "label": "人物资产（按说明顺序上传；项目总参考图最多12张）",
         "type": "image_list",
-        "required": true,
-        "mediaRole": "character"
+        "required": true
       },
       {
         "key": "scene_assets",
         "label": "场景资产（按说明顺序上传）",
         "type": "image_list",
-        "required": true,
-        "mediaRole": "scene"
+        "required": true
       },
       {
         "key": "prop_assets",
         "label": "道具资产（没有关键道具可不传）",
         "type": "image_list",
-        "required": false,
-        "mediaRole": "prop"
+        "required": false
       },
       {
         "key": "voice_reference_audio",
         "label": "参考音色（清晰纯人声样本；每片段最多3个）",
         "type": "audio_list",
-        "required": false,
-        "mediaRole": "voice_reference"
+        "required": false
       },
       {
         "key": "asset_notes",

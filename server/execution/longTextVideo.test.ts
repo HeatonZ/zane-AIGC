@@ -89,7 +89,7 @@ test("scene separates Writer content, per-shot AIXG prompts, categorized generat
   assert.match(aixg.promptTemplate, /不重新改编|不重新改编、拆镜/);
   const generation = pkg.workflow.steps[2];
   assert.equal(generation.inputs.find(input => input.key === "prompts")?.sourceRef, "step.aixg.outputs.prompt");
-  assert.deepEqual(pkg.workflow.inputs.filter(input => input.mediaRole).map(input => input.mediaRole), ["character", "scene", "prop", "voice_reference"]);
+  assert.deepEqual(pkg.workflow.inputs.filter(input => input.mediaRole), [], "shipped long-text package must not declare asset-role sub-categories");
   assert.deepEqual(generation.comfyui?.bindings.filter(binding => ["image_list", "audio_list"].includes(binding.type)).map(binding => [binding.key, binding.type, binding.sourceRef]), [["reference_images", "image_list", "iteration.item.references.images"], ["reference_audio", "audio_list", "iteration.item.references.audios"]]);
   assert.equal(generation.comfyui?.adapter, "long_text_video");
   assert.ok(generation.comfyui?.bindings.some((binding) => binding.property === "ref_audios" && binding.type === "audio_list"));

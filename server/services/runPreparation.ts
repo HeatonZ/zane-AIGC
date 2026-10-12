@@ -92,7 +92,7 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
       const file = asRecord(item);
       if (typeof file?.key === "string" && rerun?.request.inputOverrides && Object.prototype.hasOwnProperty.call(rerun.request.inputOverrides, file.key)) continue;
       if (typeof file?.key !== "string" || typeof file.path !== "string" || !file.path.startsWith("inputs/files/")) continue;
-      const filename = path.resolve(sourcePaths.directory, ...file.path.split(/[\/]/));
+      const filename = path.resolve(sourcePaths.directory, ...file.path.split(/[/]/));
       if (!filename.startsWith(`${path.resolve(sourcePaths.directory)}${path.sep}`)) continue;
       try {
         if (!(await stat(filename)).isFile()) continue;

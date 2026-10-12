@@ -143,7 +143,7 @@ try {
   const call = async (name, args) => { const result = await client.callTool({ name, arguments: args }); assert.ok(!result.isError && result.structuredContent?.ok, name + ": " + JSON.stringify(result)); return result.structuredContent.data; };
   const published = await call("get_scene", { sceneId: pkg.scene.id });
   assert.deepEqual(published.workflow.steps.find(step => step.id === "generate").comfyui.bindings.filter(binding => ["image_list", "audio_list"].includes(binding.type)).map(binding => [binding.key,binding.sourceRef]), [["reference_images","iteration.item.references.images"],["reference_audio","iteration.item.references.audios"]]);
-  assert.deepEqual(published.inputRequirements.filter(field => field.mediaRole).map(field => field.mediaRole), ["character", "scene", "prop", "voice_reference"]);
+  assert.deepEqual(published.inputRequirements.filter(field => field.mediaRole), [], "new published snapshots carry media type only");
   assert.equal((await call("prepare_scene", { sceneId: pkg.scene.id, versionId: published.versionId, inputValues: values })).valid, true);
   const first = await call("submit_scene", { sceneId: pkg.scene.id, versionId: published.versionId, runId: randomUUID(), inputValues: values });
   const failed = await finished(base, first.runId); assert.equal(failed.status, "failed"); assert.equal(failed.steps[0].status, "completed"); assert.equal(failed.steps[1].status, "completed"); assert.equal(failed.steps[1].items.length, 2); assert.equal(failed.steps[2].items[0].status, "completed"); assert.equal(failed.steps[2].items[1].status, "failed");

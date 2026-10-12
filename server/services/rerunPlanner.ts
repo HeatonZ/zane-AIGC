@@ -1,4 +1,5 @@
 import { carryValue } from "../domain/iterationCarry.js";
+import { hermesModelSelectionError } from "../domain/hermesModelSelection.js";
 import { validateStepFeedback } from "../domain/stepFeedback.js";
 import { isDeepStrictEqual } from "node:util";
 import { HttpError } from "../errors.js";
@@ -109,10 +110,12 @@ export function planRerun(source: RunRecord, body: unknown, catalog: readonly Ca
   for (const raw of array(request.stepOverrides, "步骤配置修改")) {
     const step = checkStep(raw.stepId);
     const key = step.id + ":" + (raw.itemIndex ?? "all"); if (editKeys.has(key)) invalid("同一步骤配置被重复修改"); editKeys.add(key);
-    const fields = new Set(["stepId", "itemIndex", "promptTemplate", "hermesProfile", "capabilityConfig", "inputs", "comfyui"]);
+    const fields = new Set(["stepId", "itemIndex", "promptTemplate", "hermesProfile", "hermesProvider", "hermesModel", "capabilityConfig", "inputs", "comfyui"]);
     if (Object.keys(raw).some((field) => !fields.has(field))) invalid("只允许修改步骤参数，不能修改步骤 ID、执行方式或输出契约");
     if (Object.keys(raw).every((field) => field === "stepId" || field === "itemIndex")) invalid("步骤修改没有参数");
-    for (const field of ["promptTemplate", "hermesProfile"]) if (raw[field] !== undefined && typeof raw[field] !== "string") invalid(field + "必须是文本");
+    for (const field of ["promptTemplate", "hermesProfile", "hermesProvider", "hermesModel"]) if (raw[field] !== undefined && typeof raw[field] !== "string") invalid(field + "必须是文本");
+    const selectionError = hermesModelSelectionError(raw.hermesProvider, raw.hermesModel);
+    if (selectionError) invalid(selectionError);
     if (raw.capabilityConfig !== undefined && !asRecord(raw.capabilityConfig)) invalid("能力配置格式无效");
     if (raw.inputs !== undefined && (!Array.isArray(raw.inputs) || raw.inputs.some((input) => !asRecord(input)))) invalid("步骤输入格式无效");
     if (raw.comfyui !== undefined && !asRecord(raw.comfyui)) invalid("ComfyUI 配置格式无效");
@@ -152,7 +155,7 @@ export function planRerun(source: RunRecord, body: unknown, catalog: readonly Ca
     if (full.has(step.id) || selected.has(step.id)) invalid("同一步骤不能同时替换结果和重新生成");
     const index = raw.itemIndex === undefined ? undefined : checkItem(step, raw.itemIndex);
     if (index === undefined && step.execution?.mode === "for_each") invalid("逐项步骤请指定要替换的那一项");
-    if (index !== undefined && record?.status !== "completed") invalid("整个逐项步骤尚未完成，请先续跑或重做失败项，再替换结果");
+    if (index !== undefined && !["completed", "completed_with_errors"].includes(record?.status ?? "")) invalid("整个逐项步骤尚未完成，请先续跑或重做失败项，再替换结果");
     const target = index === undefined ? record : record?.items?.find((item) => item.index === index);
     if (!target || target.status !== "completed") invalid("只能替换已完成的结果；未完成结果请重做");
     const normalized: Record<string, JsonValue> = {};
@@ -230,7 +233,8 @@ export function planRerun(source: RunRecord, body: unknown, catalog: readonly Ca
         plan.steps.push({ stepId: step.id, name: step.name, action: "replace", reason: "替换链末项结果，后续依赖重新执行" }); continue;
       }
     }
-    const mustRun = full.has(step.id) || inherited || Boolean(indexes) || !record || !["completed", "skipped"].includes(record.status);
+    // Partial success keeps the recorded per-item results reusable like a completed step.
+    const mustRun = full.has(step.id) || inherited || Boolean(indexes) || !record || !["completed", "completed_with_errors", "skipped"].includes(record.status);
     if (!mustRun) {
       reusedSteps.push({ ...record!, reusedFromRunId: source.runId });
       plan.steps.push({ stepId: step.id, name: step.name, action: "reuse", reason: "输入和依赖未变化，复用原结果" }); continue;

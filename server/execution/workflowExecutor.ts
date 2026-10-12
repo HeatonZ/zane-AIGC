@@ -349,9 +349,9 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           const mediaKind = mediaKindFromWorkflowType(output.type);
           return [output.key, mediaKind ? createRuntimeMediaValue(mediaKind, []) : [] as JsonValue[]];
         }));
-        const iterationOutputs = new Array<Record<string, JsonValue> | undefined>(sourceItems.length);
-        const iterationSucceeded = new Array<boolean>(sourceItems.length).fill(false);
-        const iterationProcessed = new Array<boolean>(sourceItems.length).fill(false);
+        const iterationOutputs: Array<Record<string, JsonValue> | undefined> = Array.from({ length: sourceItems.length });
+        const iterationSucceeded: boolean[] = Array.from({ length: sourceItems.length }, () => false);
+        const iterationProcessed: boolean[] = Array.from({ length: sourceItems.length }, () => false);
         const iterationErrors = new Map<number, string>();
         for (const [index, saved] of resumableItems) {
           iterationOutputs[index] = saved.outputs;
@@ -510,10 +510,21 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         values.set(step.id, aggregatedOutputs);
         for (const output of step.outputs ?? []) types.set(`step.${step.id}.outputs.${output.key}`, canonicalWorkflowType(output.type));
         if (iterationFailed) {
-          Object.assign(parent, finishStepTiming({ ...parent, status: "failed" as const, message: itemFailure || `${step.name} 有逐项执行失败` }));
+          // Without carry, onError:"continue" keeps partial success: failed items stay in the
+          // record, succeeded items feed downstream as arrays with null gaps, and the run completes.
+          const partial = !carry && step.execution?.onError === "continue" && iterationSucceeded.some(Boolean);
+          if (!partial) {
+            Object.assign(parent, finishStepTiming({ ...parent, status: "failed" as const, message: itemFailure || `${step.name} 有逐项执行失败` }));
+            syncSteps(itemSteps);
+            await persistRuntime("running");
+            break;
+          }
+          Object.assign(parent, finishStepTiming({ ...parent, status: "completed_with_errors" as const, message: itemFailure || `${step.name} 部分逐项执行失败` }));
           syncSteps(itemSteps);
           await persistRuntime("running");
-          break;
+          itemFailure = "";
+          if (reviewStep(step, parent)) break;
+          continue;
         }
         Object.assign(parent, finishStepTiming({ ...parent, status: "completed" as const }));
         syncSteps(itemSteps);

@@ -18,6 +18,8 @@ import { isActiveRunStatus } from "../domain/types.js";
 import { isRunId } from "../artifacts/runArtifacts.js";
 import { HttpError } from "../errors.js";
 import { AiSceneService } from "../services/aiSceneService.js";
+import { listHermesProfiles } from "../services/hermesProfiles.js";
+import { HermesModelCatalogService } from "../services/hermesModelCatalogService.js";
 import type { RunService } from "../services/runService.js";
 
 function parsed<S extends z.ZodType>(schema: S, body: unknown): z.output<S> {
@@ -49,6 +51,28 @@ export function createAiRouter(scenes: AiSceneService, runs: RunService, loadSet
   router.get("/api/v1/ai/openapi.json", (_req, res) => res.json(createAiOpenApi({ userOnly: Boolean(res.locals.publicUserOnly) })));
   router.get("/api/v1/ai/guide", (_req, res) => res.type("text/markdown").send(res.locals.publicUserOnly ? PUBLIC_USER_OPERATOR_GUIDE : AI_OPERATOR_GUIDE));
   router.get("/api/workspace/status", async (_req, res) => res.json(await scenes.workspace.status()));
+  // Read-only Hermes profile/model discovery. Same services as the web editor; no scene writes,
+  // no publishing and no generation. Model catalogs come from the gateway's own picker inventory.
+  const hermesModels = new HermesModelCatalogService();
+  router.get("/api/v1/hermes/profiles", async (_req, res) => res.json({ profiles: await listHermesProfiles(), nextAction: "list_hermes_models" }));
+  router.get("/api/v1/hermes/models", async (req, res) => {
+    const value = (key: string) => typeof req.query[key] === "string" ? req.query[key] as string : undefined;
+    const flag = (key: string) => {
+      const raw = value(key);
+      if (raw === undefined) return undefined;
+      if (raw !== "true" && raw !== "false") throw new HttpError(400, `${key}必须是true或false`, "INVALID_HERMES_MODEL_QUERY");
+      return raw === "true";
+    };
+    const limit = value("limit");
+    res.set("Cache-Control", "no-store").json(await hermesModels.list({
+      profile: value("profile") ?? "",
+      ...(value("q") ? { q: value("q") } : {}),
+      ...(limit === undefined ? {} : { limit: Number(limit) }),
+      ...(value("cursor") ? { cursor: value("cursor") } : {}),
+      ...(flag("refresh") === undefined ? {} : { refresh: flag("refresh") }),
+      ...(flag("includeUnconfigured") === undefined ? {} : { includeUnconfigured: flag("includeUnconfigured") }),
+    }));
+  });
   const query = (req: Request) => {
     const result: Record<string, unknown> = { ...req.query };
     for (const [key, value] of Object.entries(result)) {

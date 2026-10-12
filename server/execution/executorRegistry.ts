@@ -8,6 +8,7 @@ export interface StepExecutor { kind: string; execute(context: StepExecutionCont
 export class ExecutorRegistry {
   private readonly executors = new Map<string, StepExecutor>();
   private readonly capabilities = new Map<string, CapabilityPackage>();
+  private definitionsCache?: CapabilityDefinition[];
   register(executor: StepExecutor) {
     if (this.executors.has(executor.kind)) throw new Error("执行器重复：" + executor.kind);
     this.executors.set(executor.kind, executor);
@@ -23,12 +24,19 @@ export class ExecutorRegistry {
     if (legacyCollision) throw new Error("旧步骤映射重复：" + d.id);
     for (const fields of [d.inputs, d.outputs, d.config]) if (new Set(fields.map((field) => field.key)).size !== fields.length) throw new Error("能力包字段重复：" + d.id);
     this.capabilities.set(d.id, { ...capability, definition: structuredClone({ ...d, usage: capabilityUsage(d) }) });
+    this.definitionsCache = undefined;
     return this;
   }
-  definitions(): CapabilityDefinition[] { return [...this.capabilities.values()].map((item) => structuredClone(item.definition)); }
+  /** 注册后目录不变；缓存注册时的克隆结果，返回时再克隆一次以保持“调用方修改不污染注册表”的契约。 */
+  definitions(): CapabilityDefinition[] { return structuredClone(this.cachedDefinitions()); }
+  /** 内部只读路径：目录本身不会被修改，调用方必须只读使用。 */
+  private cachedDefinitions(): CapabilityDefinition[] {
+    this.definitionsCache ??= [...this.capabilities.values()].map((item) => structuredClone(item.definition));
+    return this.definitionsCache;
+  }
   supports(kind: string) { return this.executors.has(kind) || [...this.capabilities.values()].some((item) => item.definition.legacy.kind === kind); }
   private resolve(step: RunStep) {
-    const definition = capabilityForStep(step, this.definitions());
+    const definition = capabilityForStep(step, this.cachedDefinitions());
     return definition ? this.capabilities.get(definition.id) : undefined;
   }
   prepareStep(step: RunStep): RunStep {

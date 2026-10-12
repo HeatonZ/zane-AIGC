@@ -141,6 +141,13 @@ comfyui.commerce_pack的usage.compatibilityOnly:true：保留已有快照/旧图
 list_capabilities 默认 limit:50（最大100），目录按安装注册顺序返回，不再分基础/专用等级；hasMore 时用同一目录的 nextCursor 继续读取，单能力声明不截断。目录 revision 变化返回 409 CAPABILITY_PAGE_CHANGED，重新读取第一页；无效参数或失效游标返回400。
 只读目录/筛选不修改任何草稿、已发布快照或历史运行。已标记 compatibilityOnly 的旧步骤仍可出现在已有草稿里并继续执行，只有核对语义后才用当前 revision 显式编辑草稿，校验并重新发布。
 
+### Hermes 步骤的 provider/model 选择
+Hermes 步骤除 hermesProfile 外，还可声明两个可选字段：hermesProvider（网关slug，如 custom:my-chat、opencode-zen）与 hermesModel（模型ID，如 anthropic/claude-opus-5）。两者作为请求级 provider/model 发送给网关：同时设置时按该 Provider 解析凭证与端点；只设置模型时 Hermes /v1/runs 入口按所选模型执行，旧版 /v1/chat/completions 回退入口只有网关开启 direct_model_requests 才接受裸模型，因此建议同时选择；两者都省略时请求体保持历史行为（model=hermes-agent，不发送 provider），按 Profile 自身默认模型执行，已有发布快照行为不变。
+选择只作用于声明它的步骤（含 for_each 逐项），不修改 Profile 配置、网关默认模型或历史运行快照；换模型不会自动重算已有结果，需要显式编辑草稿并重新发布，或通过 preview_rerun/rerun 的 stepOverrides、review_run 的 stepChanges 在修订链里改。
+校验规则：provider 最多 80 字符、模型最多 200 字符，只允许字母、数字和 _ . : @ / -，不接受空白或控制字符；草稿校验、发布预检与执行前各校验一次，无效值返回 INVALID_WORKFLOW 并说明字段。
+配置前先只读发现：list_hermes_profiles 列出本机真实 Profile；list_hermes_models（参数 profile 必填）读取该 Profile 在网关里的模型选择器目录，返回 currentProvider/currentModel 与 Provider 行（slug、显示名、是否当前、是否有凭证、模型ID列表、totalModels、modelsTruncated）。每 Provider 最多返回 200 个模型并在截断时明确标记；目录按 Profile 缓存 60 秒，refresh=true 显式重读；cursor 绑定 profile 与 revision，目录变化返回 409 HERMES_MODEL_PAGE_CHANGED（重读第一页，不拼接）；Profile 不存在返回 404 HERMES_PROFILE_NOT_FOUND；网关未启动/未配置 API Server/认证失败返回 502 HERMES_MODELS_UNAVAILABLE——此时仍可手工填写 provider 与模型，只有执行时才要求网关可达。该目录永不返回凭证、密钥环境变量名或上游地址。
+选择模型不等于可执行：只有实际执行（submit_scene/resume_run/rerun）才会调用模型并可能计费；读取目录、编辑草稿、校验和发布都不调用模型。
+
 ### Qwen Image 2.1 图生图：Writer 整理 → AIXG 转提示词
 复用基础 Hermes writer → Hermes aixg → ComfyUI，不安装专用执行器。先 get_scene_draft 保存 sceneId/revision/当前 publishedVersionId；完整 workflow 中先加 image_edit_writer（kind:hermes、hermesProfile:writer），接收 input.reference_images 与 input.prompt（用户想法），输出非空 text edit_brief。Writer 只整理目标、各参考图角色、修改与保持约束，忠实保留原意及指定文字，不生成参数或媒体。
 仅开放五项场景输入：reference_images（图片，有序 image_list，必填）、prompt（想法，textarea，必填）、seed（随机种子，可选 number）、ratio（画幅，select，默认 1:1 (Square)）、mp（像素，number，单位 MP，默认 1）。内部 prompt key 仍代表用户想法，不要求用户自行写模型提示词。移除 negative_prompt、steps、cfg、resolution、empty 等公开字段时，同时清除相应步骤引用；负向与采样等保留 ComfyUI 固定配置，不增加隐藏用户输入。
@@ -151,10 +158,10 @@ AIXG 步骤 qwen_image_prompt 的 inputs.prompt 及模板均引用 step.image_ed
 
 ### 长文出视频：Writer 分镜 → AIXG 提示词 → 单工程整片顺序续接（原生有声、无音乐）
 显式导入 examples/scenes/long-text-to-video.json，或用 get_scene_draft/update_scene_draft 在当前revision下编辑已有草稿；不要从浏览器默认场景回填服务端，也不自动修改旧发布/历史运行。Writer、AIXG 复用基础 core.hermes；分镜对齐、素材映射与多轨时间线由 core.code 步骤完成，ComfyUI 步骤只绑定节点，不造任何长文专用步骤（编辑、拼接、上下文续接均由 Easy-Media 工程节点内部处理）。README 与文档以 ComfyUI-Easy-Media 的 easy multiTrackEditor / easy multitrackProject / easy makeAudioList 为准。
-Writer 只输出可读 storyboard 和结构化 shots（index/seconds、characters/scenes/props/voices、purpose/visual_description、逐字 dialogue 与 continuity_in/out），不负责 H3 提示词。AIXG 一次批量转换全部分镜，输出与 shots 等长的提示词字符串数组，不改写镜头元数据。项目配置须在服务端显式创建（create_scene/update_scene_draft），不从草稿拼接。
+Writer 只输出可读 storyboard 和结构化 shots（index/seconds、characters/scenes/props/voices、purpose/visual_description、逐字 dialogue 与 continuity_in/out），不负责 H3 提示词。AIXG 以 for_each 逐镜转换：每次调用只转换当前镜头，输出单对象契约 {"prompt":"六段完整H3提示词"}，逐项结果按镜头顺序汇总为与 shots 等长的数组，不改写镜头元数据；单镜调用不需要模型拼装 JSON 数组（批量数组实测反复出现边界标点缺陷，已弃用），某镜失败即停止、续跑复用已完成项。项目配置须在服务端显式创建（create_scene/update_scene_draft），不从草稿拼接。
 prepare_console 是 core.code 步骤：读 Writer shots、AIXG prompts 与四类媒体列表的只读 [{filename}] 投影，先校验分镜连续性、5..15秒、编号存在与不重复、每镜最多 9 图 3 音，再把 <Character n>/<Scene n>/<Prop n>/<Voice n> 全局标记编译为本镜头的 <Picture n>/<Audio n> 局部编号，生成导演台 TRACK_DATA、按运行隔离的 project_name 和计划 manifest。沙箱不接触本地路径、URL 与二进制；图片/音频文件由最终 ComfyUI 步骤直接绑定原始输入。任何越界都是明确失败，不静默漏图或漏音色。
 console 是单次运行的 ComfyUI 步骤：track_data 绑定编辑器 track_data，画幅/生成像素绑定其 resolution.aspect_ratio/megapixels，project_name/segment_start_number/segment_count 绑定工程节点；人物、场景、道具图片按绑定顺序合并进编辑器 image 输入（槽位 image1..imageN），参考音色按上传顺序占用 easy makeAudioList 的 audio1..audio10 后汇入编辑器 audio 输入（槽位 audio1..audio10）。槽位顺序即全局资产顺序，与 <Picture n>/<Audio n> 局部编号一一对应；首镜 continuity_mode 为 shot，其余为 context。
-场景输入与ComfyUI输入bindings可带mediaRole：character人物、scene场景、prop道具使用image_list；voice_reference参考音色使用audio_list；reference是通用参考，省略兼容旧配置。固定发布版的 get_scene 返回 inputRequirements.mediaRole 与 inputSchema x-media-role，不从草稿拼接。
+场景输入不再配置素材用途（mediaRole）子类：图片/音频/视频列表只有媒体类型，人物/场景/道具/音色写在输入名称里（如“人物资产”“参考音色”）；设计器没有该下拉，新的create_scene/update_scene_draft也不要传。旧发布快照仍可能带mediaRole，固定发布版 get_scene 会原样回传 inputRequirements.mediaRole 与 inputSchema x-media-role；它不改变类型、权限、固定版本或执行行为，编辑草稿时不必也不应补配。
 先保存并validate_scene_draft，得到用户明确确认后预存publicationId再publish_scene。必须已有writer/aixg Profile、含音频列表桥接的导演台ComfyUI工作流；配置或发布不执行模型。真实生成须另获用户授权并固定versionId/runId；按get_step_result读取Writer脚本、AIXG提示词与prepare_console的manifest（分段帧数、衔接模式与槽位映射），响应丢失先按原ID对账。
 
 ## 2. 入口与部署
@@ -274,7 +281,7 @@ GET /api/v1/runs/{runId}/events/history?after=0&limit=100 返回 events、nextSe
 
 approve 可带 outputs 替换单次节点的部分结果；服务端会校验结果类型。逐项节点目前整批审核，不支持逐镜独立暂停或 outputs 编辑。
 仅管理员管理审核的Hermes redo 可带 feedback 文本说明问题和期望；服务端捕获原结果、保存 feedbackHistory 并让模型按意见修订，不需要改写整段提示词。
-redo 可带 stepChanges 修改 promptTemplate、hermesProfile、capabilityConfig、inputs；对象/数组配置是完整替换，不是深度merge。
+redo 可带 stepChanges 修改 promptTemplate、hermesProfile、hermesProvider、hermesModel、capabilityConfig、inputs；对象/数组配置是完整替换，不是深度merge。
 approve 可能启动后续生成，redo 会重做当前节点并产生新的 reviewId。旧/重复reviewId 返回409 REVIEW_CONFLICT，重读后检查是否已执行，不自动再次批准。
 waiting 时普通 resume/rerun 返回 REVIEW_REQUIRED。取消后恢复也不承诺绕过未批准关卡。
 

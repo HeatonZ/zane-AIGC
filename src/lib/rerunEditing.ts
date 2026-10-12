@@ -46,7 +46,7 @@ export function buildRerunChanges(run: WorkflowRunRecord, stepId: string, itemIn
     return { outputOverrides: [{ stepId, ...(itemIndex === undefined ? {} : { itemIndex }), outputs }] };
   }
   const edit: StepEdit = { stepId, ...(itemIndex === undefined ? {} : { itemIndex }) };
-  for (const key of ["promptTemplate", "hermesProfile", "capabilityConfig", "inputs", "comfyui"] as const) {
+  for (const key of ["promptTemplate", "hermesProfile", "hermesProvider", "hermesModel", "capabilityConfig", "inputs", "comfyui"] as const) {
     if (JSON.stringify(draftStep[key]) !== JSON.stringify(base[key]) && draftStep[key] !== undefined) Object.assign(edit, { [key]: structuredClone(draftStep[key]) });
   }
   return Object.keys(edit).some((key) => key !== "stepId" && key !== "itemIndex") ? { stepOverrides: [edit] } : { rerunSteps: [{ stepId, ...(itemIndex === undefined ? {} : { itemIndexes: [itemIndex] }) }] };

@@ -6,7 +6,7 @@ test("真实历时和计数：未知/排队/历史缺失不伪造执行时间，
   assert.equal(runDuration(undefined),"未记录");assert.equal(runDuration(65000),"1 分 5 秒");assert.equal(runDuration(0),"不足 1 秒");
   const createdAt="2026-10-04T00:00:00Z";const now=Date.parse(createdAt)+5000;
   assert.equal(elapsedRun({createdAt,status:"queued"},now),5000);assert.equal(elapsedRun({createdAt,status:"completed"},now),undefined);
-  assert.equal(progressPercent({total:4,completed:1,skipped:1,failed:0,cancelled:0,running:1,pending:1,settled:2}),50);
+  assert.equal(progressPercent({total:4,completed:1,partial:0,skipped:1,failed:0,cancelled:0,running:1,pending:1,settled:2}),50);
 });
 test("输出分段只更新指定字段/第0项，保留其他产物和目录游标；revision冲突不拼接",()=>{
   const out=(key:string,value:string)=>({key,label:key,type:"text",value,valuePage:{hasMore:false}});

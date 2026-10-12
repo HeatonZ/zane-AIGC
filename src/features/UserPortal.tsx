@@ -1,4 +1,5 @@
 import SystemFeedback from "./SystemFeedback";
+import { useConfirmDialog } from "../components/ConfirmDialog";
 import { sortOwnDrafts } from "../lib/drafts";
 import { getOwnDraft, setOwnDraftFavorite } from "../lib/taskDraftApi";
 import { OwnDraftSaveQueue, sameDraftSnapshot, type OwnDraftSaveSession } from "../lib/userDraftAutosave";
@@ -27,6 +28,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
 }) {
   const api = <T,>(path: string, options?: RequestInit) => accessApi<T>(path, options, user.id);
   const [page, setPage] = useState<"scenes" | "drafts" | "runs" | "feedback">("scenes");
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [scenes, setScenes] = useState<AvailableScene[]>([]);
   const [sceneCursor, setSceneCursor] = useState<string>();
   const [scene, setScene] = useState<UserScene>();
@@ -145,6 +147,8 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     let stopped = false;
     const id = run.runId;
     const timer = window.setInterval(() => {
+      // 页面隐藏时暂停轮询，回到前台立即补一次读取。
+      if (document.hidden) return;
       if (selectingRun.current) return;
       const sequence = ++readSequence.current;
       void api<OwnRun>("/api/v1/self/runs/" + id).then(value => {
@@ -159,7 +163,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   async function openScene(id: string, draft?: OwnDraft) {
     const previous = draftSessionRef.current;
     if (previous?.reviewRequired && previous.editVersion > previous.savedEditVersion
-      && !window.confirm("本页输入与服务端草稿不同。继续打开另一份草稿会放弃本页输入，确定继续吗？")) return;
+      && !(await confirm({ message: "本页输入与服务端草稿不同。继续打开另一份草稿会放弃本页输入，确定继续吗？", tone: "danger" }))) return;
     await flushDraftAutosave();
     const selected = await api<UserScene>("/api/v1/self/scenes/" + encodeURIComponent(id));
     if (draft && draft.versionId !== selected.versionId) {
@@ -287,7 +291,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     if (!scene) return;
     const session = draftSessionRef.current;
     if (!session) { setError("当前草稿表单尚未就绪"); return; }
-    if (session.reviewRequired && !window.confirm("服务端草稿与本页输入不同。确定用本页内容覆盖服务端当前版本吗？")) return;
+    if (session.reviewRequired && !(await confirm({ message: "服务端草稿与本页输入不同。确定用本页内容覆盖服务端当前版本吗？" }))) return;
     session.reviewRequired = false;
     setBusy(true); setError(""); setNotice("");
     try {
@@ -350,7 +354,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
       await flushDraftAutosave();
       const inputValues = inputs(values, scene, true);
       await api("/api/v1/self/scenes/" + scene.sceneId + "/prepare", jsonBody({ versionId: scene.versionId, inputValues }));
-      if (!window.confirm("确认提交？此场景可能调用外部模型并产生费用，后续审核也可能继续生成。")) return;
+      if (!(await confirm({ message: "确认提交？此场景可能调用外部模型并产生费用，后续审核也可能继续生成。", confirmLabel: "确认提交" }))) return;
       id = crypto.randomUUID();
       retainRunId(id);
       const accepted = await api<OwnRun>("/api/v1/self/scenes/" + scene.sceneId + "/runs", jsonBody({
@@ -384,7 +388,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     setBusy(true); setError("");
     let newRunId = "";
     try {
-      if (kind !== "cancel" && !window.confirm("此操作可能继续外部生成，确认执行？")) return;
+      if (kind !== "cancel" && !(await confirm({ message: "此操作可能继续外部生成，确认执行？" }))) return;
       if (kind === "resume") { newRunId = crypto.randomUUID(); retainRunId(newRunId); }
       const body = kind === "review" ? { reviewId: run.pendingReview?.id, action: reviewAction }
         : kind === "resume" ? { newRunId } : {};
@@ -440,7 +444,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   async function backToSceneList() {
     const session = draftSessionRef.current;
     if (session?.reviewRequired && session.editVersion > session.savedEditVersion
-      && !window.confirm("服务端草稿与本页输入不同。返回场景列表会放弃本页输入，确定继续吗？")) return;
+      && !(await confirm({ message: "服务端草稿与本页输入不同。返回场景列表会放弃本页输入，确定继续吗？", tone: "danger" }))) return;
     await flushDraftAutosave();
     draftSessionRef.current = null;
     setScene(undefined);
@@ -449,14 +453,14 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   async function logout() {
     const session = draftSessionRef.current;
     if (session?.reviewRequired && session.editVersion > session.savedEditVersion
-      && !window.confirm("服务端草稿与本页输入不同。退出会放弃本页输入，确定继续吗？")) return;
+      && !(await confirm({ message: "服务端草稿与本页输入不同。退出会放弃本页输入，确定继续吗？", tone: "danger" }))) return;
     await flushDraftAutosave();
     onLogout();
   }
   async function returnToAdmin() {
     const session = draftSessionRef.current;
     if (session?.reviewRequired && session.editVersion > session.savedEditVersion
-      && !window.confirm("服务端草稿与本页输入不同。返回管理端会放弃本页输入，确定继续吗？")) return;
+      && !(await confirm({ message: "服务端草稿与本页输入不同。返回管理端会放弃本页输入，确定继续吗？", tone: "danger" }))) return;
     await flushDraftAutosave();
     onAdmin?.();
   }
@@ -585,7 +589,7 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
               <button className={run?.runId === item.runId ? "active" : ""} onClick={() => void attempt(() => selectRun(item.runId))}>
                 <span className={`business-status ${item.status}`}>{runStatusLabels[item.status]}</span>
                 <strong>{item.runTitle || item.workflowName || item.sceneId}</strong><small>{runDate(item.createdAt)}</small>
-                <small>{item.progress.completed} / {item.progress.total} 步完成 · {item.outputCount} 个最终产物</small>
+                <small>{item.progress.completed + item.progress.partial} / {item.progress.total} 步完成 · {item.outputCount} 个最终产物</small>
               </button>
             </li>)}</ul>
             {!runs.length && <p>暂无本人任务。</p>}
@@ -599,5 +603,6 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
       </>}
       {page === "feedback" && <SystemFeedback key={user.id} userId={user.id} />}
     </main>
+    {confirmDialog}
   </div>;
 }

@@ -83,7 +83,7 @@ test("AI重绘复用底图；白底hero独立生成，缺失脚本/输出不伪�
   assert.equal(commerceRunRows(run).find((row) => row.platformId === "amazon")!.hasText, false);
 });
 
-test("逐项失败与续跑只重做失败卡片，并保留前次成图来源", async (t) => {
+test("逐项失败保持部分成功，局部重做只重做失败卡片并保留前次成图来源", async (t) => {
   const h = await harness(t, { executor: { kind: "control", async execute() { return { result: true }; } } });
   h.executors.register({ kind: "hermes", async execute({ step }): Promise<Record<string, JsonValue>> { return step.id === "product_brief" ? { product_brief: {} } : { shot_plan: [{ id: "hero", prompt: "主图" }, { id: "detail", prompt: "细节" }] }; } });
   const calls = new Map<string, number>();
@@ -95,8 +95,12 @@ test("逐项失败与续跑只重做失败卡片，并保留前次成图来源",
   const values = await inputs(["hero", "detail"], "淘宝 / 天猫"); values.generation_mode = "AI场景重绘";
   await h.service.start();
   const firstId = id("commerce-failed"); await h.service.submit(submission(firstId, pkg.workflow, values));
-  const first = await h.service.wait(h.settings.projectDirectory, firstId); assert.equal(first.status, "failed"); assert.equal(commerceRunRows(first).length, 1);
-  const secondId = id("commerce-resumed"); await h.service.submit({ ...submission(secondId, pkg.workflow, values), resumeFromRunId: firstId });
+  const first = await h.service.wait(h.settings.projectDirectory, firstId);
+  assert.equal(first.status, "completed");
+  assert.equal(first.steps.at(-1)!.status, "completed_with_errors");
+  assert.equal(commerceRunRows(first).length, 1);
+  const failedIndex = first.steps.at(-1)!.items!.find((item) => item.status === "failed")!.index;
+  const secondId = id("commerce-rerun"); await h.service.submit({ ...submission(secondId, pkg.workflow, values), rerunFromRunId: firstId, rerunRequest: { rerunSteps: [{ stepId: "render_pack", itemIndexes: [failedIndex] }] } });
   const second = await h.service.wait(h.settings.projectDirectory, secondId); assert.equal(second.status, "completed", second.error);
   assert.equal(calls.get("hero"), 1); assert.equal(calls.get("detail"), 2);
   const rows = commerceRunRows(second); assert.equal(rows.length, 2); assert.ok(rows.some((row) => row.sourceRunId === firstId)); assert.ok(rows.some((row) => row.sourceRunId === secondId));

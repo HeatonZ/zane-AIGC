@@ -2,7 +2,7 @@ import type { JsonValue, RunStepInput, RunStep } from "./types.js";
 export interface StepEdit {
   stepId: string; itemIndex?: number;
   /** Configuration objects are complete replacements, not merge patches, so clearing a field is preserved. */
-  promptTemplate?: string; hermesProfile?: string; capabilityConfig?: Record<string, JsonValue>;
+  promptTemplate?: string; hermesProfile?: string; hermesProvider?: string; hermesModel?: string; capabilityConfig?: Record<string, JsonValue>;
   inputs?: RunStepInput[]; comfyui?: RunStep["comfyui"];
 }
 export interface OutputEdit { stepId: string; itemIndex?: number; outputs: Record<string, JsonValue> }

@@ -21,7 +21,7 @@ export function applyCapabilityToStep(step: WorkflowStepDefinition, definition: 
   const same = step.capabilityId === definition.id || (!step.capabilityId && capabilityForStep(step, [definition]));
   let next: WorkflowStepDefinition = { ...structuredClone(step), kind: definition.legacy.kind, capabilityId: definition.id, capabilityVersion: definition.version, capabilityConfig: same ? step.capabilityConfig ?? {} : {} };
   if (!definition.editor.condition) delete next.control;
-  if (!definition.editor.profile) delete next.hermesProfile;
+  if (!definition.editor.profile) { delete next.hermesProfile; delete next.hermesProvider; delete next.hermesModel; }
   if (!definition.editor.prompt) next.promptTemplate = "";
   if (definition.legacy.kind === "comfyui") {
     next.comfyui = { workflowFile: step.comfyui?.workflowFile ?? "", bindings: step.comfyui?.bindings ?? [], ...(definition.legacy.adapter ? { adapter: definition.legacy.adapter } : {}) };

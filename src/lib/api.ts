@@ -9,6 +9,7 @@ import type {
   ComfyUIWorkflowSummary,
   ConnectionSettings,
   ConnectorState,
+  HermesModelCatalog,
   HermesProfile,
   JsonValue,
   WorkflowDefinition,
@@ -34,11 +35,27 @@ export class ApiError extends Error {
   ) { super(message); }
 }
 
+/** 普通请求超时；SSE/长轮询走各自的 AbortSignal，不受此值约束。 */
+const requestTimeoutMs = 30_000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(currentActorId ? { "X-Zane-Actor": currentActorId } : {}), ...init?.headers },
-  });
+  const method = (init?.method ?? "GET").toUpperCase();
+  const bodyless = method === "GET" || method === "HEAD";
+  const signal = init?.signal ?? (typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(requestTimeoutMs) : undefined);
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      signal,
+      // GET/HEAD 不带请求体，也不应声明 Content-Type（部分代理会据此拒绝请求）。
+      headers: { ...(bodyless ? {} : { "Content-Type": "application/json" }), ...(currentActorId ? { "X-Zane-Actor": currentActorId } : {}), ...init?.headers },
+    });
+  } catch (error) {
+    if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError") && !init?.signal) {
+      throw new ApiError(`请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）；服务可能仍在处理，请刷新后核对再重试`, 0, "REQUEST_TIMEOUT");
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     if (response.status === 401 && typeof window !== "undefined") window.dispatchEvent(new Event("zane-auth-required"));
@@ -54,7 +71,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
 
-  return response.json() as Promise<T>;
+  // 204/205 与空正文没有 JSON；直接解析会抛 SyntaxError。
+  if (response.status === 204 || response.status === 205) return undefined as T;
+  const text = await response.text();
+  if (!text.trim()) return undefined as T;
+  try { return JSON.parse(text) as T; }
+  catch { throw new ApiError("服务返回了无法解析的响应；请确认后台版本与地址", response.status, "INVALID_API_RESPONSE"); }
 }
 
 async function requestWithLegacyRoute<T>(path: string, legacyPath: string, init?: RequestInit) {
@@ -137,6 +159,12 @@ export function loadConnectionSettings() {
 
 export function loadHermesProfiles() {
   return request<HermesProfile[]>("/api/hermes/profiles");
+}
+
+/** Read-only gateway model catalog for one Profile; never returns credentials. */
+export function loadHermesModels(input: { profile: string; q?: string; limit?: number; cursor?: string; refresh?: boolean; includeUnconfigured?: boolean }, signal?: AbortSignal) {
+  const params = new URLSearchParams(Object.entries(input).filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => [key, String(value)]));
+  return request<HermesModelCatalog>("/api/hermes/models?" + params, { signal });
 }
 
 export function saveConnectionSettings(input: {

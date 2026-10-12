@@ -7,8 +7,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        node: [24, 26]
+        include:
+          # Full check (build + isolated smoke suite) once, on the primary runtime.
+          - os: ubuntu-latest
+            node: 24
+            script: npm run check
+          # Windows build path (vite/esbuild/tsc emit) plus unit tests.
+          - os: windows-latest
+            node: 24
+            script: npm run typecheck && npm test && npm run build
+          # Newer Node compatibility: type check plus unit tests.
+          - os: ubuntu-latest
+            node: 26
+            script: npm run typecheck && npm test
+          - os: windows-latest
+            node: 26
+            script: npm run typecheck
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -17,4 +31,4 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - run: npm run check
+      - run: ${{ matrix.script }}

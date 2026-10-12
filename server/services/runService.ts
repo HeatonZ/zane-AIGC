@@ -41,6 +41,7 @@ export class RunService {
   private readonly importing = new Map<string, Promise<void>>();
   private readonly queue: PreparedRun[] = [];
   private readonly mirrors = new Map<string, Promise<void>>();
+  private readonly mirrorPending = new Map<string, { run: RunRecord; events: RunEvent[]; resolve: () => void; done: Promise<void> }>();
   private readonly options: ServiceOptions;
   private accepting = true;
   private started = false;
@@ -166,7 +167,7 @@ export class RunService {
       const position = workflow.steps.findIndex(step => step.id === run.pendingReview!.stepId);
       const definition = workflow.steps[position];
       const result = run.steps.find(step => step.stepId === definition?.id);
-      if (!definition || !result || result.status !== "completed") throw new HttpError(409, "待确认步骤结果不可用");
+      if (!definition || !result || !["completed", "completed_with_errors"].includes(result.status)) throw new HttpError(409, "待确认步骤结果不可用");
       const originalOutputs = structuredClone(result.outputs ?? {});
       if (body.feedback !== undefined && body.action !== "redo") throw new HttpError(400, "反馈意见仅用于退回重做", "INVALID_FEEDBACK");
       const feedback = body.feedback === undefined ? undefined : captureStepFeedback(run, validateStepFeedback(run, { stepId: definition.id, message: body.feedback }), new Date().toISOString());
@@ -194,7 +195,7 @@ export class RunService {
       }
       if (body.stepChanges !== undefined) {
         const changes = asRecord(body.stepChanges);
-        if (body.action !== "redo" || !changes || Object.keys(changes).some(field => !["promptTemplate", "hermesProfile", "capabilityConfig", "inputs"].includes(field))) throw new HttpError(400, "退回重做参数无效");
+        if (body.action !== "redo" || !changes || Object.keys(changes).some(field => !["promptTemplate", "hermesProfile", "hermesProvider", "hermesModel", "capabilityConfig", "inputs"].includes(field))) throw new HttpError(400, "退回重做参数无效");
         workflow.steps[position] = this.options.executors.prepareStep({ ...definition, ...changes });
         validateWorkflowShape(workflow as unknown as Record<string, unknown>);
       }
@@ -276,6 +277,12 @@ export class RunService {
     await this.importLegacyProject(projectDirectory);
     this.ensureOpen();
     return this.store.listRuns(projectDirectory, query);
+  }
+  /** 管理端列表使用摘要投影：不解析完整运行快照。 */
+  async listRunSummaries(projectDirectory: string, query: RunListQuery = {}) {
+    await this.importLegacyProject(projectDirectory);
+    this.ensureOpen();
+    return this.store.listRunSummaries(projectDirectory, query);
   }
 
   async cancel(projectDirectory: string, runId: string) {
@@ -361,14 +368,27 @@ export class RunService {
           if (!previous || !["running", "cancelling"].includes(previous.status)) return;
           const next = { ...previous, ...patch, status: previous.status === "cancelling" ? "cancelling" as const : "running" as const };
           const changed: Array<{ type: string; stepId?: string; payload?: Record<string, unknown> }> = [];
+          const changedSteps = new Set<string>();
+          const previousSteps = new Map(previous.steps.map((step) => [step.stepId, step]));
           for (const step of next.steps) {
-            const old = previous.steps.find((item) => item.stepId === step.stepId);
-            if (old?.status !== step.status) changed.push({ type: `step.${step.status === "running" ? "started" : step.status}`, stepId: step.stepId });
-            for (const item of step.items ?? []) {
-              if (old?.items?.find((candidate) => candidate.index === item.index)?.status !== item.status) changed.push({ type: `step.item.${item.status === "running" ? "started" : item.status}`, stepId: step.stepId, payload: { index: item.index } });
+            const old = previousSteps.get(step.stepId);
+            const touch = () => changedSteps.add(step.stepId);
+            if (old?.status !== step.status) {
+              changed.push({ type: `step.${step.status === "running" ? "started" : step.status}`, stepId: step.stepId });
+              touch();
+            } else if (old?.agentPrompt !== step.agentPrompt || old?.agentResponse !== step.agentResponse || (old?.warnings?.length ?? 0) !== (step.warnings?.length ?? 0)) touch();
+            if (step.items?.length || old?.items?.length) {
+              const previousItems = old?.items?.length ? new Map(old.items.map((item) => [item.index, item])) : undefined;
+              for (const item of step.items ?? []) {
+                const oldItem = previousItems?.get(item.index);
+                if (oldItem?.status !== item.status) {
+                  changed.push({ type: `step.item.${item.status === "running" ? "started" : item.status}`, stepId: step.stepId, payload: { index: item.index } });
+                  touch();
+                } else if (oldItem?.agentPrompt !== item.agentPrompt || oldItem?.agentResponse !== item.agentResponse || (oldItem?.warnings?.length ?? 0) !== (item.warnings?.length ?? 0)) touch();
+              }
             }
           }
-          await this.persist(project, next, changed.length ? changed : [{ type: "run.checkpoint" }]);
+          await this.persist(project, next, changed.length ? changed : [{ type: "run.checkpoint" }], undefined, changedSteps.size ? changedSteps : undefined);
         },
       });
       if (this.closed) return;
@@ -395,22 +415,40 @@ export class RunService {
     }
   }
 
-  private persist(projectDirectory: string, run: RunRecord, changes: Array<{ type: string; stepId?: string; payload?: Record<string, unknown> }>, submission?: PreparedRun) {
+  private persist(projectDirectory: string, run: RunRecord, changes: Array<{ type: string; stepId?: string; payload?: Record<string, unknown> }>, submission?: PreparedRun, changedStepIds?: ReadonlySet<string>) {
     const snapshot = structuredClone(run);
-    const events = submission ? this.store.saveRunSubmission(projectDirectory, snapshot, submission, changes) : this.store.saveRun(projectDirectory, snapshot, changes);
+    const events = submission
+      ? this.store.saveRunSubmission(projectDirectory, snapshot, submission, changes)
+      : this.store.saveRun(projectDirectory, snapshot, changes, changedStepIds ? { changedStepIds } : undefined);
     const runKey = key(projectDirectory, run.runId);
-    // SQLite commits immediately. Serialize derived JSON mirrors/events so older writes cannot win.
+    // SQLite commits immediately. Runtime mirrors are serialized per run; intermediate
+    // checkpoints coalesce so a long for_each persists the newest state instead of every delta.
+    // Terminal states are never coalesced, so wait()/SSE completion still sees the final mirror.
+    const queued = this.mirrorPending.get(runKey);
+    if (queued && isActiveRunStatus(snapshot.status)) {
+      queued.run = snapshot;
+      queued.events.push(...events);
+      return queued.done;
+    }
+    let resolve!: () => void;
+    const done = new Promise<void>((settled) => { resolve = settled; });
+    const batch = { run: snapshot, events, resolve, done };
+    this.mirrorPending.set(runKey, batch);
     const previous = this.mirrors.get(runKey) ?? Promise.resolve();
     const operation = previous.then(async () => {
+      const current = this.mirrorPending.get(runKey);
+      if (current !== batch) return;
+      this.mirrorPending.delete(runKey);
       try {
-        await writeJsonFile(snapshot.artifacts.runtime, { format: "zane-studio.runtime/v1", ...snapshot });
-        if (!isActiveRunStatus(snapshot.status)) await writeJsonFile(snapshot.artifacts.output, { format: "zane-studio.output/v1", ...snapshot });
-      } catch (error) { log("warn", "run.archive_snapshot_failed", { runId: run.runId, error: String(error) }); }
-      this.publish(projectDirectory, snapshot, events);
+        await writeJsonFile(batch.run.artifacts.runtime, { format: "zane-studio.runtime/v1", ...batch.run }, 0);
+        if (!isActiveRunStatus(batch.run.status)) await writeJsonFile(batch.run.artifacts.output, { format: "zane-studio.output/v1", ...batch.run });
+      } catch (error) { log("warn", "run.archive_snapshot_failed", { runId: batch.run.runId, error: String(error) }); }
+      this.publish(projectDirectory, batch.run, batch.events);
+      batch.resolve();
     });
     this.mirrors.set(runKey, operation);
-    void operation.finally(() => { if (this.mirrors.get(runKey) === operation) this.mirrors.delete(runKey); }).catch(() => undefined);
-    return operation;
+    void operation.finally(() => { if (this.mirrors.get(runKey) === operation && !this.mirrorPending.has(runKey)) this.mirrors.delete(runKey); }).catch(() => undefined);
+    return done;
   }
   private publish(project: string, run: RunRecord, events: RunEvent[]) {
     for (const event of events) for (const listener of this.events.listeners(key(project, run.runId))) {
@@ -442,7 +480,7 @@ export class RunService {
       const status = job.shutdown ? "stale" as const : "cancelled" as const;
       await this.persist(project, { ...run, status, finishedAt: new Date().toISOString(), error: "服务关闭等待超时，请从断点继续" }, [{ type: `run.${status}` }]);
     }
-    await Promise.allSettled([...this.mirrors.values()]);
+    await Promise.allSettled(this.mirrors.values());
     this.events.removeAllListeners();
   }
 }

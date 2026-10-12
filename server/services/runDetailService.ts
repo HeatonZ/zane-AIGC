@@ -16,6 +16,7 @@ export function scrubBusinessValue(value: unknown): unknown {
 const countStatuses = (items: Array<{status: string}>) => ({
   total: items.length,
   completed: items.filter(item => item.status === "completed").length,
+  partial: items.filter(item => item.status === "completed_with_errors").length,
   skipped: items.filter(item => item.status === "skipped").length,
   failed: items.filter(item => item.status === "failed").length,
   cancelled: items.filter(item => item.status === "cancelled").length,
@@ -63,7 +64,7 @@ export function businessRun(run: RunRecord, executionStartedAt?: string) {
     // event proves execution began; imported historical runs can have no timing.
     ...(executionStartedAt ? { startedAt: executionStartedAt, queueDurationMs: Math.max(0, Date.parse(executionStartedAt) - Date.parse(run.createdAt)) } : {}),
     ...(run.finishedAt ? { finishedAt: run.finishedAt, totalDurationMs: Math.max(0, Date.parse(run.finishedAt) - Date.parse(run.createdAt)) } : {}),
-    steps, progress: { ...counts, settled: counts.completed + counts.skipped + counts.failed + counts.cancelled },
+    steps, progress: { ...counts, settled: counts.completed + counts.partial + counts.skipped + counts.failed + counts.cancelled },
     ...(pendingReview ? { pendingReview } : {}),
     ...(run.error ? { error: "任务未完成，请联系管理员查看详情" } : {}),
     inputCount: run.workflow.inputs.length, outputCount: run.outputs.length,
@@ -123,6 +124,6 @@ export function businessRunInputs(run: RunRecord, query: RunInputQuery) {
 
 export const BUSINESS_EVENT_TYPES = [
   "run.queued", "run.recovered_queued", "run.started", "run.completed", "run.failed", "run.cancelled", "run.cancelling", "run.stale", "run.waiting",
-  "step.started", "step.completed", "step.failed", "step.skipped", "step.cancelled",
+  "step.started", "step.completed", "step.completed_with_errors", "step.failed", "step.skipped", "step.cancelled",
   "step.item.started", "step.item.completed", "step.item.failed", "step.item.skipped", "step.item.cancelled", "review.approve", "review.redo",
 ] as const;

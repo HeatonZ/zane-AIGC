@@ -25,7 +25,7 @@ function StepValue({ value, type, source }: { value: JsonValue; type?: string; s
 }
 
 function stepStatusLabel(status: WorkflowRunResult["steps"][number]["status"]) {
-  return status === "completed" ? "完成" : status === "skipped" ? "跳过" : status === "running" ? "运行中" : status === "cancelled" ? "已取消" : "失败";
+  return status === "completed" ? "完成" : status === "completed_with_errors" ? "部分成功" : status === "skipped" ? "跳过" : status === "running" ? "运行中" : status === "cancelled" ? "已取消" : "失败";
 }
 
 function itemStatusLabel(status: NonNullable<WorkflowRunResult["items"]>[number]["status"]) {
@@ -104,6 +104,7 @@ export default function WorkflowRunPanel({
     .map(id => result.steps.find(step => step.stepId === id)?.status ?? "pending");
   const progress = {
     total: statuses.length, completed: statuses.filter(status => status === "completed").length,
+    partial: statuses.filter(status => status === "completed_with_errors").length,
     skipped: statuses.filter(status => status === "skipped").length, failed: statuses.filter(status => status === "failed").length,
     cancelled: statuses.filter(status => status === "cancelled").length, running: statuses.filter(status => status === "running").length,
     pending: statuses.filter(status => status === "pending").length, settled: statuses.filter(status => !["pending", "running"].includes(status)).length,
@@ -122,7 +123,7 @@ export default function WorkflowRunPanel({
   return (
     <section className={`workflow-run-result ${result.status}`} aria-live="polite">
       <div className="workflow-run-heading">
-        <div><h3>{result.status === "completed" ? "运行完成" : cancelled ? "已取消运行" : result.status === "queued" ? "正在排队" : result.status === "running" ? "正在运行" : result.status === "cancelling" ? "正在取消" : result.status === "waiting" ? "等待人工确认" : result.status === "stale" ? "等待恢复" : "运行失败"}</h3><span>{result.items?.length ? `${result.items.filter((item) => item.status === "completed").length}/${result.items.length} 项完成` : `${result.steps.filter((step) => step.status === "completed").length} 步完成 · ${result.steps.filter((step) => step.status === "skipped").length} 步跳过${iterationCount ? ` · ${iterationSteps.length} 个步骤逐项执行 ${iterationCount} 项` : ""}`}</span></div>
+        <div><h3>{result.status === "completed" ? "运行完成" : cancelled ? "已取消运行" : result.status === "queued" ? "正在排队" : result.status === "running" ? "正在运行" : result.status === "cancelling" ? "正在取消" : result.status === "waiting" ? "等待人工确认" : result.status === "stale" ? "等待恢复" : "运行失败"}</h3><span>{result.items?.length ? `${result.items.filter((item) => item.status === "completed").length}/${result.items.length} 项完成` : `${result.steps.filter((step) => step.status === "completed").length} 步完成 · ${result.steps.filter((step) => step.status === "skipped").length} 步跳过${result.steps.some((step) => step.status === "completed_with_errors") ? ` · ${result.steps.filter((step) => step.status === "completed_with_errors").length} 步部分成功` : ""}${iterationCount ? ` · ${iterationSteps.length} 个步骤逐项执行 ${iterationCount} 项` : ""}`}</span></div>
         <small>{result.runId.slice(0, 8)}</small>
       </div>
       <RunMetrics progress={progress} outputCount={result.outputs.length} expectedOutputCount={snapshotWorkflow?.outputs.length ?? result.outputs.length}
@@ -177,7 +178,7 @@ export default function WorkflowRunPanel({
                 {step.agentResponse !== undefined && <section className="workflow-run-step-section workflow-run-step-agent-response"><div className="workflow-run-step-section-heading"><strong>Hermes 原始返回</strong><small>解析失败时保存</small></div><dl><div className="workflow-run-step-value"><dt>完整响应<small>保留首尾空白</small></dt><dd><StepValue value={step.agentResponse} type="text" /></dd></div></dl></section>}
                 <section className="workflow-run-step-section">
                   <div className="workflow-run-step-section-heading"><strong>输出</strong><small>{outputKeys.length}</small></div>
-                  {outputKeys.length ? <dl>{outputKeys.map((key) => <div className="workflow-run-step-value" key={key}><dt>{step.outputLabels?.[key] ?? key}<small>{step.outputLabels?.[key] ? key : ""}</small></dt><dd>{Object.prototype.hasOwnProperty.call(outputValues, key) ? <StepValue value={outputValues[key]} source={step.status === "completed" ? { runId: result.runId, stepId: step.stepId, outputKey: key } : undefined} type={outputRenderer === "text" || outputRenderer === "json" ? outputRenderer : step.outputTypes?.[key]} /> : <p className="workflow-run-step-empty">{step.status === "running" ? "步骤完成后生成" : step.status === "skipped" ? "步骤未执行" : "尚未生成"}</p>}</dd></div>)}</dl> : <p className="workflow-run-step-empty">此步骤没有定义输出</p>}
+                  {outputKeys.length ? <dl>{outputKeys.map((key) => <div className="workflow-run-step-value" key={key}><dt>{step.outputLabels?.[key] ?? key}<small>{step.outputLabels?.[key] ? key : ""}</small></dt><dd>{Object.prototype.hasOwnProperty.call(outputValues, key) ? <StepValue value={outputValues[key]} source={["completed", "completed_with_errors"].includes(step.status) ? { runId: result.runId, stepId: step.stepId, outputKey: key } : undefined} type={outputRenderer === "text" || outputRenderer === "json" ? outputRenderer : step.outputTypes?.[key]} /> : <p className="workflow-run-step-empty">{step.status === "running" ? "步骤完成后生成" : step.status === "skipped" ? "步骤未执行" : "尚未生成"}</p>}</dd></div>)}</dl> : <p className="workflow-run-step-empty">此步骤没有定义输出</p>}
                 </section>
                 {step.items?.length ? <section className="workflow-run-step-section workflow-run-step-iterations">
                   <div className="workflow-run-step-section-heading"><strong>逐项执行</strong><small>{step.items.filter((item) => item.status === "completed").length}/{step.items.length}</small></div>

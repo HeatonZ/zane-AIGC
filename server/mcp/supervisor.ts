@@ -143,7 +143,7 @@ export class McpSupervisor {
       if (this.closed) { await this.dispose(candidate); return; }
       if (target && version !== target.contractVersion) throw new Error("新 MCP 与后台契约版本不一致；保留原连接，请核对构建");
       if (this.opening) {
-        const opening: Request = this.opening.method === "initialize" ? this.opening : { ...this.opening, method: "server/discover", params: { ...(this.opening.params?._meta ? { _meta: this.opening.params._meta } : {}) } };
+        const opening: Request = this.opening.method === "initialize" ? this.opening : { ...this.opening, method: "server/discover", params: (this.opening.params?._meta ? { _meta: this.opening.params._meta } : {}) };
         await this.internal(candidate, opening);
         if (this.opening.method === "initialize" && this.initialized) await candidate.transport.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       }

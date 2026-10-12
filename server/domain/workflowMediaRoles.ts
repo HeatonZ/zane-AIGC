@@ -1,4 +1,8 @@
-/** Semantic asset use is separate from the physical ComfyUI media socket type. */
+/**
+ * Compatibility only: legacy released snapshots carry a semantic asset label next to the
+ * physical media socket type. New configurations express the same meaning in the input label
+ * (人物资产/场景资产/道具资产/参考音色) and must omit mediaRole.
+ */
 export const workflowMediaRoles = ["reference", "character", "scene", "prop", "voice_reference"] as const;
 export type WorkflowMediaRole = typeof workflowMediaRoles[number];
 export const workflowMediaRoleLabels: Record<WorkflowMediaRole, string> = {

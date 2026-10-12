@@ -290,20 +290,21 @@ try {
   assert.equal((await call("list_runs", { sceneId: qwenSceneId })).runs.length, 0);
   await call("delete_scene", { sceneId: qwenSceneId, revision: qwenFinal.revision });
   console.log("Qwen Image 2.1 Writer MCP acceptance passed: four declared fields + passthrough seed/extra inputs + writer-to-aixg references + ordered references + shared HTTP draft + validation + stale/concurrent revision + lost receipts + fixed publication + pagination; no models called.");
-  // New media-role fields cross real stdio MCP into the same authoritative scene service.
+  // Scene inputs declare media type only; legacy mediaRole stays accepted for released snapshots.
   const longPackage = JSON.parse(await readFile(path.join(root, "examples/scenes/long-text-to-video.json"), "utf8"));
   const longId = longPackage.scene.id;
   const longCreated = await call("create_scene", { scene: longPackage.scene, workflow: longPackage.workflow });
   assert.equal(longCreated.publishedVersionId, null);
   const roleList = workflow => workflow.inputs.filter(field => field.mediaRole).map(field => field.mediaRole);
-  assert.deepEqual(roleList(longCreated.workflow), ["character", "scene", "prop", "voice_reference"]);
+  assert.deepEqual(roleList(longCreated.workflow), []);
+  assert.deepEqual(longCreated.workflow.inputs.map(field => [field.key, field.type]), [["content", "textarea"], ["character_assets", "image_list"], ["scene_assets", "image_list"], ["prop_assets", "image_list"], ["voice_reference_audio", "audio_list"], ["asset_notes", "textarea"], ["production_notes", "textarea"], ["target_seconds", "number"], ["ratio", "select"], ["mp", "number"]]);
   const longHttp = await (await fetch(base + "/api/v1/scenes/" + longId + "/draft")).json();
   assert.deepEqual(longHttp.workflow, longCreated.workflow);
   const rolePage = await call("list_scenes", { limit: 1 });
   // Discard the write receipt, then reconcile the original scene ID rather than replaying it.
-  await client.callTool({ name: "update_scene_draft", arguments: { sceneId: longId, revision: longCreated.revision, scene: { ...longCreated.scene, summary: "分类素材与逐镜AIXG" } } });
+  await client.callTool({ name: "update_scene_draft", arguments: { sceneId: longId, revision: longCreated.revision, scene: { ...longCreated.scene, summary: "无子类素材与逐镜AIXG" } } });
   const longSaved = await call("get_scene_draft", { sceneId: longId });
-  assert.equal(longSaved.scene.summary, "分类素材与逐镜AIXG"); assert.notEqual(longSaved.revision, longCreated.revision);
+  assert.equal(longSaved.scene.summary, "无子类素材与逐镜AIXG"); assert.notEqual(longSaved.revision, longCreated.revision);
   assert.equal((await client.callTool({ name: "update_scene_draft", arguments: { sceneId: longId, revision: longCreated.revision, workflow: longPackage.workflow } })).structuredContent.error.code, "RESOURCE_REVISION_CONFLICT");
   assert.equal((await client.callTool({ name: "list_scenes", arguments: { cursor: rolePage.nextCursor } })).structuredContent.error.code, "SCENE_PAGE_CHANGED");
   const incompatibleRole = structuredClone(longSaved.workflow); incompatibleRole.inputs.find(field => field.key === "character_assets").mediaRole = "voice_reference";
@@ -317,20 +318,22 @@ try {
   const longVersionId = randomUUID();
   await client.callTool({ name: "publish_scene", arguments: { sceneId: longId, revision: longSaved.revision, publicationId: longVersionId } });
   const longPublished = await call("get_scene", { sceneId: longId, versionId: longVersionId });
-  assert.deepEqual(longPublished.inputRequirements.filter(field => field.mediaRole).map(field => field.mediaRole), ["character", "scene", "prop", "voice_reference"]);
-  assert.equal(longPublished.inputSchema.properties.voice_reference_audio["x-media-role"], "voice_reference");
+  assert.deepEqual(longPublished.inputRequirements.filter(field => field.mediaRole).map(field => field.mediaRole), []);
+  assert.equal(longPublished.inputSchema.properties.voice_reference_audio["x-media-role"], undefined);
   assert.equal(longPublished.workflow.steps[1].hermesProfile, "aixg");
+  // A released snapshot's legacy role survives the draft round-trip without being added to new fields.
   const roleDraft = await call("get_scene_draft", { sceneId: longId });
-  const genericDraft = structuredClone(roleDraft.workflow); genericDraft.inputs.find(field => field.key === "voice_reference_audio").mediaRole = "reference";
-  const longChanged = await call("update_scene_draft", { sceneId: longId, revision: roleDraft.revision, workflow: genericDraft });
-  assert.equal(longChanged.workflow.inputs.find(field => field.key === "voice_reference_audio").mediaRole, "reference");
-  assert.equal((await call("get_scene", { sceneId: longId, versionId: longVersionId })).inputSchema.properties.voice_reference_audio["x-media-role"], "voice_reference");
+  const legacyDraft = structuredClone(roleDraft.workflow); legacyDraft.inputs.find(field => field.key === "voice_reference_audio").mediaRole = "voice_reference";
+  const longChanged = await call("update_scene_draft", { sceneId: longId, revision: roleDraft.revision, workflow: legacyDraft });
+  assert.equal(longChanged.workflow.inputs.find(field => field.key === "voice_reference_audio").mediaRole, "voice_reference");
+  assert.equal(longChanged.workflow.inputs.find(field => field.key === "character_assets").mediaRole, undefined);
+  assert.equal((await call("get_scene", { sceneId: longId, versionId: longVersionId })).inputSchema.properties.voice_reference_audio["x-media-role"], undefined);
   const roleConcurrent = await Promise.all(["A", "B"].map(suffix => fetch(base + "/api/v1/scenes/" + longId + "/draft", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: longChanged.revision, scene: { ...longChanged.scene, summary: "素材用途并发" + suffix } }) })));
   assert.deepEqual(roleConcurrent.map(response => response.status).sort(), [200, 409]);
   const longFinal = await call("get_scene_draft", { sceneId: longId });
   assert.equal((await call("list_runs", { sceneId: longId })).runs.length, 0);
   await call("delete_scene", { sceneId: longId, revision: longFinal.revision });
-  console.log("Categorized asset + long-video MCP acceptance passed: shared create/read/update + role validation + Writer-to-AIXG prompts + stale/concurrent revision + lost write/publication receipts + pagination + immutable published input roles; no models called.");
+  console.log("Long-video MCP acceptance passed: shared create/read/update + media type only + legacy role compatibility + Writer-to-AIXG prompts + stale/concurrent revision + lost write/publication receipts + pagination + immutable published inputs; no models called.");
   // Repeatable object-array form metadata crosses real stdio MCP into the shared HTTP service.
   const objectArraySceneId = "ai-object-array-form-smoke";
   const objectArrayWorkflow = { sceneId: objectArraySceneId, name: "规格表单", inputs: [{ key: "specs", label: "规格数组", type: "json", required: true, inputMode: "object_array", itemFields: [

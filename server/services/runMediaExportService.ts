@@ -29,7 +29,7 @@ export class RunMediaExportService {
         const item = step.items?.find(item => item.index === query.itemIndex && item.status === "completed");
         value = item?.outputs?.[query.outputKey];
       } else if (step.items) value = step.items.filter(item => item.status === "completed").flatMap(item => normalizeMediaList(item.outputs?.[query.outputKey]));
-      else if (step.status === "completed") value = step.outputs?.[query.outputKey];
+      else if (["completed", "completed_with_errors"].includes(step.status)) value = step.outputs?.[query.outputKey];
     } else {
       if (query.itemIndex !== undefined) throw new HttpError(400, "逐项序号需要stepId", "INVALID_MEDIA_EXPORT");
       const output = run.outputs.find(item => item.key === query.outputKey); value = output?.value; type = output?.type;
@@ -52,6 +52,7 @@ export class RunMediaExportService {
       const match = typeof url === "string" ? /^\/api\/(?:v1|workflows)\/runs\/([a-f0-9-]{36})\/media\/([^/?]+)$/i.exec(url) : undefined;
       if (!match || !allowed.has(match[1])) throw new HttpError(400, "仅导出本运行或其已授权祖先的归档媒体，不读取路径或远程URL", "INVALID_MEDIA_EXPORT_SOURCE");
       let filename: string; try { filename = decodeURIComponent(match[2]); } catch { throw new HttpError(400, "媒体文件名无效", "INVALID_MEDIA_EXPORT_SOURCE"); }
+      // oxlint-disable-next-line no-control-regex -- 拒绝文件名中的 NUL 等控制字符正是本行的目的
       if (!filename || filename === "." || filename === ".." || /[\\/\x00]/.test(filename) || path.basename(filename) !== filename) throw new HttpError(400, "媒体文件名无效", "INVALID_MEDIA_EXPORT_SOURCE");
       const file = path.join(runArtifactPaths(settings.projectDirectory, match[1]).directory, "outputs", "media", filename);
       const info = await lstat(file).catch(() => undefined); const resolved = await realpath(file).catch(() => "");

@@ -7,6 +7,7 @@ import type { RunRecord, RunStatus, RunSubmitter, SavedSettings } from "../domai
 import { runSubmitter } from "../services/accessService.js";
 import { HttpError } from "../errors.js";
 import { RunService } from "../services/runService.js";
+import type { RunSummaryRow } from "../storage/sqliteStore.js";
 
 type RunSubmitterResolver = (userId: string) => RunSubmitter | undefined;
 type RunResponse = RunRecord & { submitter?: RunSubmitter };
@@ -15,9 +16,9 @@ function decorateRun(run: RunRecord, resolveSubmitter?: RunSubmitterResolver): R
   const submitter = resolveSubmitter(run.ownerUserId);
   return submitter ? { ...run, submitter } : run;
 }
-function runSummary(run: RunRecord, resolveSubmitter?: RunSubmitterResolver) {
-  const view = decorateRun(run, resolveSubmitter);
-  return { ownerUserId: view.ownerUserId, ...(view.submitter ? { submitter: view.submitter } : {}), runId: view.runId, sceneId: view.sceneId, workflowName: view.workflowName, runTitle: view.runTitle, status: view.status, startedAt: view.startedAt, createdAt: view.createdAt, finishedAt: view.finishedAt, durationMs: view.durationMs, stepCount: view.steps.length, outputCount: view.outputs.length, error: view.error, artifacts: view.artifacts };
+function runSummary(run: RunSummaryRow, resolveSubmitter?: RunSubmitterResolver) {
+  const submitter = run.submitter ?? (run.ownerUserId ? resolveSubmitter?.(run.ownerUserId) : undefined);
+  return { ...run, ...(submitter ? { submitter } : {}) };
 }
 function validateId(id: unknown): string { if (typeof id !== "string" || !isRunId(id)) throw new HttpError(400, "运行记录编号无效"); return id; }
 export function createRunRouter(service: RunService, loadSettings: () => Promise<SavedSettings>, resolveSubmitter?: RunSubmitterResolver) {
@@ -38,8 +39,8 @@ export function createRunRouter(service: RunService, loadSettings: () => Promise
     if (status && !["waiting", "queued", "running", "cancelling", "completed", "failed", "cancelled", "stale"].includes(status)) throw new HttpError(400, "运行状态筛选无效");
     const limit = request.query.limit === undefined ? 200 : Number(request.query.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new HttpError(400, "分页条数需要是 1–200 的整数");
-    const page = await service.listRuns(projectDirectory, { before, limit, status, sceneId: typeof request.query.sceneId === "string" ? request.query.sceneId : undefined });
-    response.json({ projectDirectory, runs: page.runs.map(run => runSummary(run, resolveSubmitter)), ...(page.nextCursor ? { nextCursor: Buffer.from(JSON.stringify(page.nextCursor)).toString("base64url") } : {}) });
+    const page = await service.listRunSummaries(projectDirectory, { before, limit, status, sceneId: typeof request.query.sceneId === "string" ? request.query.sceneId : undefined });
+    response.json({ projectDirectory, runs: page.runs.map((run: RunSummaryRow) => runSummary(run, resolveSubmitter)), ...(page.nextCursor ? { nextCursor: Buffer.from(JSON.stringify(page.nextCursor)).toString("base64url") } : {}) });
   };
   router.get(["/api/v1/runs", "/api/workflows/runs"], list);
   router.post("/api/v1/runs", async (request, response) => {

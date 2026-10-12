@@ -113,7 +113,7 @@ export class ClipSelectionService {
   async compose(id: string, raw: unknown, access?: { ownerUserId: string; submitter?: RunSubmitter; authorize(): void }) { const body = asRecord(raw) ?? {}; const { projectDirectory } = await this.assets.loadSettings(); return this.locked(projectDirectory,id,body.revision,async selection => {
     if (selection.shots.some(shot => !shot.choice?.assetId || !shot.choice?.assetVersion)) throw new HttpError(400,"每个镜头都需要选定一个版本才能合成");
     const clips = selection.shots.map(shot => ({ assetId: shot.choice!.assetId!, assetVersion: shot.choice!.assetVersion! }));
-    const shots = selection.shots.map((shot,index) => ({ ...(asRecord(shot.value) ?? {}), index: index+1, selection_shot_id: shot.shotId }));
+    const shots = selection.shots.map((shot,index) => ({ ...asRecord(shot.value), index: index+1, selection_shot_id: shot.shotId }));
     const workflow = clipCompositionWorkflow(selection.sceneId);
     const run = await this.runs.submit({ runId:body.runId,workflow,inputValues:{ clips,shots,selection:structuredClone(selection) },runTitle: (selection.name + " · 选片合成").slice(0,120) }, access);
     const saved = this.put(projectDirectory,{ ...selection,lastRunId:run.runId,updatedAt:new Date().toISOString() },selection.revision);

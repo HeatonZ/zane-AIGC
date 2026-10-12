@@ -7,6 +7,12 @@ import { log } from "../observability/logger.js";
 import { writeJsonFile } from "../storage/jsonFileStore.js";
 import { SqliteStore } from "../storage/sqliteStore.js";
 
+/** 同一 revision 的同一对象引用只规范化一次；写入与深比较路径会重复调用。 */
+let normalizedCache: { revision: number; source: unknown; value: ReturnType<typeof buildNormalized> } | undefined;
+function buildNormalized(scenes: unknown[], workflows: Record<string, unknown>, optionPresets: unknown[], drafts: unknown[], sceneVersions?: Record<string, unknown>) {
+  return { format: "zane-studio.workspace/v1" as const, scenes, workflows, optionPresets, drafts, ...(sceneVersions ? { sceneVersions } : {}) };
+}
+
 export function normalizeWorkspacePayload(value: unknown) {
   const body = asRecord(value);
   const workflows = body ? asRecord(body.workflows) : undefined;
@@ -18,6 +24,9 @@ export function normalizeWorkspacePayload(value: unknown) {
     || (body.sceneVersions !== undefined && !sceneVersions)) {
     throw new HttpError(400, "工作区数据格式无效");
   }
+  // 已规范化的快照按 revision 复用：写入路径与深比较路径会多次调用同一份内容。
+  const revision = typeof body.revision === "number" ? body.revision : undefined;
+  if (revision !== undefined && normalizedCache?.revision === revision && normalizedCache.source === value) return normalizedCache.value;
   if (body.scenes.length > 500 || Object.keys(workflows).length > 500 || body.optionPresets.length > 500 || body.drafts.length > 5000
     || (sceneVersions && Object.keys(sceneVersions).length > 500)) {
     throw new HttpError(400, "工作区数据规模超出限制");
@@ -36,14 +45,9 @@ export function normalizeWorkspacePayload(value: unknown) {
   }
   if (body.drafts.some(value => { const draft = asRecord(value); return draft?.isFavorite !== undefined && typeof draft.isFavorite !== "boolean"; })) throw new HttpError(400, "草稿收藏状态必须是布尔值");
   if (Object.values(workflows).some((value) => !asRecord(value))) throw new HttpError(400, "工作流配置格式无效");
-  return {
-    format: "zane-studio.workspace/v1",
-    scenes: body.scenes,
-    workflows,
-    optionPresets: body.optionPresets,
-    drafts: [...body.drafts].sort((left, right) => compareDrafts(asRecord(left) ?? {}, asRecord(right) ?? {})),
-    ...(sceneVersions ? { sceneVersions } : {}),
-  };
+  const normalized = buildNormalized(body.scenes, workflows, body.optionPresets, [...body.drafts].sort((left, right) => compareDrafts(asRecord(left) ?? {}, asRecord(right) ?? {})), sceneVersions);
+  if (revision !== undefined) normalizedCache = { revision, source: value, value: normalized };
+  return normalized;
 }
 
 function identifiedRecords(values: unknown[], key: string) {
@@ -226,8 +230,9 @@ export class WorkspaceService {
       return workspace;
     });
   }
-  /** Scene/preset operations share the same lock and SQLite transaction as UI merges. */
-  async mutateScoped<T>(edit: (current: Record<string, unknown>) => { workspace?: Record<string, unknown>; result: T }, initializeIfMissing = false) {
+  /** Scene/preset operations share the same lock and SQLite transaction as UI merges.
+   * 编辑方可返回 changed:false 表示未修改，跳过整库规范化与深比较；未声明时才回退到既有比较。 */
+  async mutateScoped<T>(edit: (current: Record<string, unknown>) => { workspace?: Record<string, unknown>; result: T; changed?: boolean }, initializeIfMissing = false) {
     await this.get();
     return this.lock(async () => {
       let changed = false;
@@ -236,7 +241,8 @@ export class WorkspaceService {
         if (!existing && !initializeIfMissing) throw new HttpError(409, "工作区尚未初始化", "WORKSPACE_NOT_INITIALIZED");
         const current: Record<string, unknown> = existing ?? { format: "zane-studio.workspace/v1", scenes: [], workflows: {}, optionPresets: [], drafts: [], sceneVersions: {} };
         const edited = edit(structuredClone(current));
-        if (!edited.workspace || (existing && isDeepStrictEqual(normalizeWorkspacePayload(edited.workspace), normalizeWorkspacePayload(current)))) return { workspace: current, result: edited.result };
+        if (!edited.workspace || edited.changed === false) return { workspace: current, result: edited.result };
+        if (edited.changed !== true && existing && isDeepStrictEqual(normalizeWorkspacePayload(edited.workspace), normalizeWorkspacePayload(current))) return { workspace: current, result: edited.result };
         const workspace = this.store.saveWorkspace(normalizeWorkspacePayload(edited.workspace));
         changed = true;
         return { workspace, result: edited.result };

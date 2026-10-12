@@ -151,19 +151,92 @@ test("逐项执行保留失败项并按 continue 聚合结果", async (t) => {
   definition.outputs[0].type = "json";
   await service.submit(submission(id("iteration"), definition, { items: [1, 2, 3] }));
   const result = await service.wait(settings.projectDirectory, id("iteration"));
+  assert.equal(result.status, "completed");
   assert.deepEqual(result.steps[0].items?.map((item) => item.status), ["completed", "failed", "completed"]);
-  assertStepTiming(result.steps[0]!, "failed");
+  assertStepTiming(result.steps[0]!, "completed_with_errors");
   for (const item of result.steps[0]!.items!) assertStepTiming(item, item.status);
   assert.deepEqual(result.steps[0].outputs?.value, [1, null, 3]);
 
   failSecond = false;
-  await service.submit({ ...submission(id("iteration-resume"), definition), resumeFromRunId: id("iteration") });
-  const resumed = await service.wait(settings.projectDirectory, id("iteration-resume"));
-  assert.equal(resumed.status, "completed");
-  assert.deepEqual(resumed.steps[0].items?.map((item) => item.status), ["completed", "completed", "completed"]);
-  assert.deepEqual(resumed.steps[0].outputs?.value, [1, 2, 3]);
-  assert.deepEqual(resumed.outputs[0]?.value, [1, 2, 3]);
+  await service.submit({ ...submission(id("iteration-rerun"), definition, { items: [1, 2, 3] }), rerunFromRunId: id("iteration"), rerunRequest: { rerunSteps: [{ stepId: "loop", itemIndexes: [1] }] } });
+  const rerun = await service.wait(settings.projectDirectory, id("iteration-rerun"));
+  assert.equal(rerun.status, "completed");
+  assert.deepEqual(rerun.steps[0].items?.map((item) => item.status), ["completed", "completed", "completed"]);
+  assert.deepEqual(rerun.steps[0].outputs?.value, [1, 2, 3]);
+  assert.deepEqual(rerun.outputs[0]?.value, [1, 2, 3]);
   assert.deepEqual(calls, [1, 2, 3, 2]);
+  assert.ok(rerun.steps[0].items?.filter((item) => item.index !== 1).every((item) => item.reusedFromRunId === id("iteration")));
+});
+
+test("onError continue 部分成功：运行完成且下游可消费成功项", async (t) => {
+  const calls: string[] = [];
+  const { service, settings } = await harness(t, { executor: { kind: "fake", async execute({ step, inputValues, stepValues }) {
+    calls.push(step.id);
+    if (step.id === "loop") {
+      const item = inputValues["iteration.item"] as number;
+      if (item === 2) throw new Error("第二项失败");
+      return { value: item };
+    }
+    return { value: (stepValues.get("loop")!.value as Array<number | null>).filter((value) => value !== null).join(",") };
+  } } });
+  await service.start();
+  const definition = workflow([
+    { id: "loop", name: "逐项", kind: "fake", execution: { mode: "for_each", sourceRef: "input.items", onError: "continue" }, outputs: [{ key: "value", type: "json" }] },
+    { id: "after", name: "下游", kind: "fake", inputs: [{ key: "values", sourceRef: "step.loop.outputs.value" }], outputs: [{ key: "value", type: "text" }] },
+  ]);
+  definition.inputs = [{ key: "items", type: "json", required: true }];
+  definition.outputs = [{ key: "result", type: "json", sourceRef: "step.after.outputs.value" }];
+  await service.submit(submission(id("partial-success"), definition, { items: [1, 2, 3] }));
+  const result = await service.wait(settings.projectDirectory, id("partial-success"));
+  assert.equal(result.status, "completed");
+  assert.equal(result.steps[0].status, "completed_with_errors");
+  assert.match(result.steps[0].message!, /第二项失败/);
+  assert.deepEqual(result.steps[0].items?.map((item) => item.status), ["completed", "failed", "completed"]);
+  assert.equal(result.steps[1].status, "completed");
+  assert.equal(result.outputs[0].value, "1,3");
+  assert.deepEqual(calls, ["loop", "loop", "loop", "after"]);
+});
+
+test("onError continue 全部失败仍判整步失败", async (t) => {
+  const { service, settings } = await harness(t, { executor: { kind: "fake", async execute() { throw new Error("全部失败"); } } });
+  await service.start();
+  const definition = workflow([{ id: "loop", name: "逐项", kind: "fake", execution: { mode: "for_each", sourceRef: "input.items", onError: "continue" }, outputs: [{ key: "value", type: "json" }] }]);
+  definition.inputs = [{ key: "items", type: "json", required: true }];
+  await service.submit(submission(id("all-items-failed"), definition, { items: [1, 2] }));
+  const result = await service.wait(settings.projectDirectory, id("all-items-failed"));
+  assert.equal(result.status, "failed");
+  assert.equal(result.steps[0].status, "failed");
+  assert.deepEqual(result.steps[0].items?.map((item) => item.status), ["failed", "failed"]);
+});
+
+test("增量 checkpoint 只重写变化步骤的 run_steps 行", (t) => {
+  const store = new SqliteStore(":memory:");
+  t.after(() => store.close());
+  const project = "project";
+  const run = {
+    runId: id("incremental"), sceneId: "test-scene", workflowName: "基础测试", status: "running",
+    createdAt: "2026-01-01T00:00:00.000Z", startedAt: "2026-01-01T00:00:00.000Z",
+    steps: [
+      { stepId: "a", name: "A", status: "completed" },
+      { stepId: "b", name: "B", status: "running" },
+    ],
+    outputs: [], inputValues: {},
+    workflow: { sceneId: "test-scene", name: "基础测试", inputs: [], steps: [], outputs: [] },
+  } as unknown as import("../domain/types.js").RunRecord;
+  store.createRun(project, run, { runId: run.runId });
+  const rows = () => (store as unknown as { database: import("node:sqlite").DatabaseSync }).database
+    .prepare("SELECT step_id, status, snapshot_json FROM run_steps WHERE project_directory=? AND run_id=? ORDER BY step_id").all(project, run.runId) as Array<{ step_id: string; status: string; snapshot_json: string }>;
+  assert.deepEqual(rows().map((row) => [row.step_id, row.status]), [["a", "completed"], ["b", "running"]]);
+  const next = { ...run, steps: [
+    { stepId: "a", name: "A", status: "completed" },
+    { stepId: "b", name: "B", status: "completed", outputs: { value: "done" } },
+  ] } as unknown as import("../domain/types.js").RunRecord;
+  store.saveRun(project, next, [{ type: "step.completed", stepId: "b" }], { changedStepIds: new Set(["b"]) });
+  const updated = rows();
+  assert.deepEqual(updated.map((row) => [row.step_id, row.status]), [["a", "completed"], ["b", "completed"]]);
+  // 未变化的步骤保留原行内容；权威快照始终完整。
+  assert.equal(JSON.parse(updated.find((row) => row.step_id === "a")!.snapshot_json).name, "A");
+  assert.equal(store.getRun(project, run.runId)?.steps[1]?.outputs?.value, "done");
 });
 
 test("逐项执行按最大并行数运行并保持结果顺序", async (t) => {

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, open, readFile, unlink } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -9,6 +9,8 @@ const exec = promisify(execFile);
 const settings = await productionSettings();
 const dataDirectory = settings.dataDirectory;
 const logFile = path.join(dataDirectory, "watchdog.log");
+const statusFile = path.join(dataDirectory, "watchdog-status.json");
+const failOnDegraded = process.argv.includes("--fail-on-degraded");
 const lockFile = path.join(dataDirectory, "watchdog.lock");
 const serverLogFile = path.join(dataDirectory, "watchdog-server.log");
 const latestUpgradeFile = path.join(dataDirectory, "maintenance", "upgrades", "latest.json");
@@ -18,27 +20,34 @@ await mkdir(dataDirectory, { recursive: true });
 
 async function writeLog(event, details = {}) {
   await appendFile(logFile, `${JSON.stringify({ time: new Date().toISOString(), event, ...details })}\n`, "utf8");
+  // Latest outcome for schedulers and dashboards; written best-effort, never blocks the run.
+  await writeFile(statusFile, `${JSON.stringify({ time: new Date().toISOString(), event, ...details }, null, 2)}\n`, "utf8").catch(() => undefined);
 }
 
 async function acquireLock() {
-  try {
-    const handle = await open(lockFile, "wx");
-    await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), "utf8");
-    return handle;
-  } catch (error) {
-    if (error?.code !== "EEXIST") throw error;
+  const payload = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+  // Write the payload in the same step that claims the file: a watchdog run killed
+  // mid-acquire must not leave an empty lock that breaks every later run.
+  const claim = async () => {
     try {
-      const lock = JSON.parse(await readFile(lockFile, "utf8"));
-      if (await processInfo(Number(lock?.pid))) return undefined;
-      await unlink(lockFile);
-      const handle = await open(lockFile, "wx");
-      await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), "utf8");
-      return handle;
-    } catch (retryError) {
-      if (retryError?.code === "EEXIST" || retryError?.code === "ENOENT") return undefined;
-      throw retryError;
+      await writeFile(lockFile, payload, { flag: "wx" });
+      return { close: async () => undefined };
+    } catch (error) {
+      if (error?.code === "EEXIST") return undefined;
+      throw error;
     }
+  };
+  const claimed = await claim();
+  if (claimed) return claimed;
+  let owner;
+  try {
+    owner = JSON.parse(await readFile(lockFile, "utf8"));
+  } catch {
+    owner = undefined;
   }
+  if (owner && await processInfo(Number(owner?.pid))) return undefined;
+  await unlink(lockFile).catch(() => undefined);
+  return claim();
 }
 
 async function readUpgradeState() {
@@ -53,8 +62,16 @@ async function readUpgradeState() {
 
 async function processInfo(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
-  const command = "$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process -Filter 'ProcessId=" + pid + "'; if($p){$p | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress}";
+  // wmic resolves a single PID in ~100ms; PowerShell startup costs 1-3s per call.
   try {
+    const { stdout } = await exec("wmic", ["process", "where", `ProcessId=${pid}`, "get", "CommandLine", "/format:list"], { windowsHide: true, timeout: 5000 });
+    const line = stdout.split(/\r?\n/).map((entry) => entry.trim()).find((entry) => entry.toLowerCase().startsWith("commandline="));
+    return line ? { ProcessId: pid, CommandLine: line.slice("commandline=".length) } : undefined;
+  } catch {
+    // wmic is removed on newer Windows builds; fall back to PowerShell.
+  }
+  try {
+    const command = "$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process -Filter 'ProcessId=" + pid + "'; if($p){$p | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress}";
     const { stdout } = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { windowsHide: true, timeout: 10000 });
     return JSON.parse(stdout.trim() || "null");
   } catch {
@@ -117,7 +134,9 @@ async function main() {
     const listening = await portIsOpen(settings.port, settings.probeHost);
     if (listening) {
       await writeLog("backend_degraded", { port: settings.port, health: false });
-      return 0;
+      // Port is answering but the workbench is not healthy: not something a restart
+      // should blindly fix. Opt in to a failing exit code via --fail-on-degraded.
+      return failOnDegraded ? 1 : 0;
     }
 
     const upgradeState = await readUpgradeState();

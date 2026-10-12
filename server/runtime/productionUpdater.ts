@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
-import { cp, lstat, mkdir, open, readFile, readdir, rename, stat, symlink, unlink } from "node:fs/promises";
+import { existsSync, watch, type FSWatcher } from "node:fs";
+import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, stat, symlink, unlink } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
@@ -16,7 +17,7 @@ type Inspection = { lease: ProductionLease; info: Record<string, any> };
 export interface UpgradeDependencies {
   verifyProcess(lease: ProductionLease): Promise<void>;
   control(lease: ProductionLease, action: string, operationId?: string): Promise<any>;
-  runCheck?(snapshot: string, logFile: string, releaseId: string): Promise<void>;
+  runCheck?(snapshot: string, logFile: string, releaseId: string, signal?: AbortSignal): Promise<void>;
   start?(settings: UpgradeSettings, operationId: string, releaseId: string, logFile: string): Promise<number>;
   sleep?(milliseconds: number): Promise<void>;
   health?(settings: UpgradeSettings): Promise<boolean>;
@@ -25,7 +26,7 @@ const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 const absent = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 const timestamp = () => new Date().toISOString();
 const terminal = new Set(["completed", "failed", "cancelled", "needs_attention"]);
-const sourceDirectories = ["server", "src", "scripts", "docs", "examples", "public", ".github"];
+const sourceDirectories = ["server", "src", "scripts", "docs", "examples", "public"];
 const sourceFiles = ["package.json", "package-lock.json", "tsconfig.json", "tsconfig.server.json", "vite.config.ts", "index.html", "README.md", "AGENTS.md", ".env.example"];
 const assertInside = (directory: string, target: string) => {
   const relative = path.relative(path.resolve(directory), path.resolve(target));
@@ -79,12 +80,29 @@ function isolatedEnvironment(releaseId: string): NodeJS.ProcessEnv {
   for (const [key,value] of Object.entries(process.env)) if (allowed.has(key.toLowerCase())) env[key] = value;
   return {...env,ZANE_RELEASE_ID:releaseId,VITE_WORKBENCH_RELEASE:releaseId};
 }
-export async function defaultCheck(snapshot: string, logFile: string, releaseId: string) {
+const checkTimeoutMs = 30 * 60_000;
+async function killTree(child: ChildProcess) {
+  if (child.pid === undefined) return;
+  if (process.platform === "win32") spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true }).once("error", () => child.kill());
+  else child.kill("SIGKILL");
+}
+
+export async function defaultCheck(snapshot: string, logFile: string, releaseId: string, signal?: AbortSignal) {
   const log = await open(logFile,"a");
   try {
     const child = spawn("npm run check", {cwd:snapshot,env:isolatedEnvironment(releaseId),shell:true,windowsHide:true,stdio:["ignore",log.fd,log.fd]});
-    const code = await new Promise<number | null>((resolve,reject) => { child.once("error",reject); child.once("exit",resolve); });
-    if (code !== 0) throw new Error("新版本 npm run check 未通过；旧工作台未停止。查看 check.log");
+    const exit = new Promise<number | null>((resolve,reject) => { child.once("error",reject); child.once("exit",resolve); });
+    let clearTimer: (() => void) | undefined;
+    const cancelled = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => { void killTree(child); reject(new Error("隔离验收超过30分钟未完成；已中止检查")); }, checkTimeoutMs);
+      clearTimer = () => clearTimeout(timer);
+      const onAbort = () => { void killTree(child); reject(new Error("验收已取消；旧工作台未停止")); };
+      if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      const code = await Promise.race([exit, cancelled]);
+      if (code !== 0) throw new Error("新版本 npm run check 未通过；旧工作台未停止。查看 check.log");
+    } finally { clearTimer?.(); }
   } finally { await log.close(); }
 }
 async function defaultStart(settings: UpgradeSettings, operationId: string, releaseId: string, logFile: string) {
@@ -199,6 +217,18 @@ export class ProductionUpdater {
       return this.record;
     } finally { await this.unlock(); }
   }
+  /** Abort the isolated check as soon as a cancel receipt appears. Event-driven via
+   * fs.watch: a pending timer-polling loop measurably stalls node:sqlite backup()
+   * and other native work sharing the event loop. */
+  private watchCheckCancellation(id: string, controller: AbortController) {
+    const cancelFile = path.join(this.directory,id+".cancel.json");
+    let directoryWatcher: FSWatcher | undefined;
+    const stop = () => { directoryWatcher?.close(); };
+    try { directoryWatcher = watch(this.directory, (_event, filename) => { if (filename === null || filename === id+".cancel.json") { if (existsSync(cancelFile)) { controller.abort(new Error("验收已取消；旧工作台未停止")); stop(); } } }); }
+    catch { /* Directory may vanish; cancellation() is still checked after the check completes. */ }
+    controller.signal.addEventListener("abort", stop, { once: true });
+    return stop;
+  }
   async prepare(id: string) {
     await this.lock(id);
     try {
@@ -211,7 +241,11 @@ export class ProductionUpdater {
       if (before !== await hashFiles(paths.snapshot,files) || before !== await hashFiles(this.settings.root,await sourceInventory(this.settings.root))) throw new Error("源码在快照期间变化；没有停止旧工作台");
       await symlink(path.join(this.settings.root,"node_modules"),path.join(paths.snapshot,"node_modules"),process.platform === "win32" ? "junction" : "dir");
       await this.save({state:"checking",message:"隔离快照执行 npm run check；旧工作台继续运行"});
-      await (this.dependencies.runCheck ?? defaultCheck)(paths.snapshot,path.join(paths.release,"check.log"),id);
+      const checkController = new AbortController();
+      const stopWatcher = this.watchCheckCancellation(id, checkController);
+      try {
+        await (this.dependencies.runCheck ?? defaultCheck)(paths.snapshot,path.join(paths.release,"check.log"),id,checkController.signal);
+      } finally { checkController.abort(); stopWatcher(); }
       if (await this.cancellation()) return this.record;
       const hash=await artifactHash(paths.snapshot);
       await mkdir(paths.next,{recursive:true});
@@ -220,7 +254,11 @@ export class ProductionUpdater {
       await this.save({state:"ready",checkPassed:true,checkPassedAt:timestamp(),artifactHash:hash,message:"新版本验收通过；可等待空闲后切换",nextAction:"apply_same_operation_id"});
       return this.record;
     } catch (error) {
-      if (this.record?.operationId === id && !terminal.has(this.record.state)) await this.save({state:"failed",message:String(error),nextAction:"inspect_check_log"});
+      if (this.record?.operationId === id && !terminal.has(this.record.state)) {
+        // A cancel received during checking is an outcome, not a failure.
+        if (await this.cancellation()) return this.record;
+        await this.save({state:"failed",message:String(error),nextAction:"inspect_check_log"});
+      }
       throw error;
     } finally { await this.unlock(); }
   }
@@ -349,11 +387,41 @@ export class ProductionUpdater {
       await this.save({state:"starting",switched:true,message:"首次启动候选工作台，健康检查前保持业务隔离",nextAction:"inspect_candidate"});
       const pid=await (this.dependencies.start ?? defaultStart)(this.settings,id,id,path.join(paths.release,"server.log"));await this.save({newPid:pid});
       const live=await this.awaitCandidate(pid,id,id,30000);await this.save({newInstanceId:live.lease.instanceId});await this.activate(live,id);
-      await this.save({state:"completed",servingConfirmed:true,message:"首次启动完成，未审批、续跑或调用模型",nextAction:"refresh_when_edits_saved"});return this.record;
+      await this.save({state:"completed",servingConfirmed:true,message:"首次启动完成，未审批、续跑或调用模型",nextAction:"refresh_when_edits_saved"});
+      await this.pruneReleases().catch(() => undefined);return this.record;
     } catch(error) {
       if (this.record?.operationId===id) await this.save({state:this.record.shutdownConfirmed?"needs_attention":"failed",message:String(error),nextAction:this.record.shutdownConfirmed?"inspect_original_receipts_and_process":"inspect_check_log"});
       throw error;
     } finally {await this.unlock();}
+  }
+  /**
+   * Disk budget for `.local/upgrades`: every release keeps a full source snapshot
+   * (~10MB+). Prune terminal releases (completed/failed/cancelled) beyond the newest
+   * `keep`, always preserving needs_attention evidence, in-flight operations, and the
+   * current one. Records (small JSON receipts) are never deleted.
+   */
+  async pruneReleases(keep = 5) {
+    const entries = await readdir(this.directory, { withFileTypes: true }).catch((error) => { if (absent(error)) return []; throw error; });
+    const records: Array<{ id: string; updatedAt: string; state: string }> = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      if (["latest.json", "lock.json"].includes(entry.name) || entry.name.endsWith(".cancel.json") || entry.name.endsWith(".dispatch.json")) continue;
+      const id = entry.name.slice(0, -".json".length);
+      try { upgradeId.parse(id); } catch { continue; }
+      try {
+        const record = upgradeRecordSchema.parse(JSON.parse(await readFile(path.join(this.directory, entry.name), "utf8")));
+        records.push({ id, updatedAt: record.updatedAt, state: record.state });
+      } catch { continue; }
+    }
+    const prunable = records.filter((record) => ["completed", "failed", "cancelled"].includes(record.state));
+    const keepIds = new Set([...prunable].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, keep).map((record) => record.id));
+    const protectedIds = new Set([...records.filter((record) => record.state === "needs_attention").map((record) => record.id), ...(this.record ? [this.record.operationId] : [])]);
+    for (const record of prunable) {
+      if (keepIds.has(record.id) || protectedIds.has(record.id)) continue;
+      const release = this.paths(record.id).release;
+      assertInside(this.releaseDirectory, release);
+      await rm(release, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
   async apply(id: string, options: { pollMs?: number; waitTimeoutMs?: number; healthTimeoutMs?: number } = {}) {
     await this.lock(id);
@@ -393,6 +461,7 @@ export class ProductionUpdater {
       await this.save({newInstanceId:candidate.lease.instanceId});
       await this.activate(candidate,id);
       await this.save({state:"completed",servingConfirmed:true,message:"升级完成；Hermes/ComfyUI 未重启，任务未自动续跑",nextAction:"refresh_when_edits_saved"});
+      await this.pruneReleases().catch(() => undefined);
       return this.record;
     } catch (error) {
       if (!this.record || this.record.operationId !== id) throw error;

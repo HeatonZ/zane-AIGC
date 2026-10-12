@@ -3,7 +3,7 @@ import test from "node:test";
 import { parseHermesJson, parseHermesOutput } from "./hermesOutput.js";
 
 const keys = ["storyboard", "shots"];
-const shots = Array.from({ length: 15 }, (_, index) => ({ index: index + 1, seconds: 8, visual_description: `镜头${index + 1}：字符 }, \"shots\": 不是结构`, dialogue: [] }));
+const shots = Array.from({ length: 15 }, (_, index) => ({ index: index + 1, seconds: 8, visual_description: `镜头${index + 1}：字符 }, "shots": 不是结构`, dialogue: [] }));
 const expected = { storyboard: "15镜，共120秒。\n完整对白与连续性，不截断。", shots };
 const broken = JSON.stringify({ storyboard: expected.storyboard }) + ',"shots":' + JSON.stringify(shots) + '}';
 

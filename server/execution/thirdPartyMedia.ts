@@ -10,7 +10,7 @@ import { createRuntimeMediaValue, isRuntimeMediaValue } from "../runtimeValue.js
 import type { StepExecutionContext } from "./workflowExecutor.js";
 import { THIRD_PARTY_MEDIA_LIMITS } from "./thirdPartyMediaContract.js";
 
-const fieldName = z.string().regex(/^[A-Za-z][A-Za-z0-9_.\[\]-]{0,127}$/);
+const fieldName = z.string().regex(/^[A-Za-z][A-Za-z0-9_.[\]-]{0,127}$/);
 const uploadSchema = z.array(z.object({ inputKey: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*$/), fieldName }).strict()).max(16);
 const responseSchema = z.object({ path: z.string().min(1).max(512).default("data"), base64Field: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*$/).default("b64_json"), expectedCount: z.int().min(1).max(16).optional() }).strict();
 export { multipartImagesValueSchema, responseImagesValueSchema, THIRD_PARTY_MEDIA_LIMITS } from "./thirdPartyMediaContract.js";

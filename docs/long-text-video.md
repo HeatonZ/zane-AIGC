@@ -4,7 +4,7 @@
 
 ## 流程
 
-长文/剧情与已提供资产 → Writer 一次编写制作级分镜与对白 → AIXG 一次批量转换 H3 提示词 → 一个自定义代码步骤完成分镜对齐、全局资产到局部编号映射与多轨时间线 → 同一个 ComfyUI-Easy-Media 导演台工程按分镜顺序续接整片并自动拼接。
+长文/剧情与已提供资产 → Writer 一次编写制作级分镜与对白 → AIXG 逐镜转换 H3 提示词（每镜一次调用，单对象输出契约） → 一个自定义代码步骤完成分镜对齐、全局资产到局部编号映射与多轨时间线 → 同一个 ComfyUI-Easy-Media 导演台工程按分镜顺序续接整片并自动拼接。
 
 - 确定性数据变换统一使用基础 `core.code`：分镜与提示词对齐、素材编号映射、帧数网格和时间线都在这一步完成，不再需要 `text.template` 拼装、多步列表对齐或本地视频拼接。
 - Writer 负责故事、镜头、对白和连续性；AIXG 只转换模型提示词，不重新编剧、拆镜或更改对白/时长/资产选择。无资产生成、独立配音/TTS、关键帧生成、模型质检节点。
@@ -25,9 +25,9 @@
 Hermes 当前不传送音频附件，因此 Writer 不会假装听过样本；它依据音色对应说明写对白和声线分配，实际音频由最终 ComfyUI 步骤绑定到导演台工程的音色输入。
 Hermes 当前不传送音频附件，因此 Writer 不会假装听过样本；它依据音色对应说明写对白和声线分配，实际音频由 `LoadAudio` 接入 H3 的 `ref_audios`。
 
-### 素材用途与 ComfyUI 媒体端口
+### 场景输入与 ComfyUI 媒体端口
 
-业务分类不是 ComfyUI 节点类型；上游场景输入支持可选 `mediaRole`：`character` 人物、`scene` 场景、`prop` 道具对应 `image_list`；`voice_reference` 音色对应 `audio_list`；`reference` 或省略表示通用参考。用途不是新的媒体类型，不改变权限、固定版本或节点协议。ComfyUI 编辑器不再提供“添加分类素材”或用途下拉框；它仅绑定普通图片/音频/视频列表。旧用途字段与分类绑定保留兼容，不自动修改旧发布快照。
+场景输入只声明媒体类型（图片列表/音频列表/视频列表），不再有素材用途（`mediaRole`）子类下拉：人物/场景/道具/音色写在输入名称里，例如“人物资产”“参考音色”。分类从未改变权限、固定版本或节点协议；ComfyUI 绑定也只接普通图片/音频/视频列表。旧发布快照可能仍带 `mediaRole`，校验与固定发布契约（`inputRequirements.mediaRole`、`inputSchema.properties.KEY["x-media-role"]`）原样保留以兼容历史，编辑草稿时不补配、不自动迁移，也不自动替换旧发布版。
 人物、场景、道具图片按绑定顺序合并为**一条图片列表**进入编辑器 `image` 输入，槽位 `image1..imageN` 即 人物→场景→道具 的全局顺序；参考音色按上传顺序占用 `audio1..audio10`。空组不占位，组内保持上传顺序、不去重，`Picture/Audio` 编号与最终列表严格一致；不把音频和图片混在一起，也不为每个镜头重复绑定整包素材。
 人物、场景、道具分别取当前镜头子集，复用基础媒体引用服务按人物→场景→道具顺序合并为 `iteration.item.references.images`，**只有一条图片列表绑定到 `192.ref_images`**；本镜音色合并为 `iteration.item.references.audios`，只有一条音频列表绑定到 `192.ref_audios`。空组不占位，组内保持上传顺序、不去重，`Picture/Audio`编号与最终列表严格一致；不把音频和图片混在一起。
 旧长文流程逐项生成后用本机 FFmpeg `media.video_concat` 拼接（已标记 `compatibilityOnly:true`，仍可执行已发布快照）；现在由工程节点一次生成并自动拼接，因此不再需要 `media.select_references` 与本地视频拼接步骤。新场景直接绑定已授权媒体输入；固定发布版的 HTTP/MCP `get_scene` 同时返回 `inputRequirements.mediaRole` 和 `inputSchema.properties.KEY["x-media-role"]`。已有场景只在当前 revision 下编辑草稿，核对后显式发布，不自动替换旧发布版。
@@ -38,7 +38,7 @@ Hermes 当前不传送音频附件，因此 Writer 不会假装听过样本；�
 Writer 输出 `storyboard` 可读文本和 `shots` 对象数组。每项含连续递增 `index`、5..15秒的数字 `seconds`、1-based `characters/scenes/props/voices` 编号数组，以及镜头任务、`visual_description`、逐字对白、起止状态；不输出模型提示词。
 
 AIXG 复用基础 Hermes 的 `for_each` 遍历 `step.writer.outputs.shots`，只输出当前镜头的非空 text `prompt`（六段 H3 格式）。生成步骤仍遍历 Writer 原始 `shots`，`inputs.prompts` 引用 `step.aixg.outputs.prompt` 汇总列表；程序仅按对应顺序注入提示词，不让模型改写原镜头元数据。整列表数量、所有分镜和提示词的非空/类型/长度、时长与素材引用在第一次 ComfyUI 提交前校验；六段标题只是建议，缺段、重复或顺序不一致仅给 ⚠ 非阻断提示，不因格式停止生成。提示在生成前写入既有步骤/逐项 warnings，UI、HTTP/MCP 可读取；实际结果也保留 applied_shot.prompt_warnings。格式异常不截断可能包含动作/对白的尾部，追加既有禁音乐策略；AIXG 缺失、失败或空提示词直接停止，不回退 Writer 提示词。旧发布快照未配置 `prompts` 输入时保持原有 inline `prompt` 协议。
-AIXG 一次批量转换全部分镜，输出与 `step.writer.outputs.shots` 等长的提示词字符串数组（每项为六段 H3 格式），不改写镜头元数据。生成前校验全列表数量、顺序、非空与长度；六段标题只是建议，缺段、重复或顺序不一致只给警告，不因格式停止生成，也不截断可能包含动作/对白的尾部。AIXG 缺失、失败或空提示词直接停止，不回退 Writer 提示词。
+AIXG 以 `for_each` 逐镜转换 Writer 的每个分镜：每次调用只转换当前镜头，输出单对象契约 `{"prompt":"六段完整H3提示词"}`（非空字符串），逐项结果按镜头顺序汇总为与 `step.writer.outputs.shots` 等长的数组，不改写镜头元数据。单镜调用不要求模型拼装 JSON 数组（批量数组在实测中反复出现边界标点缺陷，已弃用）；某镜失败即停止，续跑复用已完成项。六段标题只是建议，缺段、重复或顺序不一致只给警告，不因格式停止生成，也不截断可能包含动作/对白的尾部。AIXG 缺失、失败或空提示词直接停止，不回退 Writer 提示词。
 Writer 和 AIXG 用 `<Character n>/<Scene n>/<Prop n>/<Voice n>` 全局编号；程序按**当前镜头**所选素材编译为 H3 的 `<Picture n>/<Audio n>` 局部编号。超出参考容量、资产不存在、结构不合法会在提交 ComfyUI 前报错，不静默漏图或漏音色。
 Writer 和 AIXG 用 `<Character n>/<Scene n>/<Prop n>/<Voice n>` 全局编号；`prepare_console` 把全局标记按**当前镜头**所选素材编译为 `<Picture n>/<Audio n>` 局部编号。分镜连续性、5..15 秒、编号存在且不重复、每镜 9 图 3 音上限都在提交 ComfyUI 前校验，不静默漏图或漏音色。音色参考由工程节点一次性提供给每个镜头，`<Audio n>` 按全部镜头实际使用到的音色升序编号，与音轨顺序一致。
 `Zane/MiniMaxH3-极简导演台+.json` 是 Easy-Media 多轨工程：`easy multiTrackEditor`（节点 14）接收 `track_data` 与 `resolution.aspect_ratio`/`resolution.megapixels`；`easy multitrackProject`（节点 15）接收 `project_name`/`segment_start_number`/`segment_count`；`SaveVideo`（节点 63）输出整片；`easy makeAudioList`（节点 64）把 `audio1..audio10` 汇成一条音频列表接入编辑器。任务轨按分镜时长连续排布，首镜 `continuity_mode=shot`、其余 `context`；帧数按 17k+5 网格向上对齐，原生 24fps，实际成片时长可能略高于脚本目标。工程名按运行隔离，并发或重跑不会相互覆盖。替换或重新导出该工作流后必须重新核对节点 ID 与属性，不能沿用旧编号。

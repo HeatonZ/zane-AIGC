@@ -103,6 +103,9 @@ export interface RunStep {
   capabilityVersion?: string;
   capabilityConfig?: Record<string, JsonValue>;
   hermesProfile?: string;
+  /** Optional request-level provider/model override for this Hermes step; both omitted keeps the profile default. */
+  hermesProvider?: string;
+  hermesModel?: string;
   inputs?: RunStepInput[];
   outputs?: RunStepOutput[];
   promptTemplate?: string;
@@ -168,7 +171,7 @@ export interface RunStepRecord {
   capabilityId?: string;
   capabilityVersion?: string;
   name: string;
-  status: "running" | "completed" | "skipped" | "failed" | "cancelled";
+  status: "running" | "completed" | "completed_with_errors" | "skipped" | "failed" | "cancelled";
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;

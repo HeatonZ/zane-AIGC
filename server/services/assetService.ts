@@ -109,10 +109,11 @@ export class AssetService {
     if (archived && isRunId(archived[1])) {
       let filename: string;
       try { filename = decodeURIComponent(archived[2]); } catch { throw new HttpError(400, "归档媒体文件名无效"); }
+      // oxlint-disable-next-line no-control-regex -- 拒绝文件名中的 NUL 等控制字符正是本行的目的
       if (!filename || filename === "." || filename === ".." || /[\\/\x00]/.test(filename) || path.basename(filename) !== filename) throw new HttpError(400, "归档媒体文件名无效");
       source = path.join(runArtifactPaths(project, archived[1]).directory, "outputs", "media", filename);
     }
-    if (/^\/api\/v1\/assets\//.test(source) && typeof record?.assetId === "string" && Number.isSafeInteger(record.assetVersion)) source = this.file(project, record.assetId, record.assetVersion as number);
+    if (source.startsWith('/api/v1/assets/') && typeof record?.assetId === "string" && Number.isSafeInteger(record.assetVersion)) source = this.file(project, record.assetId, record.assetVersion as number);
     if (!source || /^(?:https?:|data:|\/api\/)/i.test(source)) throw new HttpError(400, "此结果没有本地媒体文件");
     return path.resolve(source);
   }
@@ -123,8 +124,8 @@ export class AssetService {
     const archived = /^\/api\/(?:v1\/runs|workflows\/runs)\/([a-f0-9-]{36})\/media\/([^/?]+)$/i.exec(source);
     if (archived) source = this.localMediaFile(settings.projectDirectory, value);
     if (!source && typeof record?.file === "string") throw new HttpError(400, "归档结果缺少可解析的媒体地址");
-    if (/^\/api\/v1\/assets\//.test(source) && typeof record?.assetId === "string") source = this.file(settings.projectDirectory, record.assetId, Number(record.assetVersion));
-    if ((/^\/api\/comfyui\/view/.test(source) || !source) && typeof record?.filename === "string") source = settings.comfyuiBaseUrl + "/view?" + new URLSearchParams({ filename: record.filename, subfolder: String(record.subfolder ?? ""), type: String(record.type ?? "output") });
+    if (source.startsWith('/api/v1/assets/') && typeof record?.assetId === "string") source = this.file(settings.projectDirectory, record.assetId, Number(record.assetVersion));
+    if ((source.startsWith('/api/comfyui/view') || !source) && typeof record?.filename === "string") source = settings.comfyuiBaseUrl + "/view?" + new URLSearchParams({ filename: record.filename, subfolder: String(record.subfolder ?? ""), type: String(record.type ?? "output") });
     if (!source) throw new HttpError(400, "媒体缺少可读取的地址");
     let stream: Readable;
     let originalName = typeof record?.filename === "string" ? record.filename : path.basename(source);

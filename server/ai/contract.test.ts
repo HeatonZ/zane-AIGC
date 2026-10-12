@@ -3,9 +3,14 @@ import { AI_FOUNDATION_FEATURES } from "./features.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { createAiOpenApi } from "./openapi.js";
+import { createAiOpenApi, outputTypes } from "./openapi.js";
+import { ACCESS_OUTPUT_TYPES } from "./accessContracts.js";
+import { loadCapabilityPackages } from "../capabilities/loadPackages.js";
+import type { CapabilityRuntime } from "../capabilities/package.js";
 import { aiOperations } from "./operations.js";
 import { AI_OPERATOR_GUIDE } from "./guide.js";
+
+const runtime: CapabilityRuntime = { async hermes() { throw new Error("只读契约测试不调用 Hermes"); }, async comfyui() { throw new Error("只读契约测试不调用 ComfyUI"); }, async condition() { return { result: true }; } };
 
 test("AI机器契约：每个MCP工具对应OpenAPI，JSON递归引用全部可解析", () => {
   const api = createAiOpenApi(); const names = new Set<string>();
@@ -13,6 +18,17 @@ test("AI机器契约：每个MCP工具对应OpenAPI，JSON递归引用全部可�
     assert.ok(!names.has(operation.name)); names.add(operation.name);
     const spec = api.paths[operation.path][operation.method.toLowerCase()] as { operationId: string; responses: Record<string, unknown> };
     assert.equal(spec.operationId, operation.name); assert.ok(spec.responses[String(operation.success)]);
+  }
+  // 每个操作都必须映射到具名响应 schema：漏登记会得到无类型泛型响应，属契约缺陷。
+  const mapped = new Set<string>([...Object.keys(ACCESS_OUTPUT_TYPES), ...Object.keys(outputTypes)]);
+  const schemas = api.components.schemas as Record<string, unknown>;
+  for (const operation of aiOperations) {
+    const spec = api.paths[operation.path][operation.method.toLowerCase()] as { responses: Record<string, { content: Record<string, { schema: { $ref?: string } }> }> };
+    const schema = spec.responses[String(operation.success)].content["application/json"].schema;
+    assert.ok(schema.$ref, operation.name + " 缺少具名响应 schema（在 openapi.ts 的 outputTypes 登记）");
+    const name = String(schema.$ref).split("/").pop()!;
+    assert.ok(schemas[name], operation.name + " 的响应 schema 未定义：" + name);
+    assert.ok(mapped.has(operation.name), operation.name + " 未登记到响应类型映射表");
   }
   const visit = (value: unknown) => {
     if (!value || typeof value !== "object") return;
@@ -46,6 +62,38 @@ test("管理员运行响应契约声明提交人快照且普通用户响应不�
 test("AI文档同源：操作手册及OpenAPI快照与运行时契约一致", async () => {
   assert.equal((await readFile("docs/ai-operator.md", "utf8")).replace(/\r\n/g, "\n"), AI_OPERATOR_GUIDE);
   assert.deepEqual(JSON.parse(await readFile("docs/ai-openapi.json", "utf8")), createAiOpenApi());
+});
+
+test("能力散文只引用已注册能力：描述里出现的能力 ID 必须在目录中", async () => {
+  // 描述文本会随能力增删而漂移；这里断言散文提到的一切能力 ID 都已注册，
+  // 退役能力清单由 list_capabilities 的 compatibilityUsage 动态给出，不再手写。
+  const registry = await loadCapabilityPackages(runtime);
+  const known = new Set(registry.definitions().map((definition) => definition.id));
+  // 能力 ID 形如 core.code / comfyui.h3_long_video；排除 MCP 错误负载字段（data.outcome 等）。
+  const capabilityIdPattern = /\b(?:core|comfyui|media|text)\.[a-z0-9_]+|\bdata\.[a-z0-9_]{3,}/g;
+  const payloadFields = new Set(["data.outcome"]);
+  const documents = [
+    ...aiOperations.map((operation) => ({ name: "operation:" + operation.name, text: operation.description })),
+    { name: "guide", text: AI_OPERATOR_GUIDE },
+    { name: "foundation", text: AI_FOUNDATION_GUIDE },
+  ];
+  const unknown = new Map<string, string[]>();
+  for (const document of documents) {
+    for (const match of document.text.match(capabilityIdPattern) ?? []) {
+      if (known.has(match) || payloadFields.has(match)) continue;
+      unknown.set(match, [...(unknown.get(match) ?? []), document.name]);
+    }
+  }
+  assert.deepEqual([...unknown.entries()].map(([id, where]) => `${id} (${[...new Set(where)].join(", ")})`), [], "散文引用了未注册的能力 ID");
+});
+
+test("AI手册体积预算：guide与foundation不随版本小节无限膨胀", () => {
+  // 会话级上下文成本：guide 整体随每次 MCP 会话下发。超过预算时先合并历史小节，
+  // 而不是继续追加；升级预算必须同时说明被合并的旧内容去哪了。
+  const guideBytes = Buffer.byteLength(AI_OPERATOR_GUIDE, "utf8");
+  const foundationBytes = Buffer.byteLength(AI_FOUNDATION_GUIDE, "utf8");
+  assert.ok(guideBytes <= 90_000, `操作手册 ${guideBytes} 字节超过 90000 预算：请合并历史版本小节或把一次性细节移出会话级资源`);
+  assert.ok(foundationBytes <= 50_000, `基础能力文档 ${foundationBytes} 字节超过 50000 预算`);
 });
 
 test("AI契约接受 Hermes 单项反馈和退回意见，拒绝空文本和伪造快照", () => {

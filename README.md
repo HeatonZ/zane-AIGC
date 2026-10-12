@@ -106,7 +106,7 @@ Hermes 请求遇到 socket 重置、Gateway 重载或 `502/503/504` 时会自动
 
 场景和流程编辑会自动保存为暂存内容，创作页与运行流程始终使用最近一次发布的版本。完成编辑后，在“流程配置”页发布即可让暂存内容生效；“版本管理”可将历史发布版本一键应用到暂存内容，之后仍需再次发布才会生效。版本标识是场景内容快照 MD5 的前 8 位；每个场景最多保留最近 10 个发布版本。场景导出包含当前暂存内容；导入后作为未发布的新场景，需要检查并发布后才能使用。
 
-`.env.example` 列出了常用配置项。`API_HOST`、`API_PORT`、`APP_DATA_DIR`、`DIST_DIR`、`HERMES_HOME`、`HERMES_API_BASE_URL`、`HERMES_API_KEY`、`HERMES_RETRY_ATTEMPTS`、`HERMES_RETRY_INITIAL_DELAY_MS`、`HERMES_RETRY_MAX_DELAY_MS`、`FFMPEG_BIN`、`FFPROBE_BIN`、`COMFYUI_BASE_URL`、`ZANE_PROJECT_DIR`、`ZANE_WORKFLOW_TIMEOUT_MINUTES` 用于 API；`VITE_API_PROXY_TARGET` 只用于开发环境代理。
+`.env.example` 列出了常用配置项。`API_HOST`、`API_PORT`、`APP_DATA_DIR`、`DIST_DIR`、`HERMES_HOME`、`HERMES_API_BASE_URL`、`HERMES_API_KEY`、`HERMES_RETRY_ATTEMPTS`、`HERMES_RETRY_INITIAL_DELAY_MS`、`HERMES_RETRY_MAX_DELAY_MS`、`FFMPEG_BIN`、`FFPROBE_BIN`、`COMFYUI_BASE_URL`、`ZANE_PROJECT_DIR`、`ZANE_WORKFLOW_TIMEOUT_MINUTES`、`ZANE_COMFYUI_MAX_CONCURRENCY`、`ZANE_LOG_LEVEL` 用于 API；`VITE_API_PROXY_TARGET` 只用于开发环境代理。
 
 ## 当前能力
 
@@ -115,7 +115,7 @@ Hermes 请求遇到 socket 重置、Gateway 重载或 `502/503/504` 时会自动
 - 步骤输入和 ComfyUI 输入绑定可引用场景字段、前序步骤输出，也可以配置带类型的固定值；最终输出可引用场景字段或任意步骤输出。Hermes 提示词可插入这些引用。
 - 场景输入表单随流程定义生成；流程与草稿由共享工作区保存，浏览器仅保留未确认写入的防丢 outbox，重载仍显示服务端场景、不自动应用或恢复旧编辑；运行元数据存入 SQLite，文件归档到项目目录。
 - 集成页可启用多个 Hermes Profile，并通过 API Server 的 `/v1/models` 检查认证和连通性；ComfyUI 使用 `/system_stats` 检查。
-- 后台 Worker 默认允许 2 个流程并发，可通过 `ZANE_MAX_ACTIVE_RUNS` 调整；步骤启用 `for_each` 后可配置 `execution.maxConcurrency`（1–32），ComfyUI 同一上游地址按已请求的最大并行数限流，不同地址互不阻塞。
+- 后台 Worker 默认允许 2 个流程并发，可通过 `ZANE_MAX_ACTIVE_RUNS` 调整；步骤启用 `for_each` 后可配置 `execution.maxConcurrency`（1–32），ComfyUI 同一上游地址按已请求的最大并行数限流，不同地址互不阻塞。同一地址还有全局并发预算 `ZANE_COMFYUI_MAX_CONCURRENCY`（1–32，默认 2）：所有任务对同一 ComfyUI 的同时请求数不超过该预算，防止多任务同时压垮单 GPU。
 - 运行中的流程可以点击“取消运行”。服务端会中止 Hermes API 请求，ComfyUI 会调用 `/interrupt`；关闭页面不会取消后台任务。“继续编辑”会恢复草稿输入和上次运行结果。
 - 失败记录可以在“运行记录”页点击“从失败步骤继续”；取消记录或服务重启后标记为“待恢复”的记录可以点击“从断点继续”。操作会按原记录的工作流快照创建新运行，复用已完成或已跳过步骤及已完成的逐项结果，只重试未完成的逐项并继续后续步骤；原记录和输入文件会保留。服务中断时正在执行的步骤或逐项可能被外部服务实际完成但尚未保存，续跑时可能重复执行。
 - Hermes Profile 从 `HERMES_HOME` 下的 `config.yaml` 和 `profiles/*/config.yaml` 发现。Hermes 连接状态按 Profile 检查 API Server 和 API 密钥。
@@ -140,10 +140,21 @@ Hermes 请求遇到 socket 重置、Gateway 重载或 `502/503/504` 时会自动
 
 ## 基建、迁移与检查
 
+### Windows 构建的 TEMP 约定
+
+Windows 下系统 TEMP 目录会让 esbuild 在收尾阶段失败，且失败前可能清空 `dist/`。构建与升级前必须把 `TEMP`/`TMP` 指进仓库内的临时目录（`.tmp*` 已在 `.gitignore` 中）：
+
+```powershell
+$env:TEMP = "F:/code/zane-drama/.tmp-build"; $env:TMP = $env:TEMP
+npm run build
+```
+
+Git Bash 等价写法：`TEMP=F:/code/zane-drama/.tmp-build TMP="$TEMP" npm run build`。`npm run update:prod` 的隔离快照构建同样继承该设置；新机器 clone 后构建莫名失败时先检查这一条。
+
 异步运行、SQLite 迁移、SSE、取消/重启语义、配置参数与 WAL 备份注意事项见 `docs/infrastructure.md`。一个数据目录只支持一个 API 进程。
 
 ```powershell
-npm run check       # 类型检查、自动发现测试、构建和隔离冒烟验证
+npm run check       # 类型检查、文档漂移、自动发现测试、构建与隔离冒烟验证
 ```
 
 运行测试不会调用真实 Hermes/ComfyUI 生成服务。后续资产去重、工作流编译与进一步连接器拆分尚未包含在本轮改造中。
@@ -195,7 +206,7 @@ MCP 客户端直接运行 node dist-server/mcp/index.js；它只访问 ZANE_BASE
 AI 提交必须先保存 UUID runId 与 versionId；响应丢失只查询原 ID，不自动重新POST或换 ID。wait_run 最长30秒，停止等待不取消运行。
 
 文档同步：npm run docs:ai；漂移检查：npm run docs:ai:check。隔离协议/编译产物验收：npm run test:ai:smoke（需要先构建后台）。以上已接入 npm run check。
-2026-10-02：基础能力契约扩展到1.1.0、41个业务工具；新增场景草稿/发布闭环、共享选项、输入schema/示例和轻量结果。261项全量测试及16项Python接入回归通过，真实Node stdio和Hermes隔离验收通过，comfyui-dev操作技能升级到1.2.0。正式8799已上线并通过Node/Hermes只读验收，数据保留状态见 [基础能力升级记录](docs/backend-foundation-2026-10-02.md)；前一轮1.0.0记录保留于 [后台升级记录](docs/backend-upgrade-2026-10-02.md)。未调用真实生成，旧Hermes会话需要时在空闲状态重载MCP并新建会话。
+2026-10-02：基础能力契约扩展到1.1.0、41个业务工具；新增场景草稿/发布闭环、共享选项、输入schema/示例和轻量结果。261项全量测试及16项Python接入回归通过，真实Node stdio和Hermes隔离验收通过，comfyui-dev操作技能升级到1.2.0。正式8799已上线并通过Node/Hermes只读验收，数据保留状态见 [基础能力升级记录](docs/archive/backend-foundation-2026-10-02.md)；前一轮1.0.0记录保留于 [后台升级记录](docs/archive/backend-upgrade-2026-10-02.md)。未调用真实生成，旧Hermes会话需要时在空闲状态重载MCP并新建会话。
 
 ## 管理员后台与用户使用页（契约1.4.0）
 

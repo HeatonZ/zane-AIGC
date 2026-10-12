@@ -2,7 +2,7 @@
 
 接口交付日期：2026-10-01；正式升级与AI使用体验检查：2026-10-02；AI契约版本：1.1.0。
 
-本机Hermes `comfyui-dev` 已接入，技能1.2.0已安装，职责保持灵活的工作台业务协作者。基础能力代码、隔离验收及正式1.1.0切换均已完成；最终Node/Hermes只读验收和数据保留状态见 [基础能力升级记录](backend-foundation-2026-10-02.md)。[前一轮1.0.0升级记录](backend-upgrade-2026-10-02.md)保留历史，不能重复执行旧一次性脚本。
+本机Hermes `comfyui-dev` 已接入，技能1.2.0已安装，职责保持灵活的工作台业务协作者。基础能力代码、隔离验收及正式1.1.0切换均已完成；最终Node/Hermes只读验收和数据保留状态见 [基础能力升级记录](archive/backend-foundation-2026-10-02.md)。[前一轮1.0.0升级记录](archive/backend-upgrade-2026-10-02.md)保留历史，不能重复执行旧一次性脚本。
 
 ## 当前已实现
 
@@ -35,7 +35,7 @@
 
 用户最终选择 Hermes comfyui-dev profile 控制工作台，而不是 Codex 或 comfyui profile。原 comfyui 的工作台接入已撤回，config/SOUL 恢复为首次安装前内容，保留生产执行职责。comfyui-dev 的 MCP 配置和技能已安装；SOUL 已整体改为灵活的工作台业务协作者，共享代理名录也同步更新，不再保留直接生成引擎的开发测试职责。按实时业务与能力选择操作，不绑定固定场景、工具清单或代理分工。保留 DaVinci MCP 与其他配置，不修改 Hermes 上游。
 
-前一轮1.0.0（历史）：2026-10-02重新同步契约并完成全量232测试与16项Python回归，正式切换到新PID 89348。实际正式Node/Hermes MCP注册、调用、资源/提示词、guide及1.1.1技能读取通过，AI入口为契约1.0.0、worker就绪；升级前后及最终复查数据库逐表哈希和连接配置一致。用户层CLI launcher的路径问题也已修复，chat --help返回0。没有重启Gateway/ComfyUI，没有调用真实模型或生成媒体。备份与回执见 [后台升级记录](backend-upgrade-2026-10-02.md)；职责、重装/撤回、只读doctor、会话重载和CLI验证边界见 [Hermes接入说明](hermes-workbench.md)。
+前一轮1.0.0（历史）：2026-10-02重新同步契约并完成全量232测试与16项Python回归，正式切换到新PID 89348。实际正式Node/Hermes MCP注册、调用、资源/提示词、guide及1.1.1技能读取通过，AI入口为契约1.0.0、worker就绪；升级前后及最终复查数据库逐表哈希和连接配置一致。用户层CLI launcher的路径问题也已修复，chat --help返回0。没有重启Gateway/ComfyUI，没有调用真实模型或生成媒体。备份与回执见 [后台升级记录](archive/backend-upgrade-2026-10-02.md)；职责、重装/撤回、只读doctor、会话重载和CLI验证边界见 [Hermes接入说明](hermes-workbench.md)。
 
 注意：工具注册成功不等于正式可执行。也不能把工作台 runId 当成 ComfyUI prompt_id，或让作为流程节点的控制 profile 再提交工作台导致自调用。当前控制者为 comfyui-dev，现有 comfyui 生产节点不做迁移。
 
@@ -70,7 +70,7 @@
 
 实际后台升级与选定Hermes客户端接入已完成。开始真实业务前仍需明确生成和审核授权范围，并用一个明确授权的小任务验收；本次没有做付费生成。
 
-基础能力已补齐上述操作面，261项全量测试、16项Python回归和Hermes安装客户端隔离验收通过（41业务工具+4辅助工具）。新功能的AI配套是完成条件，见 [基础能力手册](ai-foundation.md)与 [开发规范](ai-development.md)。实际部署、正式响应体积测量与验收边界见 [基础能力升级记录](backend-foundation-2026-10-02.md)和 [AI友好性审查](ai-usability.md)。
+基础能力已补齐上述操作面，261项全量测试、16项Python回归和Hermes安装客户端隔离验收通过（41业务工具+4辅助工具）。新功能的AI配套是完成条件，见 [基础能力手册](ai-foundation.md)与 [开发规范](ai-development.md)。实际部署、正式响应体积测量与验收边界见 [基础能力升级记录](archive/backend-foundation-2026-10-02.md)和 [AI友好性审查](ai-usability.md)。
 
 ## 契约来源
 

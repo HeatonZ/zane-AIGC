@@ -38,6 +38,14 @@ test("条件规则：empty/is_not_empty 覆盖空列表、null 与媒体投影",
   assert.equal(evaluateConditionRule(rule({ leftRef: "input.missing", operator: "is_empty" }), resolve), true);
 });
 
+test("条件规则：rightValue/rightRef 可省略，按空字面量求值", () => {
+  const bare: ConditionRule = { id: "r-bare", leftRef: "input.images", operator: "is_not_empty", valueSource: "literal" };
+  assert.equal(evaluateConditionRule(bare, resolve), true);
+  assert.equal(evaluateConditionRule({ ...bare, leftRef: "input.empty", operator: "is_empty" }, resolve), true);
+  assert.equal(evaluateConditionRule({ ...bare, leftRef: "input.value", operator: "equals" }, resolve), false);
+  assert.equal(evaluateConditionRule({ ...bare, leftRef: "input.value", operator: "not_equals" }, resolve), true);
+});
+
 test("条件规则：引用比较与未知运算符", () => {
   assert.equal(evaluateConditionRule(rule({ leftRef: "input.value", operator: "equals", valueSource: "reference", rightRef: "step.analyzer.outputs.text", rightValue: "" }), resolve), false);
   assert.equal(evaluateConditionRule(rule({ leftRef: "step.analyzer.outputs.text", operator: "equals", valueSource: "reference", rightRef: "input.value", rightValue: "" }), resolve), false);

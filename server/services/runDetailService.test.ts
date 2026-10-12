@@ -19,6 +19,11 @@ test("业务详情包含未来步骤和逐项计数，不把待审核当完成�
   assert.equal(view.revision,businessRun(record,"2026-10-04T01:00:01.000Z").revision);assert.doesNotMatch(JSON.stringify(view),/PRIVATE_PROMPT|private.txt|业务键|F:\/|middle/);
   record.steps[0].status="failed";assert.notEqual(view.revision,businessRun(record).revision);
 });
+test("部分成功步骤计入partial与settled，运行仍按completed读取结果",()=>{
+  const record=fixture();record.pendingReview=undefined;record.steps[0].status="completed_with_errors";record.status="completed";record.finishedAt="2026-10-04T01:05:00.000Z";
+  const view=businessRun(record);
+  assert.equal(view.steps[0].status,"completed_with_errors");assert.equal(view.progress.partial,1);assert.equal(view.progress.settled,1);assert.equal(view.nextAction,"read_outputs");
+});
 test("排队占位startedAt不冒充实际开始；无事件的历史时间明确缺失，总历时含等待",()=>{
   const record=fixture();record.status="queued";let view=businessRun(record);assert.ok(!("startedAt" in view));assert.ok(!("queueDurationMs" in view));
   record.status="cancelled";record.finishedAt="2026-10-04T01:01:05.000Z";view=businessRun(record);assert.ok(!("startedAt" in view));assert.equal(view.totalDurationMs,65000);

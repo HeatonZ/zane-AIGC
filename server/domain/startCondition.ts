@@ -10,8 +10,9 @@ export interface ConditionRule {
   leftRef: string;
   operator: ConditionOperator;
   valueSource: "literal" | "reference";
-  rightValue: string;
-  rightRef: string;
+  /** 字面量规则的右侧值；草稿校验允许省略（含只看左值的 is_empty/is_not_empty），运行时按空串处理。 */
+  rightValue?: string;
+  rightRef?: string;
 }
 export interface ConditionExpression { match: "all" | "any"; rules: ConditionRule[] }
 /** Resolve a workflow reference (input.* / step.*.outputs.* / iteration.*) to its value. */
@@ -21,11 +22,12 @@ export function isConditionOperator(value: unknown): value is ConditionOperator 
   return typeof value === "string" && (CONDITION_OPERATORS as readonly string[]).includes(value);
 }
 function literalRightValue(rule: ConditionRule, leftType: string): JsonValue | string {
-  if (rule.rightValue.trim() === "") return "";
-  if (leftType === "number") return Number(rule.rightValue);
-  if (leftType === "boolean") return rule.rightValue === "true";
-  if (leftType === "json") return JSON.parse(rule.rightValue) as JsonValue;
-  return rule.rightValue;
+  const rightValue = rule.rightValue ?? "";
+  if (rightValue.trim() === "") return "";
+  if (leftType === "number") return Number(rightValue);
+  if (leftType === "boolean") return rightValue === "true";
+  if (leftType === "json") return JSON.parse(rightValue) as JsonValue;
+  return rightValue;
 }
 function isEmptyValue(value: unknown) {
   return value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0) || (typeof value === "object" && !Array.isArray(value) && Object.keys(value as object).length === 0);
@@ -34,7 +36,7 @@ function isEmptyValue(value: unknown) {
 export function evaluateConditionRule(rule: ConditionRule, resolve: ConditionResolver, typeOf: (reference: string) => string | undefined = () => "text"): boolean {
   const left = resolve(rule.leftRef);
   const leftType = typeOf(rule.leftRef) ?? "text";
-  const right = rule.valueSource === "reference" ? resolve(rule.rightRef) : literalRightValue(rule, leftType);
+  const right = rule.valueSource === "reference" ? resolve(rule.rightRef ?? "") : literalRightValue(rule, leftType);
   const comparableLeft = externalizeRuntimeValue(left) as JsonValue;
   const comparableRight = externalizeRuntimeValue(right) as JsonValue;
   switch (rule.operator) {

@@ -39,6 +39,8 @@ export interface CapabilityCatalogPage {
   capabilities: CapabilityDefinition[];
   hasMore: boolean;
   nextCursor?: string;
+  /** 仅第一页且存在退役能力时返回：各退役能力在草稿与发布快照中被引用的场景数。 */
+  compatibilityUsage?: Array<{ capabilityId: string; draftScenes: number; publishedScenes: number; nextAction: string }>;
 }
 export interface CapabilityStepIdentity { kind: string; capabilityId?: string; capabilityVersion?: string; comfyui?: { adapter?: string } }
 export function capabilityForStep(step: CapabilityStepIdentity, catalog: readonly CapabilityDefinition[]) {

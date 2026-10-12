@@ -2,6 +2,7 @@ import { createScene } from "./sceneStorage";
 import { createId } from "./ids";
 import { canonicalWorkflowType, migrateLegacyComfyInputFormats, normalizeWorkflowMediaTypes } from "./workflowMigration";
 import { validWorkflowMediaRole } from "../../server/domain/workflowMediaRoles.js";
+import { hermesModelSelectionError } from "../../server/domain/hermesModelSelection.js";
 import type {
   JsonValue,
   SceneModule,
@@ -295,6 +296,10 @@ function normalizeWorkflowStep(value: unknown, index: number): WorkflowStepDefin
     };
   }
   if (typeof value.hermesProfile === "string") step.hermesProfile = value.hermesProfile;
+  const selectionError = hermesModelSelectionError(value.hermesProvider, value.hermesModel);
+  if (selectionError) throw new Error(`步骤“${step.name}”的${selectionError}`);
+  if (typeof value.hermesProvider === "string" && value.hermesProvider.trim()) step.hermesProvider = value.hermesProvider.trim();
+  if (typeof value.hermesModel === "string" && value.hermesModel.trim()) step.hermesModel = value.hermesModel.trim();
   if (isRecord(value.comfyui)) {
     if (!Array.isArray(value.comfyui.bindings)) throw new Error(`步骤“${step.name}”的 ComfyUI 绑定无效`);
     step.comfyui = {

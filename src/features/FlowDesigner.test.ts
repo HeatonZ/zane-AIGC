@@ -3,17 +3,18 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFile } from "node:fs/promises";
-import FlowDesigner, { carryReferenceOptions } from "./FlowDesigner";
+import FlowDesigner from "./FlowDesigner";
+import { carryReferenceOptions } from "../lib/workflowReferences";
 import { parseScenePackage } from "../lib/sceneTransfer";
 import type { WorkflowDefinition } from "../types";
 
-test("designer shows physical type and semantic asset roles separately without editing on render", async () => {
+test("designer uses only the physical media type for scene inputs, with no asset-role sub-category", async () => {
   const pkg = parseScenePackage(JSON.parse(await readFile(new URL("../../examples/scenes/long-text-to-video.json", import.meta.url), "utf8")));
   const original = structuredClone(pkg);
   const noWrite = () => { throw new Error("render must not save, publish or migrate"); };
   const html = renderToStaticMarkup(createElement(FlowDesigner, { sceneId: pkg.scene.id, scene: pkg.scene, scenes: [pkg.scene], workflow: pkg.workflow, optionPresets: [], onSceneChange: noWrite, onSortScenes: noWrite, onChange: noWrite, onOptionPresetsChange: noWrite, onPublish: async () => { throw new Error("render must not publish"); }, onApplyVersion: noWrite, onOpenConnections: noWrite }));
-  assert.equal((html.match(/class="select-wrap media-role-select"/g) ?? []).length, 4);
-  for (const role of ["character", "scene", "prop", "voice_reference"]) assert.match(html, new RegExp('value="' + role + '" selected=""'));
+  assert.doesNotMatch(html, /media-role-select/);
+  for (const role of ["character", "scene", "prop", "voice_reference"]) assert.doesNotMatch(html, new RegExp('value="' + role + '"')); 
   for (const label of ["人物资产", "场景资产", "道具资产", "参考音色", "图片列表", "音频列表", "AIXG · 逐镜转换H3提示词"]) assert.ok(html.includes(label));
   assert.deepEqual(pkg, original);
 });

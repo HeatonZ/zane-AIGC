@@ -1,0 +1,12 @@
+{
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx", "**/*.test.mjs"],
+      "rules": {
+        "no-unsafe-optional-chaining": "off",
+        "unicorn/no-invalid-fetch-options": "off"
+      }
+    }
+  ]
+}
+

@@ -19,5 +19,4 @@ backups/
 .tmp*
 *.log
 *.db
-%SystemDrive%
 Python

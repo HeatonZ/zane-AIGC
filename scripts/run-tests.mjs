@@ -9,11 +9,11 @@ async function discover(directory) {
   const found = await Promise.all(entries.map((entry) => {
     const file = path.join(directory, entry.name);
     if (entry.isDirectory()) return discover(file);
-    return entry.name.endsWith(".test.ts") ? [file] : [];
+    return /\.(test)\.(ts|mjs)$/.test(entry.name) ? [file] : [];
   }));
   return found.flat();
 }
-const tests = (await Promise.all(["server", "src"].map((directory) => discover(path.join(root, directory))))).flat().sort();
+const tests = (await Promise.all(["server", "src", "scripts"].map((directory) => discover(path.join(root, directory))))).flat().sort();
 if (!tests.length) throw new Error("No tests found");
 // Bound process fan-out: several integration tests launch an HTTP server plus
 // stdio MCP/tsx children, whose startup budgets must not be consumed by CPU contention.

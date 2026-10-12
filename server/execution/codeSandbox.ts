@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import vm from "node:vm";
@@ -199,6 +200,27 @@ export function createCodeSandboxWorker(job: CodeSandboxJob) {
   return new Worker(resolveWorkerUrl(), options);
 }
 
+/** 进程级并发预算：每 worker 约 128MB 堆，for_each×多任务时不能无上限 spawn。 */
+const SANDBOX_CONCURRENCY = Math.max(1, Math.min(8, Number(process.env.ZANE_CODE_SANDBOX_CONCURRENCY) || Math.max(1, (os.availableParallelism?.() ?? 4) - 1)));
+let sandboxActive = 0;
+const sandboxWaiters: Array<() => void> = [];
+async function acquireSandboxSlot(signal: AbortSignal) {
+  if (sandboxActive >= SANDBOX_CONCURRENCY) {
+    await new Promise<void>((resolve, reject) => {
+      const waiter = () => { signal.removeEventListener("abort", abort); resolve(); };
+      const abort = () => { const index = sandboxWaiters.indexOf(waiter); if (index >= 0) sandboxWaiters.splice(index, 1); reject(signal.reason ?? new Error("已取消")); };
+      if (signal.aborted) { abort(); return; }
+      signal.addEventListener("abort", abort, { once: true });
+      sandboxWaiters.push(waiter);
+    });
+  }
+  sandboxActive += 1;
+  return () => {
+    sandboxActive -= 1;
+    sandboxWaiters.shift()?.();
+  };
+}
+
 export async function executeCodeStep(context: StepExecutionContext): Promise<Record<string, JsonValue>> {
   const step = context.step;
   validateCodeStep(step);
@@ -210,6 +232,15 @@ export async function executeCodeStep(context: StepExecutionContext): Promise<Re
   const inputsLiteral = JSON.stringify(inputs);
   if (Buffer.byteLength(inputsLiteral, "utf8") > MAX_INPUT_BYTES) throw new HttpError(400, "代码输入序列化后超过 " + MAX_INPUT_BYTES / 1024 / 1024 + " MB，请先用基础步骤裁剪数据", "INVALID_CODE_INPUT");
   if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
+  const releaseSlot = await acquireSandboxSlot(context.signal);
+  try {
+    return await runCodeStepInSandbox(context, step, inputsLiteral, inputMedia, timeoutMs);
+  } finally {
+    releaseSlot();
+  }
+}
+
+async function runCodeStepInSandbox(context: StepExecutionContext, step: StepExecutionContext["step"], inputsLiteral: string, inputMedia: Map<string, RuntimeMediaItem>, timeoutMs: number): Promise<Record<string, JsonValue>> {
   let worker: Worker;
   try {
     worker = createCodeSandboxWorker({ source: wrapCode(String(asRecord(step.capabilityConfig)?.code ?? ""), inputsLiteral), timeoutMs, maxLogLines: MAX_LOG_LINES, maxLogBytes: MAX_LOG_BYTES, maxOutputBytes: MAX_OUTPUT_BYTES });

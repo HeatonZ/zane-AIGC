@@ -2,10 +2,11 @@ import { sortWorkflowDrafts } from "./lib/drafts";
 import { getTaskDraft, setTaskDraftFavorite } from "./lib/taskDraftApi";
 import { DraftFavoriteUnconfirmedError, writeDraftFavorite } from "./lib/draftFavoriteWrite";
 import LegacyConfigRecovery from "./components/LegacyConfigRecovery";
+import { useConfirmDialog } from "./components/ConfirmDialog";
 import SystemFeedback from "./features/SystemFeedback";
 import UserManagement from "./features/UserManagement";
 import { RetainedSaveQueue, type PendingSave } from "./lib/retainedSaveQueue";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, Command, Database, LoaderCircle, RotateCw, Rocket } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import Connections from "./features/Connections";
@@ -23,7 +24,7 @@ import { readAuthoritativeWorkspace, loadAuthoritativeWorkspace, parseRetainedWo
 import { createId } from "./lib/ids";
 import { downloadScenePackage, parseScenePackage, prepareImportedScene } from "./lib/sceneTransfer";
 import { publishedSceneVersion, publishSceneVersion, restoreSceneVersionDraft } from "./lib/sceneVersions";
-import FlowDesigner from "./features/FlowDesigner";
+const FlowDesigner = lazy(() => import("./features/FlowDesigner"));
 import SceneOrderDialog from "./features/SceneOrderDialog";
 import type { ConnectorState, JsonValue, PageId, SceneDetails, SceneId, SceneModule, SceneVersion, SceneVersionRecord, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset, WorkflowRunRecord, WorkspaceSnapshot } from "./types";
 
@@ -53,9 +54,26 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
   const bootstrapWorkspaceRef = useRef<WorkspaceSnapshot | null>(null);
   const initialWorkspace = bootstrapWorkspaceRef.current ?? createEmptyWorkspaceSnapshot();
   bootstrapWorkspaceRef.current = initialWorkspace;
-  const [page, setPage] = useState<PageId>("home");
+  // 页面写入 URL hash：刷新与深链保留所在页面；非法值回退到管理概览。
+  const [page, setPageState] = useState<PageId>(() => {
+    const fromHash = typeof window === "undefined" ? "" : window.location.hash.replace(/^#\/?/, "");
+    return (Object.keys(navLabels) as PageId[]).includes(fromHash as PageId) ? fromHash as PageId : "home";
+  });
+  const setPage = useCallback((next: PageId) => {
+    setPageState(next);
+    if (typeof window !== "undefined" && window.location.hash.replace(/^#\/?/, "") !== next) window.history.replaceState(null, "", "#/" + next);
+  }, []);
+  useEffect(() => {
+    const syncFromHash = () => {
+      const fromHash = window.location.hash.replace(/^#\/?/, "");
+      if ((Object.keys(navLabels) as PageId[]).includes(fromHash as PageId)) setPageState(fromHash as PageId);
+    };
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, []);
   const pageRef = useRef(page);
   pageRef.current = page;
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [scenes, setScenes] = useState<SceneModule[]>(initialWorkspace.scenes);
   const [showSceneOrder, setShowSceneOrder] = useState(false);
   const [sceneId, setSceneId] = useState<SceneId>(initialWorkspace.scenes[0]?.id ?? "");
@@ -285,8 +303,8 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
       setWorkspaceSyncError("本机还有未同步配置，请先重试，或选择“读取正式配置”");
       return;
     }
-    if (discardPending && (outbox.pendingCount || restoredWorkspaceEditsRef.current) && !window.confirm("未确认的编辑尚未成为服务端配置。确定放弃这些待提交内容，并读取服务端权威配置吗？")) return;
-    if (pageRef.current === "studio" && !window.confirm("刷新可能切换创作的发布版本，并重载表单。请先保存当前任务草稿；确定继续吗？")) return;
+    if (discardPending && (outbox.pendingCount || restoredWorkspaceEditsRef.current) && !(await confirm({ message: "未确认的编辑尚未成为服务端配置。确定放弃这些待提交内容，并读取服务端权威配置吗？", confirmLabel: "放弃并读取", tone: "danger" }))) return;
+    if (pageRef.current === "studio" && !(await confirm({ message: "刷新可能切换创作的发布版本，并重载表单。请先保存当前任务草稿；确定继续吗？" }))) return;
     const editorEpoch = workspaceEditorEpochRef.current;
     const sourcePage = pageRef.current;
     const sourceSceneId = sceneIdRef.current;
@@ -315,7 +333,7 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
   async function retryPendingWorkspace() {
     if (outboxReadErrorRef.current) { setWorkspaceSyncError(outboxReadErrorRef.current); return; }
     if (restoredWorkspaceEditsRef.current) {
-      if (!window.confirm("当前显示的是服务端场景。恢复提交上次未确认的编辑吗？将保留原 ID 和基线，由服务端校验冲突，不会覆盖冲突配置。")) return;
+      if (!(await confirm({ message: "当前显示的是服务端场景。恢复提交上次未确认的编辑吗？将保留原 ID 和基线，由服务端校验冲突，不会覆盖冲突配置。" }))) return;
       try {
         const workspace = await loadAuthoritativeWorkspace(loadWorkspace);
         if (!workspace) throw new Error("管理配置尚未初始化，不能恢复旧编辑");
@@ -502,16 +520,16 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
       setSceneId(imported.scene.id);
       setPage("flows");
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "导入场景失败，请检查文件内容");
+      await confirm({ title: "导入场景失败", message: error instanceof Error ? error.message : "导入场景失败，请检查文件内容", confirmLabel: "知道了", cancelLabel: "关闭", tone: "danger" });
     }
   }
 
-  function deleteScene(sceneIdToDelete: SceneId) {
+  async function deleteScene(sceneIdToDelete: SceneId) {
     const scene = scenes.find((item) => item.id === sceneIdToDelete);
     if (!scene) return;
     const sceneDrafts = drafts.filter((draft) => draft.sceneId === sceneIdToDelete);
     const draftMessage = sceneDrafts.length ? `以及 ${sceneDrafts.length} 份关联草稿` : "";
-    if (!window.confirm(`确定删除“${scene.title}”吗？这会同时删除该场景的流程配置${draftMessage}。项目目录中的运行归档会保留。`)) return;
+    if (!(await confirm({ message: `确定删除“${scene.title}”吗？这会同时删除该场景的流程配置${draftMessage}。项目目录中的运行归档会保留。`, confirmLabel: "删除场景", tone: "danger" }))) return;
 
     const nextScenes = scenes.filter((item) => item.id !== sceneIdToDelete);
     const nextWorkflows = Object.fromEntries(Object.entries(workflows).filter(([id]) => id !== sceneIdToDelete));
@@ -623,12 +641,13 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
             {page === "users" && <UserManagement scenes={scenes} />}
             {page === "feedback" && <SystemFeedback key={userId} userId={userId} admin />}
             {page === "connections" && <Connections connectors={connectors} onRefresh={refreshConnections} />}
-            {page === "flows" && selectedScene && selectedWorkflow && <FlowDesigner saveStatus={workspaceSyncError ? "failed" : workspacePendingCount ? "saving" : "saved"} sceneId={sceneId} scenes={scenes} scene={selectedScene} workflow={selectedWorkflow} optionPresets={optionPresets} versionRecord={selectedVersionRecord} onSceneChange={setSceneId} onSortScenes={() => setShowSceneOrder(true)} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onPublish={() => publishWorkspaceScene(sceneId)} onApplyVersion={(version: SceneVersion) => applyWorkspaceSceneVersion(sceneId, version.id)} onOpenConnections={() => setPage("connections")} />}
+            {page === "flows" && selectedScene && selectedWorkflow && <Suspense fallback={<div className="page-loading">正在加载流程配置…</div>}><FlowDesigner saveStatus={workspaceSyncError ? "failed" : workspacePendingCount ? "saving" : "saved"} sceneId={sceneId} scenes={scenes} scene={selectedScene} workflow={selectedWorkflow} optionPresets={optionPresets} versionRecord={selectedVersionRecord} onSceneChange={setSceneId} onSortScenes={() => setShowSceneOrder(true)} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onPublish={() => publishWorkspaceScene(sceneId)} onApplyVersion={(version: SceneVersion) => applyWorkspaceSceneVersion(sceneId, version.id)} onOpenConnections={() => setPage("connections")} /></Suspense>}
           </div>
           <footer className="app-footer"><span>在本地专注创作</span><span><Command size={12} /> ZANE STUDIO</span></footer>
         </div>
       </main>
       {showSceneOrder && <SceneOrderDialog scenes={scenes} onMoveScene={moveWorkspaceScene} onClose={() => setShowSceneOrder(false)} />}
+      {confirmDialog}
     </div>
   );
 }

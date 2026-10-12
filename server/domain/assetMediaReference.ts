@@ -28,7 +28,7 @@ export function assetReferenceFromMediaUrl(value: unknown, workbenchBaseUrl?: st
   if (!match || !Number.isSafeInteger(Number(match[2]))) throw invalid();
   let assetId: string;
   try { assetId = decodeURIComponent(match[1]); } catch { throw invalid(); }
-  if (!assetId.trim() || /[\/\\]/.test(assetId)) throw invalid();
+  if (!assetId.trim() || /[/\\]/.test(assetId)) throw invalid();
   return { assetId, assetVersion: Number(match[2]) };
 }
 

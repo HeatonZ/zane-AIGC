@@ -23,6 +23,7 @@ import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
 import { loadComfyUINodeInfo, loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesProfiles } from "../lib/api";
 import { clearConfirmedStaleComfyBindings } from "../lib/comfyBindingValidation";
+import { allReferenceOptions, carryReferenceOptions, conditionOperators, defaultControlConfig, defaultStartCondition, inputReferenceOptions, inputValueType, isMediaArrayReference, isWorkflowArrayReference, iterationItemReferenceOption, newConditionRule, outputReferenceOptions, referenceOption, referencePathError, referenceTypeLabel, referenceWithJsonPath, splitReferencePath, stepOutputOptions } from "../lib/workflowReferences";
 import type {
   ComfyUIBinding,
   ComfyUINodeInfo,
@@ -52,9 +53,8 @@ import type {
   WorkflowValueSource,
   WorkflowVariableType,
   WorkflowMediaSelection,
-  WorkflowMediaRole,
 } from "../types";
-import { workflowMediaRoleOptions, workflowMediaRoleLabels, validWorkflowMediaRole } from "../../server/domain/workflowMediaRoles.js";
+import { validWorkflowMediaRole } from "../../server/domain/workflowMediaRoles.js";
 import SceneVersionsDialog from "./SceneVersionsDialog";
 import SceneDiffDialog from "../components/SceneDiffDialog";
 import StepCapabilityPicker from "../components/StepCapabilityPicker";
@@ -175,19 +175,6 @@ const stepKindLabels: Record<WorkflowStepKind, string> = {
 
 const MAX_STEP_CONCURRENCY = 32;
 
-const variableTypeLabels: Record<WorkflowVariableType, string> = {
-  text: "文本",
-  number: "数字",
-  boolean: "布尔值",
-  image: "图片列表",
-  image_list: "图片列表",
-  video: "视频列表",
-  video_list: "视频列表",
-  audio: "音频列表",
-  audio_list: "音频列表",
-  json: "结构化数据",
-};
-
 const variableTypeOptions: Array<[WorkflowVariableType, string]> = [
   ["text", "文本"],
   ["number", "数字"],
@@ -211,205 +198,6 @@ const conditionOperatorLabels: Record<WorkflowConditionOperator, string> = {
   is_not_empty: "不为空",
 };
 
-function conditionOperators(type?: WorkflowVariableType): WorkflowConditionOperator[] {
-  const operators: WorkflowConditionOperator[] = ["equals", "not_equals", "is_empty", "is_not_empty"];
-  if (type === "number") operators.push("greater_than", "greater_or_equal", "less_than", "less_or_equal");
-  if (type === "text" || type === "json") operators.push("contains", "not_contains");
-  return operators;
-}
-
-function inputValueType(type: WorkflowFieldType): WorkflowVariableType {
-  const canonical = canonicalWorkflowType(type) ?? type;
-  return canonical === "textarea" || canonical === "select" ? "text" : canonical as WorkflowVariableType;
-}
-
-function isMediaVariableType(type?: WorkflowVariableType) {
-  return Boolean(canonicalWorkflowMediaType(type));
-}
-
-function newConditionRule(index: number): WorkflowConditionRule {
-  return {
-    id: `rule_${Date.now().toString(36)}_${index}`,
-    leftRef: "",
-    operator: "equals",
-    valueSource: "literal",
-    rightValue: "",
-    rightRef: "",
-  };
-}
-
-function defaultControlConfig(): WorkflowControlConfig {
-  return { type: "condition", match: "all", rules: [newConditionRule(1)] };
-}
-
-function defaultStartCondition(): WorkflowStartCondition {
-  return { match: "all", rules: [newConditionRule(1)] };
-}
-
-function inputReferenceOptions(workflow: WorkflowDefinition): ReferenceOption[] {
-  return workflow.inputs.map((field) => ({
-    value: `input.${field.key}`,
-    label: `场景输入 · ${field.label}`,
-    type: inputValueType(field.type),
-    isArray: isMediaVariableType(inputValueType(field.type)) || field.type === "json",
-    isCollection: isMediaVariableType(inputValueType(field.type)),
-  }));
-}
-
-function outputReferenceOptions(workflow: WorkflowDefinition, maxStepIndex = workflow.steps.length): ReferenceOption[] {
-  return workflow.steps.slice(0, maxStepIndex).flatMap((step) =>
-    step.outputs.map((field) => ({
-      value: `step.${step.id}.outputs.${field.key}`,
-      label: `${step.name} · ${field.label}`,
-      type: inputValueType(field.type),
-      isArray: isMediaVariableType(field.type) || field.type === "json" || step.execution?.mode === "for_each",
-      isCollection: isMediaVariableType(field.type) || step.execution?.mode === "for_each",
-    })),
-  );
-}
-
-function allReferenceOptions(workflow: WorkflowDefinition): ReferenceOption[] {
-  return [...inputReferenceOptions(workflow), ...outputReferenceOptions(workflow)];
-}
-
-function splitReferencePath(value: string) {
-  const match = /^(iteration\.(?:item|previous|hasPrevious|index)|input\.[a-zA-Z0-9_]+|step\.[a-zA-Z0-9_-]+\.outputs\.[a-zA-Z0-9_]+)([\s\S]*)$/.exec(value);
-  if (!match) return undefined;
-  return {
-    root: match[1],
-    path: match[2].startsWith(".") && match[2].length > 1 ? match[2].slice(1) : match[2],
-  };
-}
-
-function parseJsonPath(path: string): Array<string | number> {
-  let cursor = 0;
-  if (path[cursor] === "$" && (path.length === 1 || path[cursor + 1] === "." || path[cursor + 1] === "[")) {
-    cursor += 1;
-    if (path[cursor] === ".") cursor += 1;
-  }
-
-  const segments: Array<string | number> = [];
-  while (cursor < path.length) {
-    if (path[cursor] === ".") {
-      cursor += 1;
-      const start = cursor;
-      while (cursor < path.length && path[cursor] !== "." && path[cursor] !== "[") cursor += 1;
-      const key = path.slice(start, cursor);
-      if (!key) throw new Error("字段名为空");
-      segments.push(key);
-      continue;
-    }
-
-    if (path[cursor] === "[") {
-      cursor += 1;
-      if (path[cursor] === '"') {
-        const start = cursor;
-        cursor += 1;
-        let escaped = false;
-        while (cursor < path.length) {
-          const character = path[cursor];
-          cursor += 1;
-          if (escaped) escaped = false;
-          else if (character === "\\") escaped = true;
-          else if (character === '"') break;
-        }
-        if (path[cursor] !== "]") throw new Error("括号路径格式无效");
-        const key = JSON.parse(path.slice(start, cursor)) as unknown;
-        if (typeof key !== "string") throw new Error("字段名格式无效");
-        segments.push(key);
-        cursor += 1;
-        continue;
-      }
-
-      const end = path.indexOf("]", cursor);
-      if (end < 0) throw new Error("缺少右方括号");
-      const index = path.slice(cursor, end);
-      if (!/^\d+$/.test(index) || !Number.isSafeInteger(Number(index))) throw new Error("数组下标必须是非负整数");
-      segments.push(Number(index));
-      cursor = end + 1;
-      continue;
-    }
-
-    if (segments.length) throw new Error("字段之间需要用点号或方括号分隔");
-    const start = cursor;
-    while (cursor < path.length && path[cursor] !== "." && path[cursor] !== "[") cursor += 1;
-    const key = path.slice(start, cursor);
-    if (!key) throw new Error("字段名为空");
-    segments.push(key);
-  }
-  return segments;
-}
-
-function referenceWithJsonPath(root: string, path: string) {
-  const normalized = path.trim().replace(/^\$\.?/, "").replace(/^\./, "");
-  return normalized ? `${root}${normalized.startsWith("[") ? "" : "."}${normalized}` : root;
-}
-
-function referenceOption(value: string, options: ReferenceOption[]) {
-  const parsed = splitReferencePath(value);
-  return options.find((option) => option.value === (parsed?.root ?? value));
-}
-
-function referenceTypeLabel(option: ReferenceOption) {
-  if (!option.type) return "";
-  const mediaType = canonicalWorkflowMediaType(option.type);
-  if (mediaType && option.isCollection === false) {
-    if (mediaType === "image_list") return "图像";
-    if (mediaType === "video_list") return "视频";
-    return "音频";
-  }
-  if (!option.isCollection) return variableTypeLabels[option.type];
-  if (mediaType === "image_list") return "图片列表";
-  if (mediaType === "video_list") return "视频列表";
-  if (mediaType === "audio_list") return "音频列表";
-  if (option.type === "json") return "结构化数据列表";
-  return `${variableTypeLabels[option.type]}列表`;
-}
-
-function isMediaArrayReference(option: ReferenceOption | undefined) {
-  return Boolean(option?.isArray && isMediaVariableType(option.type));
-}
-
-function referencePathError(value: string, options: ReferenceOption[], allowJsonPath: boolean, allowMediaIndex = false) {
-  const parsed = splitReferencePath(value);
-  const option = referenceOption(value, options);
-  if (!option) return "引用无效";
-  if (!parsed?.path) return "";
-  if (!allowJsonPath) return "字段路径只能用于结构化数据";
-  try {
-    parseJsonPath(parsed.path);
-  } catch {
-    return "JSON 字段路径格式无效";
-  }
-  if (option.type === "json") return "";
-  if (allowMediaIndex && isMediaArrayReference(option) && /^\[\d+\]$/.test(parsed.path)) return "";
-  return "媒体数组仅支持选择单项序号，例如 [0]";
-}
-
-function isWorkflowArrayReference(workflow: WorkflowDefinition, reference: ReferenceOption) {
-  if (isMediaVariableType(reference.type) || reference.type === "json") return true;
-  const outputMatch = /^step\.([^.]+)\.outputs\.[^.]+$/.exec(reference.value);
-  return outputMatch
-    ? workflow.steps.find((step) => step.id === outputMatch[1])?.execution?.mode === "for_each"
-    : false;
-}
-
-function iterationItemReferenceOption(workflow: WorkflowDefinition, sourceRef: string, sourceOptions: ReferenceOption[]): ReferenceOption | undefined {
-  const source = referenceOption(sourceRef, sourceOptions);
-  if (!source || !isWorkflowArrayReference(workflow, source) || referencePathError(sourceRef, sourceOptions, true)) return undefined;
-  const type = (canonicalWorkflowType(source.type) ?? source.type ?? "json") as WorkflowVariableType;
-  return { value: "iteration.item", label: "当前遍历项", type, ...(isMediaVariableType(type) ? { isCollection: false } : {}) };
-}
-
-export function carryReferenceOptions(step: WorkflowStepDefinition): ReferenceOption[] {
-  if (step.execution?.mode !== "for_each" || !step.execution.carry) return [];
-  const output = step.outputs.find(port => port.key === step.execution?.carry?.outputKey);
-  return [
-    ...(output ? [{ value: "iteration.previous", label: "上一项输出（首项为初始状态或空）", type: output.type, isArray: isMediaVariableType(output.type) || output.type === "json", isCollection: isMediaVariableType(output.type) }] : []),
-    { value: "iteration.hasPrevious", label: "是否有上一项/初始状态", type: "boolean" },
-    { value: "iteration.index", label: "当前项序号（从0开始）", type: "number" },
-  ];
-}
 
 function ReferenceSelect({ value, options, onChange, onReferenceChange, selection, onSelectionChange, allowJsonPath = false, allowMediaIndex = false }: {
   value: string;
@@ -602,13 +390,6 @@ function literalValueError(type: WorkflowVariableType, value: string) {
   return "";
 }
 
-function MediaRoleSelect({ type, value, onChange, label }: { type: string; value?: WorkflowMediaRole; onChange: (role: WorkflowMediaRole | undefined) => void; label: string }) {
-  const options = workflowMediaRoleOptions(type);
-  if (!options.length) return null;
-  const genericLabel = canonicalWorkflowMediaType(type) === "image_list" ? "参考图片" : canonicalWorkflowMediaType(type) === "audio_list" ? "参考声音" : "参考视频";
-  return <div className="select-wrap media-role-select"><select value={value ?? "reference"} onChange={event => onChange(event.target.value === "reference" ? undefined : event.target.value as WorkflowMediaRole)} aria-label={label} title="素材用途与媒体类型分开配置；参考音色不是驱动音轨">{options.map(role => <option value={role} key={role}>{role === "reference" ? genericLabel : workflowMediaRoleLabels[role]}</option>)}</select><ChevronDown size={13} /></div>;
-}
-
 function defaultHermesOutputs(): WorkflowStepOutput[] {
   return [{ key: "result", label: "结构化结果", type: "json" }];
 }
@@ -781,13 +562,13 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
   const selectedStepIndex = selectedStep ? workflow.steps.findIndex((step) => step.id === selectedStep.id) : -1;
   const selectedComfyBindings = selectedStep?.kind === "comfyui" ? comfyBindings(selectedStep) : [];
   const sourceOptions = useMemo(() => allReferenceOptions(workflow), [workflow]);
-  const promptSourceOptions = selectedStep
+  const promptSourceOptions = useMemo(() => selectedStep
     ? [...inputReferenceOptions(workflow), ...outputReferenceOptions(workflow, selectedStepIndex)]
-    : inputReferenceOptions(workflow);
-  const priorReferenceOptions = selectedStep
+    : inputReferenceOptions(workflow), [workflow, selectedStep, selectedStepIndex]);
+  const priorReferenceOptions = useMemo(() => selectedStep
     ? [...inputReferenceOptions(workflow), ...outputReferenceOptions(workflow, selectedStepIndex)]
-    : [];
-  const stepIterationOptions = priorReferenceOptions.filter((option) => isWorkflowArrayReference(workflow, option));
+    : [], [workflow, selectedStep, selectedStepIndex]);
+  const stepIterationOptions = useMemo(() => priorReferenceOptions.filter((option) => isWorkflowArrayReference(workflow, option)), [workflow, priorReferenceOptions]);
   const selectedIterationItemOption = selectedStep?.execution?.mode === "for_each"
     ? iterationItemReferenceOption(workflow, selectedStep.execution.sourceRef ?? "", priorReferenceOptions)
     : undefined;
@@ -1239,8 +1020,11 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
       if (itemFields.some(item => item.type === "select" && !item.options?.length)) messages.push(`${field.label}的下拉行字段至少需要一个选项`);
       if (itemFields.some(item => item.type === "number" && item.minimum !== undefined && item.maximum !== undefined && item.minimum > item.maximum)) messages.push(`${field.label}的数字行字段最小值不能大于最大值`);
     });
+    const inputOptions = inputReferenceOptions(workflow);
+    const accumulatedOutputs: ReferenceOption[] = [];
     workflow.steps.forEach((step, index) => {
-      const priorOptions = allReferenceOptions({ ...workflow, steps: workflow.steps.slice(0, index) });
+      // 前序可引用项 = 场景输入 + 前序步骤输出；随循环增量累积，不再逐步重建截断工作流。
+      const priorOptions = [...inputOptions, ...accumulatedOutputs];
       const iterationOption = step.execution?.mode === "for_each"
         ? iterationItemReferenceOption(workflow, step.execution.sourceRef ?? "", priorOptions)
         : undefined;
@@ -1335,6 +1119,7 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
           if (new Set(keys).size !== keys.length) messages.push(`${step.name} 的${direction === "input" ? "输入" : "输出"}变量 key 不能重复`);
         }
       }
+      accumulatedOutputs.push(...stepOutputOptions(step));
     });
     const finalOutputOptions = allReferenceOptions(workflow);
     if (workflow.outputs.some((output) => {
@@ -1344,7 +1129,8 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
     return [...new Set(messages)];
   }
 
-  const validation = validationMessages();
+  // 校验只在工作流或能力目录变化时重算，不在每次输入渲染时全量扫描。
+  const validation = useMemo(() => validationMessages(), [workflow, capabilities]);
   const currentPublishedVersion = publishedSceneVersion(versionRecord);
   const hasUnpublishedChanges = !sceneDraftMatchesVersion(scene, workflow, optionPresets, currentPublishedVersion);
   const canPublish = validation.length === 0 && hasUnpublishedChanges && saveStatus === "saved";
@@ -1457,7 +1243,7 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
               <div className="schema-row-main">
                 <DeferredInput className="text-input schema-label-input" value={field.label} onCommit={(value) => updateInputField(index, { label: value })} aria-label="输入名称" placeholder="输入名称" />
                 <DeferredInput className="text-input schema-key-input" value={field.key} onCommit={(value) => updateInputField(index, { key: value.replace(/[^a-zA-Z0-9_]/g, "_") })} aria-label="输入 key" placeholder="field_key" />
-                <div className="media-type-controls"><div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(field.type) ?? field.type} onChange={(event) => updateInputField(index, { type: event.target.value as WorkflowFieldType, defaultValue: undefined, ...(event.target.value === "select" ? {} : { optionPresetId: undefined }) })} aria-label="输入类型">{fieldTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div><MediaRoleSelect type={field.type} value={field.mediaRole} onChange={mediaRole => updateInputField(index, { mediaRole })} label={`${field.label}的素材用途`} /></div>
+                <div className="media-type-controls"><div className="select-wrap schema-type-select"><select value={canonicalWorkflowType(field.type) ?? field.type} onChange={(event) => updateInputField(index, { type: event.target.value as WorkflowFieldType, defaultValue: undefined, ...(event.target.value === "select" ? {} : { optionPresetId: undefined }) })} aria-label="输入类型">{fieldTypeOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13} /></div></div>
                 <label className="required-toggle"><input type="checkbox" checked={field.required} onChange={(event) => updateInputField(index, { required: event.target.checked })} /><span>必填</span></label>
               </div>
               {field.type === "number" && <div className="schema-number-controls">
@@ -1638,7 +1424,7 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
                   const inputDirection = direction === "input";
                   const importableInputs = inputDirection ? workflow.inputs.filter((field) => !bindings.some((binding) => binding.key === field.key)) : [];
                   return <section className="comfy-binding-group" key={direction}>
-                     <div className="comfy-binding-heading"><div><strong>{inputDirection ? "输入变量" : "输出变量"}</strong><small>{inputDirection ? "ComfyUI只接收媒体列表；分类在上游选择并合并，图片→images、音频→audios、视频→videos" : "从节点属性读取，供后续步骤和最终结果引用"}</small></div><div className="comfy-binding-actions">{inputDirection && <button className="text-button comfy-import-button" onClick={() => {
+                     <div className="comfy-binding-heading"><div><strong>{inputDirection ? "输入变量" : "输出变量"}</strong><small>{inputDirection ? "ComfyUI只接收媒体列表；人物/场景/道具/音色在上游输入中区分，图片→images、音频→audios、视频→videos" : "从节点属性读取，供后续步骤和最终结果引用"}</small></div><div className="comfy-binding-actions">{inputDirection && <button className="text-button comfy-import-button" onClick={() => {
                       const additions: ComfyUIBinding[] = importableInputs.map((field) => ({
                         key: field.key,
                         label: field.label,

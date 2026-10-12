@@ -1,4 +1,5 @@
 import { validWorkflowMediaRole } from "./workflowMediaRoles.js";
+import { hermesModelSelectionError } from "./hermesModelSelection.js";
 import { HttpError } from "../errors.js";
 import { iterationCarrySchema } from "./iterationCarry.js";
 import { CONDITION_OPERATORS, conditionReferenceRoots } from "./startCondition.js";
@@ -89,10 +90,12 @@ export function validateWorkflowShape(value: Record<string, unknown>) {
   fields(list(value.inputs, "场景输入"), "场景输入");
   fields(list(value.outputs, "最终输出"), "最终输出", true);
   execution(value.execution);
-  for (const raw of list(value.outputs, "最终输出")) if (/^iteration\.(previous|hasPrevious|index)(?:$|[.\[])/.test(String(asRecord(raw)?.sourceRef))) invalid("状态引用仅在当前逐项步骤内有效");
+  for (const raw of list(value.outputs, "最终输出")) if (/^iteration\.(previous|hasPrevious|index)(?:$|[.[])/.test(String(asRecord(raw)?.sourceRef))) invalid("状态引用仅在当前逐项步骤内有效");
   for (const item of list(value.steps, "流程步骤")) {
     const step = record(item, "步骤");
     text(step.promptTemplate, "步骤提示词", true); text(step.hermesProfile, "Profile", true);
+    const selectionError = hermesModelSelectionError(step.hermesProvider, step.hermesModel);
+    if (selectionError) invalid(selectionError);
     text(step.capabilityId, "能力包 ID", true); text(step.capabilityVersion, "能力包版本", true);
     if (step.capabilityConfig !== undefined) record(step.capabilityConfig, "能力包配置");
     for (const raw of list(step.inputs, "步骤输入", true)) {
@@ -105,7 +108,7 @@ export function validateWorkflowShape(value: Record<string, unknown>) {
     fields(list(step.outputs, "步骤输出", true), "步骤输出");
     execution(step.execution, step);
     const checkIteration = (ref: unknown) => {
-      if (typeof ref === "string" && /^iteration\.(previous|hasPrevious|index)(?:$|[.\[])/.test(ref) && !asRecord(step.execution)?.carry) invalid("状态引用需要启用步骤状态传递");
+      if (typeof ref === "string" && /^iteration\.(previous|hasPrevious|index)(?:$|[.[])/.test(ref) && !asRecord(step.execution)?.carry) invalid("状态引用需要启用步骤状态传递");
     };
     for (const raw of list(step.inputs, "步骤输入", true)) if (asRecord(raw)?.valueSource !== "literal") checkIteration(asRecord(raw)?.sourceRef);
     for (const raw of list(asRecord(step.comfyui)?.bindings, "ComfyUI绑定", true)) if (asRecord(raw)?.direction === "input" && asRecord(raw)?.valueSource !== "literal") checkIteration(asRecord(raw)?.sourceRef);

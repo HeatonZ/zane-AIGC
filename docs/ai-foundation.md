@@ -1,12 +1,12 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.5.32。当前 92 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.5.32。当前 95 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
 
 ### generic-start-condition
 
-通用开始条件startCondition：每个步骤（hermes/comfyui/手动/能力/旧条件节点）都可声明match(all|any)+rules（左值引用input/前序step输出，运算符equals/not_equals/greater_than/greater_or_equal/less_than/less_or_equal/contains/not_contains/is_empty/is_not_empty，右侧为字面量或另一个引用）；规则不满足时该步骤整步跳过、逐项模式下按项跳过，其声明输出按null参与下游引用，模型与外部服务不会被调用也不计费。开始条件必须在提交前通过引用存在性与结构校验（引用后续步骤/未知引用/空规则/无效匹配方式均拒绝），重做规划按其引用步骤失效旧结果。旧core.condition条件步骤、runCondition与data.select条件选择保留为compatibilityOnly仅兼容已发布快照，新场景不再需要它们：分支跳过由开始条件+null输出表达。配置不发布不执行，发布快照固定后行为才生效，历史运行不自动替换。
+通用开始条件startCondition：每个步骤（hermes/comfyui/手动/能力/旧条件节点）都可声明match(all|any)+rules（左值引用input/前序step输出，运算符equals/not_equals/greater_than/greater_or_equal/less_than/less_or_equal/contains/not_contains/is_empty/is_not_empty，右侧为字面量或另一个引用，字面量 rightValue 可省略并按空串处理）；规则不满足时该步骤整步跳过、逐项模式下按项跳过，其声明输出按null参与下游引用，模型与外部服务不会被调用也不计费。开始条件必须在提交前通过引用存在性与结构校验（引用后续步骤/未知引用/空规则/无效匹配方式均拒绝），重做规划按其引用步骤失效旧结果。旧core.condition条件步骤、runCondition与data.select条件选择保留为compatibilityOnly仅兼容已发布快照，新场景不再需要它们：分支跳过由开始条件+null输出表达。配置不发布不执行，发布快照固定后行为才生效，历史运行不自动替换。
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |
@@ -139,6 +139,14 @@ UI格式ComfyUI图在同一转换服务解析前端Reroute链与扇出，保留�
 | --- | --- | --- |
 | `get_task_concurrency` | `GET /api/v1/settings/task-concurrency` | read |
 | `update_task_concurrency` | `PATCH /api/v1/settings/task-concurrency` | write |
+
+### workbench-metrics
+
+管理员只读运行时指标快照：进程内存/运行时长与运行队列（maxActiveRuns、queued/active/preparing、accepting/ready、未完成状态计数），diagnostics=1 时附带 SQLite PRAGMA quick_check。只读、不分页、不暴露场景内容、运行明细或凭据，不执行任何变更；供监控面板与 AI 巡检使用。
+
+| 工具 | HTTP | 副作用 |
+| --- | --- | --- |
+| `get_system_metrics` | `GET /api/v1/maintenance/metrics` | read |
 
 ### ai-commerce-basic-composition
 
@@ -318,6 +326,31 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 | `get_workbench` | `GET /api/v1/ai` | read |
 | `list_capabilities` | `GET /api/v1/capabilities` | read |
 
+### hermes-model-selection
+
+步骤级Hermes provider/model选择：每个Hermes步骤可声明hermesProvider/hermesModel，作为请求级provider/model发送给网关（两者都省略时请求体保持历史行为，按Profile默认模型执行）；只作用于声明它的步骤（含for_each逐项），不修改Profile配置、网关默认模型或历史运行快照。校验：provider≤80字符、模型≤200字符，只允许字母数字与 _ . : @ / -，草稿校验、发布预检与执行前各校验一次；同时设置时按该Provider解析凭证与端点，只设模型时/v1/runs入口按所选模型执行、旧版chat/completions回退入口需网关开启direct_model_requests。配套只读发现：list_hermes_profiles列出本机真实Profile，list_hermes_models按Profile读取网关模型选择器目录（slug/显示名/是否当前/是否有凭证/模型ID，每Provider最多200个并明确标记截断；不返回凭证、密钥环境变量名或上游地址），目录按Profile缓存60秒、refresh显式重读、游标绑定profile与revision（变化409重读第一页）、网关不可达502且可继续手工填写。重做/反馈链路同样可修改这两个字段（preview_rerun/rerun的stepOverrides、review_run的stepChanges）。
+
+| 工具 | HTTP | 副作用 |
+| --- | --- | --- |
+| `list_hermes_profiles` | `GET /api/v1/hermes/profiles` | read |
+| `list_hermes_models` | `GET /api/v1/hermes/models` | read |
+| `create_scene` | `POST /api/v1/scenes` | write |
+| `get_scene_draft` | `GET /api/v1/scenes/{sceneId}/draft` | read |
+| `update_scene_draft` | `PATCH /api/v1/scenes/{sceneId}/draft` | write |
+| `validate_scene_draft` | `POST /api/v1/scenes/{sceneId}/validate` | read |
+| `publish_scene` | `POST /api/v1/scenes/{sceneId}/publish` | write |
+| `get_scene` | `GET /api/v1/scenes/{sceneId}` | read |
+| `prepare_scene` | `POST /api/v1/scenes/{sceneId}/prepare` | read |
+| `submit_scene` | `POST /api/v1/scenes/{sceneId}/runs` | execute |
+| `get_step_result` | `GET /api/v1/runs/{runId}/steps/{stepId}/result` | read |
+| `resume_run` | `POST /api/v1/runs/{sourceRunId}/resume` | execute |
+| `preview_rerun` | `POST /api/v1/runs/{sourceRunId}/rerun/preview` | read |
+| `rerun` | `POST /api/v1/runs/{sourceRunId}/rerun` | execute |
+| `review_run` | `POST /api/v1/runs/{runId}/review` | execute |
+| `submit_own_scene` | `POST /api/v1/self/scenes/{sceneId}/runs` | execute |
+| `get_own_step_result` | `GET /api/v1/self/runs/{runId}/steps/{stepId}` | read |
+| `resume_own_run` | `POST /api/v1/self/runs/{runId}/resume` | execute |
+
 ### workspace
 
 仅服务端一套场景/流程/发布/预设/草稿，轻量revision同步、显式空工作区初始化与高级三方合并；网页不维护本地业务场景库，重载只读服务端，防丢outbox须明确恢复且冲突保护，不自动补场景或发布
@@ -347,7 +380,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### scenes
 
-与网页同源同序的revision绑定分页目录，显式草稿/发布名称与差异；场景展示取对应scene.title，不以独立workflow.name代替，不改历史；场景草稿创建/编辑/校验/发布/恢复/删除，固定版本输入契约和预检，允许额外输入键透传并保留，已声明字段仍按类型/必填校验；用基础步骤组合新场景，不为场景另造执行器；Qwen Image 2.1图生图以基础Hermes writer整理有序图片与想法，再由aixg将text edit_brief转为text prompt连接正向端口；仅图片/想法/seed/ratio/mp五项输入，画幅与MP走目标画布且参考图片仍参与条件编码，其余参数用固定配置，revision保护编辑后显式发布；双采视频复用workflowFile和bindings的草稿编辑/校验/显式发布，长文精简草稿采用Writer一次写制作级视频分镜（storyboard/shots无prompt）→基础Hermes aixg一次批量转换prompts、不重编剧情→data.zip等长对齐与确定性素材映射→同一个ComfyUI上下文开关工作流for_each.carry串行续接→拼接，共7步、两次AI调用，保留Writer时长/对白/选择与整镜JSON/24fps；业务分类留在上游，ComfyUI仅接收图片/音频/视频列表；基础引用选择images/audios/videos输出按分组顺序合并，H3本镜分类素材先选择并合并为references.images/audios，保留全局标签到连续局部编号的映射；输入与兼容旧ComfyUI绑定的可选mediaRole区分人物/场景/道具/参考音色，类型不变，固定发布契约回传用途；省略兼容旧版，revision编辑不自动迁移或发布
+与网页同源同序的revision绑定分页目录，显式草稿/发布名称与差异；场景展示取对应scene.title，不以独立workflow.name代替，不改历史；场景草稿创建/编辑/校验/发布/恢复/删除，固定版本输入契约和预检，允许额外输入键透传并保留，已声明字段仍按类型/必填校验；用基础步骤组合新场景，不为场景另造执行器；Qwen Image 2.1图生图以基础Hermes writer整理有序图片与想法，再由aixg将text edit_brief转为text prompt连接正向端口；仅图片/想法/seed/ratio/mp五项输入，画幅与MP走目标画布且参考图片仍参与条件编码，其余参数用固定配置，revision保护编辑后显式发布；双采视频复用workflowFile和bindings的草稿编辑/校验/显式发布，长文精简草稿采用Writer一次写制作级视频分镜（storyboard/shots无prompt）→基础Hermes aixg一次批量转换prompts、不重编剧情→data.zip等长对齐与确定性素材映射→同一个ComfyUI上下文开关工作流for_each.carry串行续接→拼接，共7步、两次AI调用，保留Writer时长/对白/选择与整镜JSON/24fps；业务分类留在上游，ComfyUI仅接收图片/音频/视频列表；基础引用选择images/audios/videos输出按分组顺序合并，H3本镜分类素材先选择并合并为references.images/audios，保留全局标签到连续局部编号的映射；场景输入不再配置素材用途子类（mediaRole只兼容旧发布快照），分类写在输入名称里，固定发布契约原样回传旧值；revision编辑不自动迁移或发布
 
 | 工具 | HTTP | 副作用 |
 | --- | --- | --- |

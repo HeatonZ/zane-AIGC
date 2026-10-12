@@ -25,7 +25,7 @@ export class WorkbenchHttpClient {
     let sent = false;
     let requestId: string | undefined;
     let status: number | undefined;
-    const timeout = AbortSignal.timeout(Math.max(this.timeoutMs, operation.name === "wait_run" ? (Number(args.timeoutSeconds ?? 20) + 5) * 1000 : 0));
+    const timeout = AbortSignal.timeout(Math.max(this.timeoutMs, operation.name.startsWith("wait_") ? (Number(args.timeoutSeconds ?? 20) + 5) * 1000 : 0));
     const combined = signal ? AbortSignal.any([timeout, signal]) : timeout;
     try {
       if (operation.upload) {

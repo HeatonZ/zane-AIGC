@@ -1,5 +1,7 @@
 import { delayWithAbort } from "./execution/cancellation.js";
 import { hermesRetryAttempts, hermesRetryInitialDelayMs, hermesRetryMaxDelayMs } from "./config.js";
+import { log } from "./observability/logger.js";
+import type { HermesApiConnection } from "./domain/types.js";
 
 const retryableSocketCodes = new Set([
   "ECONNABORTED",
@@ -67,6 +69,23 @@ export function describeHermesError(error: unknown) {
     cause = details.cause;
   }
   return { name, message, code, causeMessage };
+}
+
+export function hermesTransportError(profile: string, connection: HermesApiConnection, endpoint: string, error: unknown) {
+  const details = describeHermesError(error);
+  log("error", "hermes.request_failed", {
+    profile,
+    baseUrl: connection.baseUrl,
+    endpoint,
+    errorName: details.name,
+    errorMessage: details.message,
+    ...(details.code ? { code: details.code } : {}),
+    ...(details.causeMessage ? { causeMessage: details.causeMessage } : {}),
+  });
+  const detail = [details.code, details.causeMessage, details.message]
+    .filter((item, index, items): item is string => Boolean(item) && items.indexOf(item) === index)
+    .join(" / ");
+  return new Error(`Hermes 网络连接失败（${connection.baseUrl}）：${detail || "未知网络错误"}`);
 }
 
 export function isRetryableHermesResponse(response: Response) {
@@ -223,6 +242,7 @@ export async function requestHermesRun(options: HermesRunRequestOptions) {
     runId = typeof admittedRecord?.run_id === "string" ? admittedRecord.run_id : undefined;
     if (!runId) throw new Error("Hermes Runs API 未返回 run_id");
 
+    let pollDelayMs = 1_000;
     for (;;) {
       const statusResponse = await fetchHermesWithRetry(options.statusUrl(runId), {
         headers: options.headers,
@@ -252,7 +272,13 @@ export async function requestHermesRun(options: HermesRunRequestOptions) {
         throw new Error(`Hermes 运行${status === "failed" ? "失败" : "已结束"}：${message}`);
       }
       if (!status) throw new Error("Hermes Runs API 返回了无效状态");
-      await delayWithAbort(options.pollIntervalMs ?? 1_000, controller.signal);
+      // 显式 pollIntervalMs 固定不变；默认 1 秒起步退避到 5 秒，长 Agent 任务不再每分钟 60 次轮询。
+      if (options.pollIntervalMs === undefined) {
+        await delayWithAbort(pollDelayMs, controller.signal);
+        pollDelayMs = Math.min(pollDelayMs * 1.5, 5_000);
+      } else {
+        await delayWithAbort(options.pollIntervalMs, controller.signal);
+      }
     }
   } finally {
     clearTimeout(timeout);

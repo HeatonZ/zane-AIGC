@@ -6,10 +6,10 @@ import { asRecord } from "../domain/workflowValues.js";
 const pendingWrites = new Map<string, Promise<void>>();
 
 /** Atomic file replacement; per-path FIFO also avoids simultaneous Windows renames. */
-export async function writeJsonFile(filename: string, value: unknown) {
+export async function writeJsonFile(filename: string, value: unknown, space: 0 | 2 = 2) {
   const resolved = path.resolve(filename);
   const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  const contents = `${JSON.stringify(value, null, 2)}\n`;
+  const contents = `${JSON.stringify(value, null, space || undefined)}\n`;
   const previous = pendingWrites.get(key) ?? Promise.resolve();
   const operation = previous.catch(() => undefined).then(() => replaceFile(resolved, contents));
   pendingWrites.set(key, operation);
