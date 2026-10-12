@@ -5,22 +5,24 @@ import { fetchHermesWithRetry, hermesTransportError } from "../hermesTransport.j
 import type { HermesProfile, HermesApiConnection } from "../domain/types.js";
 import { uniqueStrings } from "../domain/workflowValues.js";
 
-export async function listHermesProfiles(): Promise<HermesProfile[]> {
+/** ``home`` is injectable so callers and tests can target a specific Hermes install without
+ *  mutating process environment (the default is resolved once at config load time). */
+export async function listHermesProfiles(home: string = hermesHome): Promise<HermesProfile[]> {
   const profiles: HermesProfile[] = [];
   try {
-    await access(path.join(hermesHome, "config.yaml"));
+    await access(path.join(home, "config.yaml"));
     profiles.push({ id: "default", isDefault: true });
   } catch {
     // The default profile is absent from this Hermes home.
   }
 
   try {
-    const entries = await readdir(path.join(hermesHome, "profiles"), { withFileTypes: true });
+    const entries = await readdir(path.join(home, "profiles"), { withFileTypes: true });
     const discovered = await Promise.all(entries
       .filter((entry) => entry.isDirectory() && /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(entry.name))
       .map(async (entry) => {
         try {
-          await access(path.join(hermesHome, "profiles", entry.name, "config.yaml"));
+          await access(path.join(home, "profiles", entry.name, "config.yaml"));
           return { id: entry.name, isDefault: false };
         } catch {
           return undefined;
@@ -34,8 +36,8 @@ export async function listHermesProfiles(): Promise<HermesProfile[]> {
   return profiles.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.id.localeCompare(b.id));
 }
 
-async function readHermesProfileEnvironment(profile: string) {
-  const profileDirectory = profile === "default" ? hermesHome : path.join(hermesHome, "profiles", profile);
+async function readHermesProfileEnvironment(profile: string, home: string) {
+  const profileDirectory = profile === "default" ? home : path.join(home, "profiles", profile);
   try {
     return parseEnvFile(await readFile(path.join(profileDirectory, ".env"), "utf8"));
   } catch {
@@ -43,10 +45,10 @@ async function readHermesProfileEnvironment(profile: string) {
   }
 }
 
-export async function readHermesApiConnection(profile: string): Promise<HermesApiConnection> {
+export async function readHermesApiConnection(profile: string, home: string = hermesHome): Promise<HermesApiConnection> {
   const [rootEnvironment, profileEnvironment] = await Promise.all([
-    readHermesProfileEnvironment("default"),
-    profile === "default" ? Promise.resolve(undefined) : readHermesProfileEnvironment(profile),
+    readHermesProfileEnvironment("default", home),
+    profile === "default" ? Promise.resolve(undefined) : readHermesProfileEnvironment(profile, home),
   ]);
   const effectiveProfileEnvironment = profileEnvironment ?? rootEnvironment;
   const apiKey = nonEmpty(process.env.HERMES_API_KEY) ?? nonEmpty(effectiveProfileEnvironment.API_SERVER_KEY);

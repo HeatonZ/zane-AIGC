@@ -86,6 +86,13 @@ try {
   console.log("Task draft favorites MCP acceptance passed: shared SQLite + explicit true/false + preserved content/time + edit retention + pagination invalidation + stale revision + lost receipt reconciliation; no models called.");
   const basicCatalog = await call("list_capabilities", { limit: 1 }); assert.equal(basicCatalog.capabilities.length, 1); assert.ok(basicCatalog.hasMore && basicCatalog.nextCursor); assert.equal(basicCatalog.selectionPolicy.sceneSpecificLogic, "core.code");
   const nextBasics = await call("list_capabilities", { limit: 100, cursor: basicCatalog.nextCursor }); assert.equal(nextBasics.revision, basicCatalog.revision); assert.ok(nextBasics.capabilities.some(item => item.id === "media.image_layout" && item.inputs.some(input => input.key === "layout" && input.valueSchema))); assert.ok(nextBasics.capabilities.some(item => item.id === "media.select_references"));
+  // Hermes provider/model selection: the read-only discovery tools work over real stdio MCP even
+  // with no Hermes home configured (empty profile list, honest 404 for an unknown profile) and
+  // never call a model. The step fields themselves are covered by scene draft validation below.
+  const hermesProfiles = await call("list_hermes_profiles"); assert.deepEqual(hermesProfiles.profiles, []);
+  const missingProfileModels = await client.callTool({ name: "list_hermes_models", arguments: { profile: "missing" } }); assert.equal(missingProfileModels.isError, true); assert.equal(missingProfileModels.structuredContent.error.code, "HERMES_PROFILE_NOT_FOUND");
+  const badModelQuery = await client.callTool({ name: "list_hermes_models", arguments: { profile: "bad profile" } }); assert.equal(badModelQuery.isError, true); assert.equal(badModelQuery.structuredContent.error.code, "INVALID_HERMES_MODEL_QUERY");
+  console.log("Hermes model discovery MCP acceptance passed: profile listing + unknown-profile 404 + invalid query rejection; no gateway, no credentials, no model calls.");
   assert.equal((await call("get_workbench")).contractVersion, AI_CONTRACT_VERSION); assert.equal((await call("list_scenes")).scenes[0].sceneId, scene.id);
   await client.readResource({ uri: "zane://guide" }); const schema = await client.readResource({ uri: "zane://openapi" }); assert.equal(JSON.parse(schema.contents[0].text).openapi, "3.1.0");
   const selected = await call("get_scene", { sceneId: scene.id }); const preparation = await call("prepare_scene", { sceneId: scene.id, versionId: selected.versionId, inputValues: {} }); assert.equal(preparation.externalServicesChecked, false); assert.deepEqual(preparation.inputValues, { flag: true }); assert.deepEqual(preparation.boundaries.externalSteps, []);
@@ -222,13 +229,23 @@ try {
   qwenWorkflow.steps[2].comfyui.bindings = qwenWorkflow.steps[2].comfyui.bindings.filter(binding => binding.key !== "seed");
   const invalidQwen = structuredClone(qwenWorkflow); invalidQwen.steps[0].hermesProfile = 21;
   assert.equal((await client.callTool({ name: "update_scene_draft", arguments: { sceneId: qwenSceneId, revision: qwenBefore.revision, workflow: invalidQwen } })).isError, true);
+  // A step-level provider/model override is validated at draft write time and preserved as declared.
+  const invalidSelection = structuredClone(qwenWorkflow); invalidSelection.steps[0].hermesProvider = "bad provider";
+  assert.equal((await client.callTool({ name: "update_scene_draft", arguments: { sceneId: qwenSceneId, revision: qwenBefore.revision, workflow: invalidSelection } })).isError, true);
+  const invalidModel = structuredClone(qwenWorkflow); invalidModel.steps[0].hermesModel = "x".repeat(201);
+  assert.equal((await client.callTool({ name: "update_scene_draft", arguments: { sceneId: qwenSceneId, revision: qwenBefore.revision, workflow: invalidModel } })).isError, true);
   assert.equal((await call("get_scene_draft", { sceneId: qwenSceneId })).revision, qwenBefore.revision);
+  qwenWorkflow.steps[0].hermesProvider = "custom:smoke";
+  qwenWorkflow.steps[0].hermesModel = "anthropic/claude-opus-5";
   // Ignore the save receipt, simulating a client that lost it; reconcile the same scene, never replay.
   await client.callTool({ name: "update_scene_draft", arguments: { sceneId: qwenSceneId, revision: qwenBefore.revision, workflow: qwenWorkflow } });
   const qwenSaved = await call("get_scene_draft", { sceneId: qwenSceneId });
   assert.notEqual(qwenSaved.revision, qwenBefore.revision);
   assert.equal(qwenSaved.workflow.steps[0].hermesProfile, "writer");
+  assert.equal(qwenSaved.workflow.steps[0].hermesProvider, "custom:smoke");
+  assert.equal(qwenSaved.workflow.steps[0].hermesModel, "anthropic/claude-opus-5");
   assert.equal(qwenSaved.workflow.steps[1].hermesProfile, "aixg");
+  assert.equal(qwenSaved.workflow.steps[1].hermesProvider, undefined);
   assert.equal(qwenSaved.workflow.steps[1].inputs.find(input => input.key === "prompt").sourceRef, QWEN_IMAGE_21_WRITER_REF);
   assert.equal(qwenSaved.workflow.steps[0].promptTemplate, qwenWorkflow.steps[0].promptTemplate);
   assert.deepEqual(qwenSaved.workflow.steps[0].inputs, qwenWorkflow.steps[0].inputs);

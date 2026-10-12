@@ -81,12 +81,14 @@ function sortProviders(providers: HermesModelProvider[]) {
 export class HermesModelCatalogService {
   private readonly cache = new Map<string, { expires: number; payload: unknown }>();
 
-  constructor(private readonly now: () => number = () => Date.now()) {}
+  /** ``home`` is injectable so a caller (or a test) can target a specific Hermes install
+   *  without mutating process environment, which is resolved once at config load time. */
+  constructor(private readonly now: () => number = () => Date.now(), private readonly home?: string) {}
 
   private async readGatewayPayload(profile: string, refresh: boolean) {
     const cached = this.cache.get(profile);
     if (!refresh && cached && cached.expires > this.now()) return cached.payload;
-    const connection = await readHermesApiConnection(profile);
+    const connection = await readHermesApiConnection(profile, this.home);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
     try {
@@ -126,7 +128,7 @@ export class HermesModelCatalogService {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > maximumProviderLimit) {
       throw new HttpError(400, `单页Provider数量必须是 1 到 ${maximumProviderLimit} 的整数`, "INVALID_HERMES_MODEL_QUERY");
     }
-    const known = await listHermesProfiles();
+    const known = await listHermesProfiles(this.home);
     if (!known.some((item) => item.id === profile)) {
       throw new HttpError(404, `本机没有找到 Hermes Profile「${profile}」；请先读取可用 Profile 列表`, "HERMES_PROFILE_NOT_FOUND");
     }

@@ -12,6 +12,7 @@ import {
   FileOutput,
   History as HistoryIcon,
   GitCompareArrows,
+  Info,
   ListPlus,
   Plus,
   RefreshCw,
@@ -21,7 +22,7 @@ import {
 } from "lucide-react";
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
-import { loadComfyUINodeInfo, loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesProfiles } from "../lib/api";
+import { loadComfyUINodeInfo, loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesModels, loadHermesProfiles } from "../lib/api";
 import { clearConfirmedStaleComfyBindings } from "../lib/comfyBindingValidation";
 import { allReferenceOptions, carryReferenceOptions, conditionOperators, defaultControlConfig, defaultStartCondition, inputReferenceOptions, inputValueType, isMediaArrayReference, isWorkflowArrayReference, iterationItemReferenceOption, newConditionRule, outputReferenceOptions, referenceOption, referencePathError, referenceTypeLabel, referenceWithJsonPath, splitReferencePath, stepOutputOptions } from "../lib/workflowReferences";
 import type {
@@ -31,6 +32,7 @@ import type {
   ComfyUIWorkflowDetail,
   ComfyUIWorkflowNode,
   ComfyUIWorkflowSummary,
+  HermesModelCatalog,
   HermesProfile,
   JsonValue,
   SceneId,
@@ -516,6 +518,10 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
   const [enabledProfiles, setEnabledProfiles] = useState<string[]>([]);
   const [profileError, setProfileError] = useState("");
+  const [modelCatalog, setModelCatalog] = useState<HermesModelCatalog | null>(null);
+  const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
+  const [modelCatalogError, setModelCatalogError] = useState("");
+  const [modelCatalogRefresh, setModelCatalogRefresh] = useState(0);
   const [comfyWorkflows, setComfyWorkflows] = useState<ComfyUIWorkflowSummary[]>([]);
   const [comfyNodes, setComfyNodes] = useState<ComfyUIWorkflowNode[]>([]);
   const [comfyFormat, setComfyFormat] = useState<ComfyUIWorkflowDetail["format"] | null>(null);
@@ -585,6 +591,25 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
     ? workflow.steps.slice(0, selectedStepIndex).filter((step) => step.kind === "control")
     : [];
   const selectedControl = selectedStep?.control ?? defaultControlConfig();
+
+  // The gateway model catalog is advisory: an unreachable gateway must not block editing, so a
+  // failure only drops the suggestions and leaves free-text entry usable.
+  const selectedProfile = selectedStep?.hermesProfile ?? "";
+  useEffect(() => {
+    if (!selectedProfile) { setModelCatalog(null); setModelCatalogError(""); return; }
+    const controller = new AbortController();
+    setModelCatalogLoading(true);
+    setModelCatalogError("");
+    loadHermesModels({ profile: selectedProfile, limit: 100 }, controller.signal)
+      .then((catalog) => { setModelCatalog(catalog); setModelCatalogLoading(false); })
+      .catch((reason) => {
+        if (controller.signal.aborted) return;
+        setModelCatalog(null);
+        setModelCatalogLoading(false);
+        setModelCatalogError(reason instanceof Error ? reason.message : "无法读取模型目录");
+      });
+    return () => controller.abort();
+  }, [selectedProfile, modelCatalogRefresh]);
 
   useEffect(() => {
     setReferenceToInsert("");
@@ -1384,6 +1409,25 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
               </div>
             </div>}
             {selectedCapability?.editor.profile && <div className="step-profile-row"><div className="field-group"><label className="field-label">Hermes Profile</label><div className="select-wrap"><select value={selectedStep.hermesProfile ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, hermesProfile: event.target.value }))}><option value="">选择 Profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id}{profile.isDefault ? "（默认）" : enabledProfiles.includes(profile.id) ? "（已启用）" : "（未启用）"}</option>)}</select><ChevronDown size={14} /></div></div><button className="text-button" onClick={onOpenConnections}>管理 Profile <ArrowRight size={13} /></button></div>}
+            {selectedCapability?.editor.profile && <div className="designer-subsection hermes-model-subsection">
+              <div className="designer-subsection-heading"><div><h3>Provider 与模型</h3><p>可选：只覆盖本步骤的请求级选择，不改 Profile 配置与网关默认值；都留空时按 Profile 默认模型执行</p></div>
+                <button className="text-button" type="button" disabled={!selectedStep.hermesProfile || modelCatalogLoading} onClick={() => setModelCatalogRefresh((current) => current + 1)}>{modelCatalogLoading ? "读取中…" : "重新读取目录"}</button></div>
+              {!selectedStep.hermesProfile && <div className="designer-field-explainer"><Info size={14} /><span>先选择 Hermes Profile，才能读取该 Profile 的 Provider 与模型目录。</span></div>}
+              {selectedStep.hermesProfile && modelCatalogError && <div className="designer-profile-error">{modelCatalogError}（可手工填写；只有执行时才需要网关可达）</div>}
+              {selectedStep.hermesProfile && modelCatalog && <div className="hermes-model-current">目录当前生效：{modelCatalog.currentProvider || "未声明"} · {modelCatalog.currentModel || "未声明"}（{modelCatalog.providers.length} 个 Provider，每 Provider 最多显示 200 个模型）</div>}
+              <div className="step-profile-row">
+                <div className="field-group"><label className="field-label">Hermes Provider（可选）</label>
+                  <input className="text-input" list="hermes-provider-options" placeholder="例如 custom:my-chat" value={selectedStep.hermesProvider ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, hermesProvider: event.target.value || undefined }))} />
+                  <datalist id="hermes-provider-options">{(modelCatalog?.providers ?? []).map((provider) => <option key={provider.slug} value={provider.slug}>{provider.name}{provider.isCurrent ? "（当前）" : ""}</option>)}</datalist>
+                </div>
+                <div className="field-group"><label className="field-label">Hermes 模型（可选）</label>
+                  <input className="text-input" list="hermes-model-options" placeholder="例如 anthropic/claude-opus-5" value={selectedStep.hermesModel ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, hermesModel: event.target.value || undefined }))} />
+                  <datalist id="hermes-model-options">{(modelCatalog?.providers.find((provider) => provider.slug === (selectedStep.hermesProvider ?? modelCatalog.currentProvider))?.models ?? []).map((model) => <option key={model} value={model} />)}</datalist>
+                </div>
+              </div>
+              {(selectedStep.hermesProvider || selectedStep.hermesModel) && <div className="designer-field-explainer"><Info size={14} /><span>本步骤将按 {selectedStep.hermesProvider ? `Provider「${selectedStep.hermesProvider}」` : "Profile 默认 Provider"} 与 {selectedStep.hermesModel ? `模型「${selectedStep.hermesModel}」` : "Profile 默认模型"} 执行；换模型不会自动重算已有结果，需重新执行或局部重做。</span>
+                <button className="text-button" type="button" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, hermesProvider: undefined, hermesModel: undefined }))}>清除选择</button></div>}
+            </div>}
             {profileError && <div className="designer-profile-error">{profileError}</div>}
 
             {selectedCapability?.editor.condition && <div className="designer-subsection condition-editor">
