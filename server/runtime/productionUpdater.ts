@@ -27,7 +27,7 @@ const absent = (error: unknown) => (error as NodeJS.ErrnoException).code === "EN
 const timestamp = () => new Date().toISOString();
 const terminal = new Set(["completed", "failed", "cancelled", "needs_attention"]);
 const sourceDirectories = ["server", "src", "scripts", "docs", "examples", "public"];
-const sourceFiles = ["package.json", "package-lock.json", "tsconfig.json", "tsconfig.server.json", "vite.config.ts", "index.html", "README.md", "AGENTS.md", ".env.example"];
+const sourceFiles = ["package.json", "package-lock.json", "tsconfig.json", "tsconfig.server.json", "vite.config.ts", "index.html", "README.md", "AGENTS.md", ".env.example", ".oxlintrc.json"];
 const assertInside = (directory: string, target: string) => {
   const relative = path.relative(path.resolve(directory), path.resolve(target));
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("升级路径超出允许目录");

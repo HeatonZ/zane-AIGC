@@ -15,7 +15,7 @@
     "start:prod": "npm run update:prod",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.server.json --noEmit",
-    "lint": "oxlint src server",
+    "lint": "node scripts/lint.mjs",
     "check": "npm run typecheck && npm run lint && npm run docs:ai:check && npm test && npm run build && npm run test:smokes",
     "test:smokes": "node scripts/run-smokes.mjs",
     "test:smoke": "node scripts/smoke-server.mjs",
