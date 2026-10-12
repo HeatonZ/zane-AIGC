@@ -16,25 +16,25 @@ const gatewayPayload = {
   provider: "custom:my-chat",
 };
 
-/** Point Hermes discovery at a temporary home with one profile, then stub the gateway fetch. */
+/** Point Hermes discovery at a temporary home with one profile, then stub the gateway fetch.
+ *  The home is injected rather than set via environment: config.ts resolves hermesHome at import
+ *  time, so an environment-based fixture would silently depend on the developer's real Hermes
+ *  install and fail in an isolated check. */
 async function harness(t: Parameters<typeof temporaryDirectory>[0], body: unknown = gatewayPayload, status = 200) {
   const root = await temporaryDirectory(t);
   await writeFile(path.join(root, ".env"), "API_SERVER_KEY=test-key\nAPI_SERVER_PORT=8642\n");
   await mkdir(path.join(root, "profiles", "comfyui-dev"), { recursive: true });
   await writeFile(path.join(root, "profiles", "comfyui-dev", "config.yaml"), "model:\n  default: my-chat\n");
-  const originalHome = process.env.ZANE_HERMES_HOME;
+  // A named profile resolves credentials from its own .env; the root file is not a fallback.
+  await writeFile(path.join(root, "profiles", "comfyui-dev", ".env"), "API_SERVER_KEY=test-key\n");
   const originalFetch = globalThis.fetch;
   const urls: string[] = [];
-  process.env.ZANE_HERMES_HOME = root;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     urls.push(String(input));
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-    if (originalHome === undefined) delete process.env.ZANE_HERMES_HOME; else process.env.ZANE_HERMES_HOME = originalHome;
-  });
-  return { root, urls, service: new HermesModelCatalogService() };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  return { root, urls, service: new HermesModelCatalogService(() => Date.now(), root) };
 }
 
 test("模型目录按Profile作用域读取，且不泄露凭证、密钥环境变量或上游地址", async (t) => {

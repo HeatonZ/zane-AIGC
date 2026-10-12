@@ -305,6 +305,10 @@ async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonVa
   const expectedImageCount = Math.max(1, mediaInputs.reduce((total, media) => total + (
     media.mediaKind === "video" ? hermesVideoFrameCount * media.value.length : media.value.length
   ), 0));
+  // 附件数量在抽帧/压缩之前就确定：必然超限时立即失败，不做注定白费的 ffmpeg 工作。
+  if (expectedImageCount > hermesImageLimit) {
+    throw new Error(`${step.name} 最多支持 ${hermesImageLimit} 张图片或视频帧（当前附件预计 ${expectedImageCount} 张）`);
+  }
   const promptBytes = Buffer.byteLength(prompt, "utf8");
   const imageBudgetBytes = Math.min(
     hermesImageTargetBytes,

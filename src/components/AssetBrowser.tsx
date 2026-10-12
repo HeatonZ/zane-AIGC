@@ -8,9 +8,10 @@ import type { AssetPage, AssetSummary, AssetVersionSummary } from "../../server/
 import { useModalFocus } from "../hooks/useModalFocus";
 import AssetMetadataFields, { splitAssetTags, type AssetMetadataForm } from "./AssetMetadataFields";
 import AssetWriteRecovery from "./AssetWriteRecovery";
+import LazyVideo from "./LazyVideo";
 export function AssetPreview({ asset, version = asset.currentVersion }: { asset: Pick<AssetSummary, "id" | "kind" | "name" | "currentVersion">; version?: number }) {
   const url = assetPreview(asset.id, version);
-  return asset.kind === "video" ? <video src={url} controls preload="metadata" /> : asset.kind === "audio" ? <audio src={url} controls preload="metadata" /> : <img src={url} alt={asset.name} loading="lazy" />;
+  return asset.kind === "video" ? <LazyVideo src={url} label={asset.name} /> : asset.kind === "audio" ? <audio src={url} controls preload="metadata" /> : <img src={url} alt={asset.name} loading="lazy" />;
 }
 const metadata = (asset: AssetSummary): AssetMetadataForm => ({ name: asset.name, category: asset.category, description: asset.description, group: asset.group, tags: asset.tags.join("，") });
 export default function AssetBrowser({ kind, onPick }: { kind?: AssetKind; onPick?: (reference: AssetReference) => void }) {

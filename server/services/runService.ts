@@ -29,6 +29,8 @@ interface ServiceOptions {
   getMaxActiveRuns?(): number;
   resolveAssets?: import("./runPreparation.js").PreparationDependencies["resolveAssets"];
   execute?(prepared: PreparedRun, context: ExecutionContext): Promise<ExecutionResult>;
+  /** 可选：记录终态样本供只读指标展示；不参与执行语义。 */
+  metricsTracker?: import("./runMetricsTracker.js").RunMetricsTracker;
 }
 interface ActiveJob { prepared: PreparedRun; controller: AbortController; done: Promise<void>; shutdown: boolean }
 function key(projectDirectory: string, runId: string) { return `${projectDirectory}\n${runId}`; }
@@ -49,6 +51,7 @@ export class RunService {
   private closed = false;
   constructor(options: ServiceOptions) { this.options = options; this.events.setMaxListeners(0); }
   get store() { return this.options.store; }
+  private get metricsTracker() { return this.options.metricsTracker; }
   isPreparing(projectDirectory: string, runId: string) { return this.preparing.has(key(projectDirectory, runId)); }
   isPreparingFor(project: string, runId: string, userId: string) { return this.preparingOwners.get(key(project,runId)) === userId; }
   /** Re-evaluate admission after a committed configuration change. Existing jobs are not interrupted. */
@@ -404,6 +407,8 @@ export class RunService {
         ...(!job.shutdown ? { cancellationReason: reason } : {}),
       } : {}) }, [{ type: `run.${status}` }]);
       log("info", `run.${status}`, { runId: prepared.runId, durationMs: result.durationMs });
+      // waiting（等待人工审核）不是终态样本，不计入时长统计。
+      if (status !== "waiting") this.metricsTracker?.record({ at: finishedAt, status: status as "completed" | "failed" | "cancelled" | "stale", durationMs: result.durationMs, sceneId: record.sceneId });
     } catch (error) {
       if (this.closed) return;
       const current = this.store.getRun(project, prepared.runId)!;

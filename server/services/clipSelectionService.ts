@@ -58,8 +58,21 @@ export class ClipSelectionService {
   get(project: string, id: string) { const item = this.assets.store.getDocument<ClipSelection>(project,"clip-selections",id); if (!item) throw new HttpError(404,"选片清单不存在"); return item; }
   put(project: string, selection: ClipSelection, revision: number) { try { return this.assets.store.putDocument(project,"clip-selections",selection,revision); } catch (error) { if ((error as Error).message === "DOCUMENT_CONFLICT") throw new HttpError(409,"选片清单已变化，请刷新后重试","CLIP_SELECTION_CONFLICT"); throw error; } }
   async allRuns(project: string) { await this.runs.importLegacyProject(project); const all: RunRecord[] = []; let before; do { const page = this.assets.store.listRuns(project,{ limit: 200, before }); all.push(...page.runs); before = page.nextCursor; } while (before); return all; }
+  /** 血缘分页：只用摘要投影（含 rerun/resume 来源），不为家族判定解析完整运行快照。 */
+  async lineage(project: string) {
+    await this.runs.importLegacyProject(project);
+    const lineage = new Map<string, { rerunFromRunId?: string; resumedFromRunId?: string }>();
+    let before;
+    do {
+      const page = this.assets.store.listRunSummaries(project, { limit: 200, before });
+      for (const run of page.runs) lineage.set(run.runId, { ...(run.rerunFromRunId ? { rerunFromRunId: run.rerunFromRunId } : {}), ...(run.resumedFromRunId ? { resumedFromRunId: run.resumedFromRunId } : {}) });
+      before = page.nextCursor;
+    } while (before);
+    return lineage;
+  }
   familyRoot(id: string, all: Map<string,RunRecord>) { const seen = new Set<string>(); let current = id; while (!seen.has(current)) { seen.add(current); const run = all.get(current); const parent = run?.rerunFromRunId ?? run?.resumedFromRunId; if (!parent) return current; current = parent; } return current; }
-  async list(project: string, runId?: string) { const lists = this.assets.store.listDocuments<ClipSelection>(project,"clip-selections"); if (!runId) return lists; const all = new Map((await this.allRuns(project)).map(run => [run.runId,run])); const root = this.familyRoot(runId,all); return lists.filter(list => this.familyRoot(list.sourceRunId,all) === root); }
+  familyRootOf(id: string, lineage: Map<string, { rerunFromRunId?: string; resumedFromRunId?: string }>) { const seen = new Set<string>(); let current = id; while (!seen.has(current)) { seen.add(current); const run = lineage.get(current); const parent = run?.rerunFromRunId ?? run?.resumedFromRunId; if (!parent) return current; current = parent; } return current; }
+  async list(project: string, runId?: string) { const lists = this.assets.store.listDocuments<ClipSelection>(project,"clip-selections"); if (!runId) return lists; const lineage = await this.lineage(project); const root = this.familyRootOf(runId,lineage); return lists.filter(list => this.familyRootOf(list.sourceRunId,lineage) === root); }
   preview(value: JsonValue, source?: AssetSource) { const row = asRecord(value); const text = typeof value === "string" ? value : typeof row?.previewUrl === "string" ? row.previewUrl : typeof row?.url === "string" ? row.url : typeof row?.path === "string" ? row.path : "";
     const normalized = text.replace(/\\/g,"/"); const archived = /(?:^|\/)\.zane\/runs\/([a-f0-9-]{36})\/outputs\/media\/([^/]+)$/i.exec(normalized);
     return archived ? "/api/v1/runs/" + archived[1] + "/media/" + encodeURIComponent(archived[2]) : /^(https?:|data:|\/api\/)/.test(text) ? text : text && source ? "/api/v1/runs/" + source.runId + "/output-media?" + new URLSearchParams(Object.entries(source).filter(([key])=>key!=="runId").map(([key,value])=>[key,String(value)])) : "";

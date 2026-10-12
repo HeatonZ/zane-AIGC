@@ -1,18 +1,14 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Check, Clock3, Copy, Layers3, PackageCheck } from "lucide-react";
 import type { OwnRun } from "../lib/accessApi";
 import { elapsedRun, progressPercent, runDate, runDuration, runStatusDescriptions, runStatusLabels } from "../lib/runDetails";
+import { useLiveClock } from "../hooks/useLiveClock";
 
 export function RunMetrics({ progress, outputCount, expectedOutputCount, createdAt, finishedAt, totalDurationMs, status }: {
   progress: OwnRun["progress"]; outputCount: number; expectedOutputCount: number;
   createdAt?: string; finishedAt?: string; totalDurationMs?: number; status?: string;
 }) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    if (finishedAt || !createdAt || !["queued", "running", "cancelling", "waiting"].includes(status ?? "")) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [createdAt, finishedAt, status]);
+  const now = useLiveClock(Boolean(!finishedAt && createdAt && ["queued", "running", "cancelling", "waiting"].includes(status ?? "")));
   return <div className="run-metrics">
     <article><span><Layers3 size={15} />步骤进度</span><strong>{progress.settled}<small> / {progress.total}</small></strong>
       <div className="run-progress-track" role="progressbar" aria-label="已结束步骤比例，不代表预计完成时间" aria-valuemin={0} aria-valuemax={progress.total || 1} aria-valuenow={progress.settled}><i style={{ width: progressPercent(progress) + "%" }} /></div>

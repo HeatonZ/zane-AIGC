@@ -145,19 +145,33 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   useEffect(() => {
     if (!run || busy || !["queued", "running", "cancelling", "waiting"].includes(run.status)) return;
     let stopped = false;
+    let timer: number | undefined;
+    let delayMs = 2500;
     const id = run.runId;
-    const timer = window.setInterval(() => {
-      // 页面隐藏时暂停轮询，回到前台立即补一次读取。
-      if (document.hidden) return;
-      if (selectingRun.current) return;
+    const schedule = () => { timer = window.setTimeout(tick, delayMs); };
+    const tick = () => {
+      if (stopped) return;
+      // 页面隐藏时暂停轮询，回到前台由 visibilitychange 立即补一次。
+      if (document.hidden || selectingRun.current) { schedule(); return; }
       const sequence = ++readSequence.current;
       void api<OwnRun>("/api/v1/self/runs/" + id).then(value => {
-        if (!stopped && sequence === readSequence.current && runRef.current?.runId === id) {
-          setRun(value); setRuns(current => current.map(item => item.runId === id ? value : item));
-        }
-      }).catch(e => { if (!stopped && sequence === readSequence.current && runRef.current?.runId === id) setError((e as Error).message); });
-    }, 2500);
-    return () => { stopped = true; clearInterval(timer); };
+        if (stopped || sequence !== readSequence.current || runRef.current?.runId !== id) return;
+        const previous = runRef.current;
+        // 状态或进度有变化时保持紧轮询；长时间无变化则退避到 10 秒，降低长任务请求量。
+        const changed = previous?.status !== value.status
+          || previous?.steps.some((step, index) => step.status !== value.steps[index]?.status)
+          || previous?.progress.settled !== value.progress.settled;
+        delayMs = changed ? 2500 : Math.min(delayMs * 1.5, 10_000);
+        setRun(value); setRuns(current => current.map(item => item.runId === id ? value : item));
+      }).catch(e => {
+        delayMs = Math.min(delayMs * 1.5, 10_000);
+        if (!stopped && sequence === readSequence.current && runRef.current?.runId === id) setError((e as Error).message);
+      }).finally(() => { if (!stopped) schedule(); });
+    };
+    const onVisibility = () => { if (!document.hidden && !stopped && timer !== undefined) { window.clearTimeout(timer); timer = undefined; delayMs = 2500; void tick(); } };
+    document.addEventListener("visibilitychange", onVisibility);
+    schedule();
+    return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
   }, [run?.runId, run?.status, busy]);
 
   async function openScene(id: string, draft?: OwnDraft) {

@@ -4,12 +4,13 @@ import { backup, DatabaseSync } from "node:sqlite";
 import type { RunArtifactPaths, RunEvent, RunRecord, RunStatus, RunSubmitter } from "../domain/types.js";
 
 export interface RunListQuery { ownerUserId?: string; limit?: number; before?: { createdAt: string; runId: string }; status?: RunStatus; sceneId?: string }
-/** 列表页投影：不含 steps/outputs 明细，只有标量、计数与归档路径。 */
+/** 列表页投影：不含 steps/outputs 明细，只有标量、计数、血缘与归档路径。 */
 export interface RunSummaryRow {
   runId: string; sceneId: string; status: RunStatus; createdAt: string;
   ownerUserId?: string; submitter?: RunSubmitter; workflowName?: string; runTitle?: string;
   startedAt?: string; finishedAt?: string; durationMs?: number; error?: string;
   stepCount: number; outputCount: number; artifacts: RunArtifactPaths;
+  rerunFromRunId?: string; resumedFromRunId?: string;
 }
 interface RunRow { snapshot_json: string; submission_json: string | null }
 interface RunSummaryDbRow {
@@ -23,6 +24,10 @@ interface RunSummaryDbRow {
 export class SqliteStore {
   private readonly database: DatabaseSync;
   private readonly statements = new Map<string, import("node:sqlite").StatementSync>();
+  /** 运行快照解析缓存：键为 project+runId，命中要求 updated_at 与全局写入序号都未变。 */
+  private readonly snapshotCache = new Map<string, { stamp: string; writes: number; run: RunRecord }>();
+  /** 任一运行写入即自增；比时间戳更可靠地让缓存失效。 */
+  private writes = 0;
   /** node:sqlite 语句可复用；高频路径避免每次请求重新 prepare。动态拼装的 SQL 仍直连。 */
   private stmt(sql: string): import("node:sqlite").StatementSync {
     let statement = this.statements.get(sql);
@@ -99,8 +104,9 @@ export class SqliteStore {
   }
 
   getRun(projectDirectory: string, runId: string): RunRecord | undefined {
-    const row = this.stmt("SELECT snapshot_json FROM runs WHERE project_directory = ? AND run_id = ?").get(projectDirectory, runId) as unknown as RunRow | undefined;
-    return row ? JSON.parse(row.snapshot_json) as RunRecord : undefined;
+    const row = this.stmt("SELECT snapshot_json, updated_at FROM runs WHERE project_directory = ? AND run_id = ?").get(projectDirectory, runId) as { snapshot_json: string; updated_at: string } | undefined;
+    if (!row) return undefined;
+    return this.parseRunCached(projectDirectory, runId, row.snapshot_json, row.updated_at);
   }
 
   createRun(projectDirectory: string, run: RunRecord, submission: unknown): RunEvent[] {
@@ -124,6 +130,7 @@ export class SqliteStore {
 
   private saveRunInTransaction(projectDirectory: string, run: RunRecord, events: Array<{ type: string; stepId?: string; payload?: Record<string, unknown> }>, changedStepIds?: ReadonlySet<string>): RunEvent[] {
     const now = new Date().toISOString();
+    this.writes += 1;
     const updated = this.stmt("UPDATE runs SET status=?, snapshot_json=?, updated_at=? WHERE project_directory=? AND run_id=?")
       .run(run.status, JSON.stringify(run), now, projectDirectory, run.runId);
     if (!updated.changes) throw new Error(`运行 ${run.runId} 不存在`);
@@ -169,11 +176,22 @@ export class SqliteStore {
     if (query.before) { where += " AND (created_at < ? OR (created_at = ? AND run_id < ?))"; params.push(query.before.createdAt, query.before.createdAt, query.before.runId); }
     const limit = Math.max(1, Math.min(200, query.limit ?? 50));
     params.push(limit + 1);
-    const rows = this.database.prepare(`SELECT snapshot_json FROM runs WHERE ${where} ORDER BY created_at DESC, run_id DESC LIMIT ?`).all(...params) as unknown as RunRow[];
+    const rows = this.database.prepare(`SELECT run_id, snapshot_json, updated_at FROM runs WHERE ${where} ORDER BY created_at DESC, run_id DESC LIMIT ?`).all(...params) as Array<{ run_id: string; snapshot_json: string; updated_at: string }>;
     const more = rows.length > limit;
-    const runs = rows.slice(0, limit).map((row) => JSON.parse(row.snapshot_json) as RunRecord);
+    // 复用解析缓存，但向调用方返回浅拷贝：列表消费方可能就地修改记录字段。
+    const runs = rows.slice(0, limit).map((row) => ({ ...this.parseRunCached(projectDirectory, row.run_id, row.snapshot_json, row.updated_at) }));
     const last = runs.at(-1);
     return { runs, ...(more && last ? { nextCursor: { createdAt: last.createdAt, runId: last.runId } } : {}) };
+  }
+
+  private parseRunCached(projectDirectory: string, runId: string, snapshotJson: string, updatedAt: string): RunRecord {
+    const key = projectDirectory + "\n" + runId;
+    const cached = this.snapshotCache.get(key);
+    if (cached && cached.stamp === updatedAt && cached.writes === this.writes) return cached.run;
+    const run = JSON.parse(snapshotJson) as RunRecord;
+    if (this.snapshotCache.size >= 512) this.snapshotCache.clear();
+    this.snapshotCache.set(key, { stamp: updatedAt, writes: this.writes, run });
+    return run;
   }
 
   /** 摘要列表：只抽取列表页需要的标量与计数，避免解析整份运行快照（大运行单份可达数百 KB）。 */

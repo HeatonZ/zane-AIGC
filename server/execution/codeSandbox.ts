@@ -200,7 +200,9 @@ export function createCodeSandboxWorker(job: CodeSandboxJob) {
   return new Worker(resolveWorkerUrl(), options);
 }
 
-/** 进程级并发预算：每 worker 约 128MB 堆，for_each×多任务时不能无上限 spawn。 */
+/** 进程级并发预算：每 worker 约 128MB 堆，for_each×多任务时不能无上限 spawn。
+ *  不池化 worker：job 经 workerData 一次性注入、执行后退出，这是隔离保证的一部分
+ *  （每次执行都是全新 isolate 与堆）；冷启动毫秒级，相对模型调用可忽略。 */
 const SANDBOX_CONCURRENCY = Math.max(1, Math.min(8, Number(process.env.ZANE_CODE_SANDBOX_CONCURRENCY) || Math.max(1, (os.availableParallelism?.() ?? 4) - 1)));
 let sandboxActive = 0;
 const sandboxWaiters: Array<() => void> = [];

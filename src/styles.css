@@ -109,6 +109,9 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .button-danger { color: #fff; background: #a45245; border: 1px solid #a45245; }
 .button-danger:hover { background: #8d4438; border-color: #8d4438; }
 .confirm-dialog { width: min(460px, 100%); }
+.lazy-video { display: contents; }
+.lazy-video-placeholder { width: 100%; min-height: 140px; border-radius: 6px; background: linear-gradient(110deg, #f2f4ef 8%, #e9ece4 18%, #f2f4ef 33%); background-size: 200% 100%; animation: lazy-video-shimmer 1.4s linear infinite; }
+@keyframes lazy-video-shimmer { to { background-position-x: -200%; } }
 .page-loading { display: flex; align-items: center; justify-content: center; min-height: 40vh; color: #6c7863; font-size: 12px; }
 .confirm-dialog-message { margin: 6px 0 0; color: #4e564a; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .confirm-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }

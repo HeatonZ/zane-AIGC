@@ -212,7 +212,12 @@ export class ProductionUpdater {
       if (live && live.info.upgradeOperationId === id && live.lease.pid === this.record.newPid && live.info.releaseId === id && live.info.serving === true) {
         await this.save({state:"completed",servingConfirmed:true,newInstanceId:live.lease.instanceId,message:"按原升级 ID 确认新版本已服务；未重复启动",nextAction:"refresh_when_edits_saved"});
       } else {
-        await this.save({state:"needs_attention",rollback:"manual_required",message:"切换中断；保留原 ID、备份与产物，不重放停机、不重复启动、不自动恢复数据库",nextAction:"inspect_original_receipts_and_process"});
+        // switch-intent.json 存在说明目录替换在两段 rename 之间中断：产物可能是混合版本。
+        // 只报告精确状态，仍然不自动替换目录或启动第二个实例。
+        const half = await exists(path.join(this.paths(id).release,"switch-intent.json"));
+        await this.save({state:"needs_attention",rollback:"manual_required",message:half
+          ? "产物目录替换在 dist-server 与 dist 之间中断，当前可能是混合版本；保留原 ID、备份与产物，请核对 previous/next 后手工完成或回退"
+          : "切换中断；保留原 ID、备份与产物，不重放停机、不重复启动、不自动恢复数据库",nextAction:half?"compare_previous_and_next_artifact_hash":"inspect_original_receipts_and_process"});
       }
       return this.record;
     } finally { await this.unlock(); }
@@ -296,12 +301,16 @@ export class ProductionUpdater {
   }
   private async switchFiles() {
     const paths=this.paths(this.record.operationId); await mkdir(paths.previous,{recursive:true});
+    // dist-server 与 dist 只能逐个 rename；两段之间崩溃会留下混合版本。
+    // 这里按相反顺序先记录切换意图，配合 recover() 的产物哈希核对可识别并处理半切换状态。
+    await atomicJson(path.join(paths.release,"switch-intent.json"),{operationId:this.record.operationId,artifactHash:this.record.artifactHash,startedAt:timestamp(),directories:["dist-server","dist"]});
     for (const directory of ["dist-server","dist"]) {
       const active=path.join(this.settings.root,directory), previous=path.join(paths.previous,directory), next=path.join(paths.next,directory);
       assertInside(this.settings.root,active); assertInside(paths.release,previous); assertInside(paths.release,next);
       if (await exists(active)) await rename(active,previous);
       await rename(next,active);
     }
+    await unlink(path.join(paths.release,"switch-intent.json")).catch(()=>undefined);
   }
   private async restoreCode() {
     const paths=this.paths(this.record.operationId), rejected=path.join(paths.release,"rejected"); await mkdir(rejected,{recursive:true});

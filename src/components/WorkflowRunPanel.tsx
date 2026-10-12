@@ -1,7 +1,8 @@
 import RunMediaDownloadButton from "./RunMediaDownloadButton";
 import RunWarnings from "./RunWarnings";
 import { Check, ChevronRight, Copy, Download, History as HistoryIcon, MessageSquare, Pencil, RotateCcw, Square } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useLiveClock } from "../hooks/useLiveClock";
 import { RunMetrics } from "./RunOverview";
 import ClipSelectionDialog from "./ClipSelectionDialog";
 import ReviewPanel from "./ReviewPanel";
@@ -87,14 +88,9 @@ export default function WorkflowRunPanel({
 }) {
   const [copied, setCopied] = useState(false);
   const [selectingClips, setSelectingClips] = useState(false);
-  const [now, setNow] = useState(Date.now);
   const liveRun = ["running", "cancelling"].includes(result.status);
   const hasRunningSteps = liveRun && result.steps.some(step => step.status === "running");
-  useEffect(() => {
-    if (!hasRunningSteps) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [hasRunningSteps]);
+  const now = useLiveClock(hasRunningSteps);
   const { capabilities } = useCapabilities();
   const feedbackAllowed = !["queued", "running", "cancelling", "waiting"].includes(result.status);
   const submitFeedback = onFeedbackStep ?? (onRerunStep ? (stepId: string, itemIndex?: number) => onRerunStep(stepId, itemIndex, "feedback") : undefined);

@@ -1,8 +1,9 @@
 import { Router } from "express";
 import type { RunService } from "../services/runService.js";
 import type { SqliteStore } from "../storage/sqliteStore.js";
+import type { RunMetricsTracker } from "../services/runMetricsTracker.js";
 
-export function createMetricsRouter(runService: RunService, store: SqliteStore) {
+export function createMetricsRouter(runService: RunService, store: SqliteStore, metricsTracker?: RunMetricsTracker) {
   const router = Router();
   // Mounted under /api/v1/maintenance/*: the access middleware already rejects
   // non-admins; the explicit call is defense in depth.
@@ -13,6 +14,7 @@ export function createMetricsRouter(runService: RunService, store: SqliteStore) 
       time: new Date().toISOString(),
       process: { node: process.version, platform: process.platform, uptimeSec: Math.round(process.uptime()), rssMb: Math.round(process.memoryUsage().rss / 1048576), heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1048576) },
       runs: { ...runService.metrics(), unfinished: store.unfinishedRunCounts() },
+      history: metricsTracker?.snapshot(),
       ...(diagnostics ? { database: { quickCheck: store.diagnostics() } } : {}),
       nextAction: "read_only",
     });

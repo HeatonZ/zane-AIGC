@@ -30,7 +30,8 @@ async function passwordMatches(password: string, stored: string) { const [salt, 
 export function accessPagination<T extends { id: string; revision: number }>(all: T[], query: { limit?: number; cursor?: string }, scope: string, context: unknown = null) {
   const limit = query.limit ?? 50;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new HttpError(400, "分页条数无效", "INVALID_ACCESS_REQUEST");
-  const revision = hash(JSON.stringify([context,all])); let offset = 0;
+  // 游标只需“同一快照”的等价判据：用 id+revision 摘要而非整数组序列化。
+  const revision = hash(JSON.stringify([context, all.map((item) => [item.id, item.revision])])); let offset = 0;
   if (query.cursor) {
     let page: Record<string, unknown> | undefined;
     try { page = asRecord(JSON.parse(Buffer.from(query.cursor, "base64url").toString())); } catch { /* validated below */ }

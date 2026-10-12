@@ -1,6 +1,7 @@
 import RunMediaDownloadButton from "./RunMediaDownloadButton";
 import RunWarnings from "./RunWarnings";
 import { useEffect, useRef, useState } from "react";
+import { useLiveClock } from "../hooks/useLiveClock";
 import { Activity, AlertCircle, Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, ClipboardCheck, Copy, Download, FileText, Layers3, LoaderCircle, PackageOpen, RefreshCw, RotateCcw, Square } from "lucide-react";
 import { accessApi, type OwnRun } from "../lib/accessApi";
 import { useProtectedMedia } from "../lib/mediaPreview";
@@ -70,16 +71,11 @@ export default function UserRunDetail({ run, userId, busy, submissionPending, on
   const [activity, setActivity] = useState<ActivityPage>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [now, setNow] = useState(Date.now);
   const sequence = useRef(0);
   const alive = useRef(true);
   const liveRun = ["running", "cancelling"].includes(run.status);
   const hasRunningSteps = liveRun && run.steps.some(item => item.status === "running");
-  useEffect(() => {
-    if (!hasRunningSteps) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [hasRunningSteps]);
+  const now = useLiveClock(hasRunningSteps);
   useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++; }; }, []);
   const step = run.steps.find(item => item.stepId === selectedStep);
   const runPath = "/api/v1/self/runs/" + encodeURIComponent(run.runId);
