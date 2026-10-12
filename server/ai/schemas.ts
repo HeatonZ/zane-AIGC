@@ -8,6 +8,7 @@ export const runId = z.string().regex(/^[a-f0-9-]{36}$/i).describe("客户端事
 export const capabilityQuery = z.object({
   limit: z.int().min(1).max(100).default(50).describe("单页能力数量；默认50，最大100；hasMore时使用同一目录的nextCursor继续读取"),
   cursor: z.string().min(1).max(2048).optional().describe("上页nextCursor，绑定目录revision；409 CAPABILITY_PAGE_CHANGED时重读第一页，不拼接不同目录快照"),
+  compatibilityUsage: z.string().optional().describe("传true时第一页额外返回compatibilityUsage：各退役能力在草稿与发布快照中被引用的场景数，用于下线决策；只读统计，不修改任何快照"),
 }).strict();
 export const hermesModelQuery = z.object({
   profile: z.string().min(1).max(200).describe("要读取模型目录的Hermes Profile（list_hermes_profiles或网页连接设置中的ID）；本机不存在该Profile时返回404 HERMES_PROFILE_NOT_FOUND，不会退化为默认Profile"),
