@@ -6,6 +6,7 @@ import * as z from "zod/v4";
 import { AccessService, publicUser, type Identity } from "../services/accessService.js";
 import { UserPortalService } from "../services/userPortalService.js";
 import { HttpError } from "../errors.js";
+import { UploadQuotaLimiter } from "../security/uploadQuota.js";
 import { assertRequestOrigin } from "../security/requestOrigin.js";
 import { accessPage, adminSetup, authLogin, userCreate, userUpdate, userAccess, passwordReset, ownScene, ownPreparation, ownSubmission, ownDraft, credentialCreate, credentialRevoke, runInputQuery, runActivityQuery } from "../ai/accessSchemas.js";
 import { draftFavoriteRequest } from "../ai/taskDraftSchemas.js";
@@ -30,6 +31,7 @@ export function createAuthRouter(access: AccessService) {
 }
 export function createAccessRouter(access: AccessService, portal: UserPortalService) {
   const router = Router();
+  const uploadQuotaLimiter = new UploadQuotaLimiter();
   const feedback = new SystemFeedbackService(access, async () => (await portal.scenes.loadSettings()).projectDirectory);
   router.get("/api/v1/self/system-feedback", async (req,res) => res.json(await feedback.list(identity(res), req.query)));
   router.post("/api/v1/self/system-feedback", async (req,res) => res.status(201).json(await feedback.create(identity(res), req.body)));
@@ -44,12 +46,12 @@ export function createAccessRouter(access: AccessService, portal: UserPortalServ
   });
   router.post("/api/v1/self/logout", (_req,res) => { access.logout(identity(res)); res.clearCookie("zane_session", { path: "/" }); res.json({ loggedOut: true }); });
   router.get("/api/v1/self/account", (_req,res) => res.json({ user: publicUser(access.refresh(identity(res))), nextAction: identity(res).role === "admin" ? "list_users" : "list_available_scenes" }));
-  router.get("/api/v1/users", (req,res) => res.json(access.list(parsed(accessPage,req.query))));
+  router.get("/api/v1/users", (req,res) => { res.locals.authorizeAdmin(); res.json(access.list(parsed(accessPage,req.query))); });
   router.post("/api/v1/users", async (req,res) => res.status(201).json(await access.create(parsed(userCreate,req.body),false,res.locals.authorizeAdmin)));
-  router.get("/api/v1/users/:userId", (req,res) => res.json({ user: access.get(String(req.params.userId)) }));
-  router.patch("/api/v1/users/:userId", (req,res) => res.json(access.update(parsed(userUpdate,{ ...req.body, userId: req.params.userId }))));
-  router.post("/api/v1/users/:userId/scene-access", async (req,res) => res.json(await access.setScenes(parsed(userAccess,{ ...req.body, userId: req.params.userId }),res.locals.authorizeAdmin)));
-  router.post("/api/v1/users/:userId/password", async (req,res) => res.json(await access.resetPassword(parsed(passwordReset,{ ...req.body,userId:req.params.userId }),res.locals.authorizeAdmin)));
+  router.get("/api/v1/users/:userId", (req,res) => { res.locals.authorizeAdmin(); res.json({ user: access.get(String(req.params.userId)) }); });
+  router.patch("/api/v1/users/:userId", (req,res) => { res.locals.authorizeAdmin(); res.json(access.update(parsed(userUpdate,{ ...req.body, userId: req.params.userId }), res.locals.identity?.id)); });
+  router.post("/api/v1/users/:userId/scene-access", async (req,res) => res.json(await access.setScenes(parsed(userAccess,{ ...req.body, userId: req.params.userId }),res.locals.authorizeAdmin, res.locals.identity?.id)));
+  router.post("/api/v1/users/:userId/password", async (req,res) => res.json(await access.resetPassword(parsed(passwordReset,{ ...req.body,userId:req.params.userId }),res.locals.authorizeAdmin, res.locals.identity?.id)));
   router.get("/api/v1/self/tokens", (req,res) => res.json(access.credentials(identity(res),parsed(accessPage,req.query))));
   router.post("/api/v1/self/tokens", (req,res) => res.status(201).json(access.createCredential(identity(res),parsed(credentialCreate,req.body))));
   router.post("/api/v1/self/tokens/:tokenId/revoke", (req,res) => { const input = parsed(credentialRevoke,{ ...req.body,tokenId:req.params.tokenId }); res.json(access.revokeCredential(identity(res),input.tokenId,input.revision)); });
@@ -82,6 +84,13 @@ export function createAccessRouter(access: AccessService, portal: UserPortalServ
     const input = parsed(z.object({ assetId:z.uuid(),name:z.string().trim().min(1).max(160),kind:z.enum(["image","video","audio"]) }).strict(),req.query);
     if (!Buffer.isBuffer(req.body) || !req.body.length) throw new HttpError(400,"请选择非空媒体文件","INVALID_ACCESS_REQUEST");
     let filename: string; try { filename = decodeURIComponent(req.get("X-File-Name") ?? "media.bin"); } catch { throw new HttpError(400,"文件名无效","INVALID_ACCESS_REQUEST"); }
+    // 配额在读取到完整请求体之后、写入之前记账：计数与字节双限，超出返回 429 与 Retry-After。
+    try { uploadQuotaLimiter.check(identity(res).id, req.body.length); }
+    catch (error) {
+      const quota = error as Error & { status?: number; code?: string; retryAfterSeconds?: number };
+      if (quota.retryAfterSeconds) res.set("Retry-After", String(quota.retryAfterSeconds));
+      throw new HttpError(quota.status ?? 429, quota.message, quota.code ?? "UPLOAD_QUOTA_EXCEEDED");
+    }
     res.status(201).json(await portal.upload(identity(res),input.assetId,input.name,input.kind,req.body,filename));
   });
   router.get("/api/v1/self/assets", async (req,res) => { res.set("Cache-Control", "no-store"); res.json(await portal.listOwnAssets(identity(res),parsed(ownAssetQuerySchema,req.query))); });

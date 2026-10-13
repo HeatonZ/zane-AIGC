@@ -73,7 +73,7 @@ export function createRunRouter(service: RunService, loadSettings: () => Promise
   });
   router.post("/api/v1/runs/:runId/review", async (request, response) => {
     const { projectDirectory } = await loadSettings();
-    const run = await service.review(projectDirectory, validateId(request.params.runId), request.body, response.locals.authorizeAdmin);
+    const run = await service.review(projectDirectory, validateId(request.params.runId), request.body, response.locals.authorizeAdmin, response.locals.identity?.id);
     response.status(202).json({ runId: run.runId, status: run.status });
   });
   router.post("/api/v1/runs/:runId/resume", async (request, response) => {

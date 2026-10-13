@@ -161,7 +161,7 @@ export class UserPortalService {
     if (action === "review") {
       const decision = ownReviewRequest.safeParse(input);
       if (!decision.success) throw new HttpError(400, "本人审核只允许确认或退回，不允许向Agent提交反馈；请使用系统反馈", "INVALID_ACCESS_REQUEST");
-      await this.runs.review(project, runId, decision.data, () => this.checkSubmission(identity, run.sceneId)); return this.getRun(identity, runId); }
+      await this.runs.review(project, runId, decision.data, () => this.checkSubmission(identity, run.sceneId), identity.id); return this.getRun(identity, runId); }
     const resumed = await this.runs.submit({ workflow: run.workflow, inputValues: run.inputValues, resumeFromRunId: runId, runId: input.newRunId }, { ownerUserId: identity.id, submitter: runSubmitter(identity), authorize: () => this.checkSubmission(identity, run.sceneId) });
     return this.viewRun(project, resumed);
   }

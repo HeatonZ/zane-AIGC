@@ -154,6 +154,19 @@ export class SqliteStore {
     return Number((this.stmt("SELECT COALESCE(MAX(sequence), 0) seq FROM run_events WHERE project_directory=? AND run_id=?").get(projectDirectory, runId) as { seq: number }).seq);
   }
 
+  /** 批量状态投影：任务进度只需 runId→状态/待确认/错误，避免为每个任务项解析整份运行快照。 */
+  runStatuses(projectDirectory: string, runIds: readonly string[]): Map<string, { status: RunStatus; reviewId?: string; error?: string }> {
+    const result = new Map<string, { status: RunStatus; reviewId?: string; error?: string }>();
+    const unique = [...new Set(runIds)].filter(id => typeof id === "string" && id.length > 0);
+    for (let index = 0; index < unique.length; index += 400) {
+      const chunk = unique.slice(index, index + 400);
+      const rows = this.database.prepare("SELECT run_id, status, json_extract(snapshot_json,'$.pendingReview.id') AS review_id, json_extract(snapshot_json,'$.error') AS error FROM runs WHERE project_directory=? AND run_id IN (" + chunk.map(() => "?").join(",") + ")")
+        .all(projectDirectory, ...chunk) as unknown as Array<{ run_id: string; status: string; review_id: string | null; error: string | null }>;
+      for (const row of rows) result.set(row.run_id, { status: row.status as RunStatus, ...(row.review_id ? { reviewId: row.review_id } : {}), ...(row.error ? { error: row.error } : {}) });
+    }
+    return result;
+  }
+
   firstEventAt(projectDirectory: string, runId: string, type: string): string | undefined {
     return (this.stmt("SELECT created_at FROM run_events WHERE project_directory=? AND run_id=? AND type=? ORDER BY sequence LIMIT 1")
       .get(projectDirectory, runId, type) as { created_at: string } | undefined)?.created_at;
@@ -270,6 +283,11 @@ export class SqliteStore {
       this.stmt("INSERT INTO production_documents VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(project_directory, collection, id) DO UPDATE SET revision=excluded.revision, snapshot_json=excluded.snapshot_json, updated_at=excluded.updated_at").run(project, collection, value.id, saved.revision, JSON.stringify(saved), new Date().toISOString());
       return saved;
     });
+  }
+
+  /** 删除单个文档；仅由惰性清理（过期凭证等）使用，不做级联。 */
+  deleteDocument(project: string, collection: string, id: string): boolean {
+    return this.stmt("DELETE FROM production_documents WHERE project_directory=? AND collection=? AND id=?").run(project, collection, id).changes > 0;
   }
 
   hasImported(projectDirectory: string) { return Boolean(this.stmt("SELECT 1 FROM imports WHERE project_directory=?").get(projectDirectory)); }

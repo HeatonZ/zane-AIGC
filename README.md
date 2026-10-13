@@ -42,7 +42,9 @@ Vite 默认使用 `5174`，开发 API 默认使用 `8798`，前端会把 `/api` 
    COMFYUI_BASE_URL=http://127.0.0.1:8188
    ```
 
-   如果需要让局域网或反向代理访问 API，把 `API_HOST` 改为 `0.0.0.0`；只在本机访问时保留 `127.0.0.1`。
+   如果需要让局域网或反向代理访问 API，把 `API_HOST` 改为 `0.0.0.0`；只在本机访问时保留 `127.0.0.1`。管理入口一旦绑定到非回环地址就等于公开完整管理面（管理 UI/API 与管理员凭证均可达），请自行用防火墙限制到预期网段。
+
+   如果同时启用了用户专用入口（`ZANE_PUBLIC_USER_PORT`），缺省会拒绝管理入口绑定非回环地址；确实要两个端口都开给局域网时，显式设置 `ZANE_ALLOW_LAN_INGRESS=true`。该开关只放行监听绑定，不放宽路径白名单、角色校验或“首个管理员只能在服务器本机初始化”的限制。只让用户入口在局域网可达时，改 `ZANE_PUBLIC_USER_HOST=0.0.0.0` 即可，不需要这个开关。
 
 3. 构建并启动正式环境：
 
@@ -106,7 +108,7 @@ Hermes 请求遇到 socket 重置、Gateway 重载或 `502/503/504` 时会自动
 
 场景和流程编辑会自动保存为暂存内容，创作页与运行流程始终使用最近一次发布的版本。完成编辑后，在“流程配置”页发布即可让暂存内容生效；“版本管理”可将历史发布版本一键应用到暂存内容，之后仍需再次发布才会生效。版本标识是场景内容快照 MD5 的前 8 位；每个场景最多保留最近 10 个发布版本。场景导出包含当前暂存内容；导入后作为未发布的新场景，需要检查并发布后才能使用。
 
-`.env.example` 列出了常用配置项。`API_HOST`、`API_PORT`、`APP_DATA_DIR`、`DIST_DIR`、`HERMES_HOME`、`HERMES_API_BASE_URL`、`HERMES_API_KEY`、`HERMES_RETRY_ATTEMPTS`、`HERMES_RETRY_INITIAL_DELAY_MS`、`HERMES_RETRY_MAX_DELAY_MS`、`FFMPEG_BIN`、`FFPROBE_BIN`、`COMFYUI_BASE_URL`、`ZANE_PROJECT_DIR`、`ZANE_WORKFLOW_TIMEOUT_MINUTES`、`ZANE_COMFYUI_MAX_CONCURRENCY`、`ZANE_LOG_LEVEL` 用于 API；`VITE_API_PROXY_TARGET` 只用于开发环境代理。
+`.env.example` 列出了常用配置项。`API_HOST`、`API_PORT`、`APP_DATA_DIR`、`DIST_DIR`、`HERMES_HOME`、`HERMES_API_BASE_URL`、`HERMES_API_KEY`、`HERMES_RETRY_ATTEMPTS`、`HERMES_RETRY_INITIAL_DELAY_MS`、`HERMES_RETRY_MAX_DELAY_MS`、`FFMPEG_BIN`、`FFPROBE_BIN`、`COMFYUI_BASE_URL`、`ZANE_PROJECT_DIR`、`ZANE_WORKFLOW_TIMEOUT_MINUTES`、`ZANE_COMFYUI_MAX_CONCURRENCY`、`ZANE_LOG_LEVEL`、`ZANE_UPLOAD_MAX_PER_WINDOW`、`ZANE_UPLOAD_MAX_BYTES_PER_WINDOW` 用于 API；`VITE_API_PROXY_TARGET` 只用于开发环境代理。
 
 ## 当前能力
 

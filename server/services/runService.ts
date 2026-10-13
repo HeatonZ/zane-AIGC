@@ -150,7 +150,7 @@ export class RunService {
     } finally { this.preparing.delete(runKey); this.preparingOwners.delete(runKey); if (sourceKey) this.preparing.delete(sourceKey); }
   }
 
-  async review(project: string, runId: string, raw: unknown, authorize?: () => void): Promise<RunRecord> {
+  async review(project: string, runId: string, raw: unknown, authorize?: () => void, actorId?: string): Promise<RunRecord> {
     if (!this.accepting) throw new HttpError(503, "服务正在关闭");
     const runKey = key(project, runId);
     if (this.preparing.has(runKey)) throw new HttpError(409, "此运行的确认正在提交中");
@@ -203,14 +203,14 @@ export class RunService {
         validateWorkflowShape(workflow as unknown as Record<string, unknown>);
       }
       if (body.action === "approve") result.review = { status: "approved", id: run.pendingReview.id, decidedAt: new Date().toISOString() };
-      const history: NonNullable<RunRecord["reviewHistory"]> = [...(run.reviewHistory ?? []), { reviewId: run.pendingReview.id, stepId: definition.id, action: body.action, at: new Date().toISOString(), originalOutputs, ...(feedback ? { feedback: feedback.message, feedbackId: feedback.id } : {}), ...(edited ? { editedOutputs: structuredClone(result.outputs) } : {}) }];
+      const history: NonNullable<RunRecord["reviewHistory"]> = [...(run.reviewHistory ?? []), { reviewId: run.pendingReview.id, stepId: definition.id, action: body.action, at: new Date().toISOString(), ...(actorId ? { actorId } : {}), originalOutputs, ...(feedback ? { feedback: feedback.message, feedbackId: feedback.id } : {}), ...(edited ? { editedOutputs: structuredClone(result.outputs) } : {}) }];
       const steps = body.action === "redo" ? run.steps.filter(step => workflow.steps.findIndex(item => item.id === step.stepId) < position) : run.steps;
       const source: RunRecord = { ...run, steps, workflow, pendingReview: undefined, reviewHistory: history, ...(feedbackHistory.length ? { feedbackHistory } : {}) };
       const prepared: PreparedRun = { ...submission, executionWorkflow: workflow, resumeSource: source, rerun: undefined, feedbackHistory };
       if (!this.accepting) throw new HttpError(503, "服务正在关闭，本次确认未提交");
       authorize?.();
       const next: RunRecord = { ...source, status: "queued", outputs: [], error: undefined, finishedAt: undefined, durationMs: undefined };
-      await this.persist(project, next, [{ type: "review." + body.action, stepId: definition.id, payload: { reviewId: run.pendingReview.id, edited: Boolean(edited), ...(feedback ? { feedbackId: feedback.id } : {}) } }, { type: "run.queued" }], prepared);
+      await this.persist(project, next, [{ type: "review." + body.action, stepId: definition.id, payload: { reviewId: run.pendingReview.id, edited: Boolean(edited), ...(actorId ? { actorId } : {}), ...(feedback ? { feedbackId: feedback.id } : {}) } }, { type: "run.queued" }], prepared);
       this.queue.push(prepared); setImmediate(() => this.pump()); return next;
     } finally { this.preparing.delete(runKey); }
   }
