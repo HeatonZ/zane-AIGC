@@ -5,7 +5,7 @@ import { normalizeWorkspaceSnapshot } from "./workspaceStorage";
 import { RetainedSaveQueue } from "./retainedSaveQueue";
 import { sceneDraftMatchesVersion, sceneVersionHash } from "./sceneVersions";
 import { deferred } from "../../server/testing/testSupport";
-import type { WorkspaceSnapshot, SceneModule } from "../types";
+import type { WorkspaceSnapshot, SceneModule, JsonValue, WorkflowStepDefinition } from "../types";
 import type { WorkspaceStatus } from "../../server/domain/workspaceContracts";
 
 const scene = (id: string, title = id): SceneModule => ({ id, title, shortTitle: title, summary: "", description: "", cover: "", accent: "green", stages: [] });
@@ -93,6 +93,31 @@ test("重叠轮询只发一个请求；已退出页面的滞后响应、消失�
   assert.equal(await missing.refresh(), "missing"); assert.equal(h.current.revision, 1);
   const incompatible = new WorkspaceSynchronizer({ ...h.options, readStatus: async () => ({ ...status(2), authority: "other" }) as unknown as WorkspaceStatus });
   assert.equal(await incompatible.refresh(), "failed"); assert.equal(h.current.revision, 1);
+});
+
+test("同一revision的本机编辑不被回退：能力JSON配置改动必须保留并立刻产生未发布差异", () => {
+  const base = snapshot();
+  const version = base.sceneVersions.one.versions[0];
+  assert.equal(sceneDraftMatchesVersion(base.scenes[0], base.workflows.one, [], version), true);
+  const config = (bodyTemplate: JsonValue) => ({ url: "https://api.example.net/v1", method: "POST", bodyTemplate });
+  const step = (bodyTemplate: JsonValue): WorkflowStepDefinition => ({ id: "request", name: "第三方请求", kind: "capability", capabilityId: "core.http_request", capabilityVersion: "2", capabilityConfig: config(bodyTemplate), inputs: [], outputs: [{ key: "response", label: "响应", type: "json" }], promptTemplate: "" });
+  const withTemplate = (bodyTemplate: JsonValue): WorkspaceSnapshot => ({ ...base, workflows: { one: { ...base.workflows.one, steps: [step(bodyTemplate)] } } });
+  const edited = withTemplate({ prompt: "{{prompt}}" });
+  // commitWorkspace 的真实顺序：normalizeWorkspaceSnapshot(value, workspaceRef.current) → retainWorkspaceReferences(current, next)
+  const applied = retainWorkspaceReferences(base, normalizeWorkspaceSnapshot(edited, base));
+  assert.notEqual(applied, base, "本机编辑不能被当作同一服务端快照丢弃");
+  assert.equal(applied.revision, base.revision, "服务端尚未确认时revision不变");
+  assert.deepEqual(applied.workflows.one.steps[0].capabilityConfig, config({ prompt: "{{prompt}}" }));
+  assert.equal(sceneDraftMatchesVersion(applied.scenes[0], applied.workflows.one, [], version), false, "JSON配置编辑必须触发发布差异");
+  // 紧接着的第二次编辑以本机最新内容为基（revision 仍相同），不能被回退成旧配置
+  const again = retainWorkspaceReferences(applied, normalizeWorkspaceSnapshot(withTemplate({ prompt: "{{prompt}}", size: "1024x1024" }), applied));
+  assert.deepEqual(again.workflows.one.steps[0].capabilityConfig, config({ prompt: "{{prompt}}", size: "1024x1024" }));
+  assert.equal(sceneDraftMatchesVersion(again.scenes[0], again.workflows.one, [], version), false);
+  // 只有同一对象才走快路径；内容相同的服务端快照仍按节点保留对象identity，不重置无关表单
+  assert.equal(retainWorkspaceReferences(base, base), base);
+  const identical = retainWorkspaceReferences(base, structuredClone(base));
+  assert.equal(identical.workflows.one, base.workflows.one);
+  assert.equal(identical.scenes[0], base.scenes[0]);
 });
 
 test("UI与AI按相同canonical内容比较草稿发布差异，字段键顺序不误报，能力固定保留源草稿标记", () => {

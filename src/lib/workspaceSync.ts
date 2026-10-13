@@ -35,10 +35,13 @@ export async function loadAuthoritativeWorkspace(readWorkspace: () => Promise<{ 
 }
 
 /** Preserve unchanged object identity so unrelated AI edits do not reset UI forms.
- * Equal revisions are the same server snapshot (the authority bumps revision on
- * every write), so the expensive per-node comparison only runs on real changes. */
+ * Only the identical object is skipped: a revision is *not* a content identity,
+ * because a local edit stays on the current revision until the server confirms it,
+ * so comparing revisions here would silently revert the user's own unsaved edit and
+ * reuse that stale working copy as the base of the next write (bogus merge conflict).
+ * `share` below keeps identity per node, so unrelated forms still keep their state. */
 export function retainWorkspaceReferences(previous: WorkspaceSnapshot, incoming: WorkspaceSnapshot): WorkspaceSnapshot {
-  if (previous && (previous === incoming || previous.revision === incoming.revision)) return previous;
+  if (previous === incoming) return previous;
   const share = (before: unknown, after: unknown): unknown => {
     if (JSON.stringify(before) === JSON.stringify(after)) return before;
     if (Array.isArray(after)) {
