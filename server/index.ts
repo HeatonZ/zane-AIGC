@@ -1,5 +1,7 @@
 import { TaskConcurrencyService } from "./services/taskConcurrencyService.js";
 import { createTaskConcurrencyRouter } from "./api/taskConcurrencyRoutes.js";
+import { LocalExportService } from "./services/localExportSettings.js";
+import { createLocalExportRouter } from "./api/localExportRoutes.js";
 import { createRunMediaExportRouter } from "./api/runMediaExportRoutes.js";
 import { RunMediaExportService } from "./services/runMediaExportService.js";
 import { createWorkbenchUpdateRouter } from "./api/workbenchUpdateRoutes.js";
@@ -13,6 +15,8 @@ import { AccessService, runSubmitter } from "./services/accessService.js";
 import { UserPortalService } from "./services/userPortalService.js";
 import { createAuthRouter, createAccessRouter } from "./api/accessRoutes.js";
 import { createAiRouter } from "./api/aiRoutes.js";
+import { createTaskRouter } from "./api/taskRoutes.js";
+import { TaskService } from "./services/taskService.js";
 import { AiSceneService } from "./services/aiSceneService.js";
 import { ClipSelectionService } from "./services/clipSelectionService.js";
 import { createClipSelectionRouter } from "./api/clipSelectionRoutes.js";
@@ -27,7 +31,7 @@ import { loadCapabilityPackages } from "./capabilities/loadPackages.js";
 import { createCapabilityRouter } from "./api/capabilityRoutes.js";
 import { createRunRouter } from "./api/runRoutes.js";
 import { log } from "./observability/logger.js";
-import { comfyuiMaxConcurrency, databaseFile, maxActiveRuns, shutdownTimeoutMs } from "./config.js";
+import { comfyuiMaxConcurrency, databaseFile, maxActiveRuns, shutdownTimeoutMs, localExportRoot } from "./config.js";
 import type { SavedSettings } from "./domain/types.js";
 import { normalizeWorkflowTimeoutMinutes, workflowTimeoutMs, isProduction, port, host, localDirectory, settingsFile, distDirectory, defaults, workspaceFile } from "./config.js";
 import { evaluateCondition } from "./execution/controlCondition.js";
@@ -43,9 +47,9 @@ import { createPublicUserApp, publicEntryGuard, validatePublicListener } from ".
 import { createErrorHandler, redactErrorText } from "./security/errorHandler.js";
 import { executeThirdPartyJsonRequest } from "./execution/thirdPartyJsonRequest.js";
 import { LoginLimiter } from "./security/loginLimiter.js";
-import { publicUserPort, publicUserHost, loginLimitOptions, trustProxySetting } from "./config.js";
+import { publicUserPort, publicUserHost, loginLimitOptions, trustProxySetting, allowLanIngress } from "./config.js";
 
-validatePublicListener(host, port, publicUserPort);
+validatePublicListener(host, port, publicUserPort, allowLanIngress);
 const app = express();
 app.disable("x-powered-by");
 // Only a configured, same-host reverse proxy may set X-Forwarded-*; unset keeps headers untrusted.
@@ -69,8 +73,9 @@ const assetService: AssetService = new AssetService(metadataStore, readSettings,
   return localBackendUrl(host, address && typeof address !== "string" ? address.port : port);
 });
 const taskConcurrency = new TaskConcurrencyService(metadataStore, maxActiveRuns, () => runService.metrics(), () => runService.refreshConcurrency());
+const localExport = new LocalExportService(metadataStore, localExportRoot);
 const runMetricsTracker = new RunMetricsTracker();
-const runService: RunService = new RunService({ store: metadataStore, executors, loadSettings: readSettings, getMaxActiveRuns: () => taskConcurrency.getLimit(), resolveAssets: (project, workflow, values) => assetService.resolveInputs(project, workflow, values), metricsTracker: runMetricsTracker });
+const runService: RunService = new RunService({ store: metadataStore, executors, loadSettings: readSettings, getMaxActiveRuns: () => taskConcurrency.getLimit(), getLocalExportRoot: () => localExport.root(), resolveAssets: (project, workflow, values) => assetService.resolveInputs(project, workflow, values), metricsTracker: runMetricsTracker });
 let lifecycle: ProductionLifecycle | undefined;
 const upgradeBootId = process.env.ZANE_UPGRADE_OPERATION_ID;
 if (upgradeBootId && !/^[0-9a-f-]{36}$/i.test(upgradeBootId)) throw new Error("Invalid upgrade operation ID");
@@ -95,10 +100,12 @@ app.use((_req, res, next) => { res.locals.httpSecurityPolicy = accessService.sec
 app.use(createAuthRouter(accessService));
 app.use(accessService.middleware(async () => (await readSettings()).projectDirectory));
 app.use(createTaskConcurrencyRouter(taskConcurrency));
+app.use(createLocalExportRouter(localExport));
 app.use(createWorkbenchUpdateRouter(localDirectory, process.env.ZANE_RELEASE_ID ?? "unversioned", isProduction));
 app.use(createMetricsRouter(runService, metadataStore, runMetricsTracker));
 app.use(createAccessRouter(accessService, portalService));
 app.use(createAiRouter(aiScenes, runService, readSettings, userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; }));
+app.use(createTaskRouter(new TaskService(metadataStore, aiScenes, runService)));
 app.use(createRunRouter(runService, readSettings, userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; }));
 app.use(createRunMediaExportRouter(new RunMediaExportService(readSettings, (project, id) => runService.getRun(project, id))));
 app.use(createCapabilityRouter(executors, workspaceService));

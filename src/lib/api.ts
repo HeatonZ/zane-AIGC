@@ -452,3 +452,11 @@ export function saveTaskConcurrency(input: { revision: number; maxActiveRuns: nu
   // Never retry a configuration write. A lost receipt must be reconciled with GET first.
   return request<import("../types").TaskConcurrencySettings>("/api/v1/settings/task-concurrency", { method: "PATCH", body: JSON.stringify(input) });
 }
+
+export function loadLocalExport() {
+  return request<import("../types").LocalExportSettings>("/api/v1/settings/local-export");
+}
+export function saveLocalExport(input: { revision: number; root: string }) {
+  // Never retry a configuration write. A lost receipt must be reconciled with GET first.
+  return request<import("../types").LocalExportSettings>("/api/v1/settings/local-export", { method: "PATCH", body: JSON.stringify(input) });
+}

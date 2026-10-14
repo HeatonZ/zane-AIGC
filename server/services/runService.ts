@@ -27,6 +27,8 @@ interface ServiceOptions {
   loadSettings(): Promise<SavedSettings>;
   maxActiveRuns?: number;
   getMaxActiveRuns?(): number;
+  /** 可选：core.code 本地导出的受控根目录；返回空串表示关闭。运行开始时读取一次。 */
+  getLocalExportRoot?(): string;
   resolveAssets?: import("./runPreparation.js").PreparationDependencies["resolveAssets"];
   execute?(prepared: PreparedRun, context: ExecutionContext): Promise<ExecutionResult>;
   /** 可选：记录终态样本供只读指标展示；不参与执行语义。 */
@@ -232,6 +234,22 @@ export class RunService {
     return planned.plan;
   }
 
+  /** 本运行及其授权祖先运行：局部重做/续跑会复用祖先运行的归档媒体引用，
+   *  这些引用的字节仍留在祖先归档里，因此本地导出必须能定位它们。
+   *  链在提交时已按来源运行做过权限校验，这里只做有界的确定性遍历。 */
+  private lineageRunIds(projectDirectory: string, runId: string): string[] {
+    const allowed = [runId];
+    const seen = new Set(allowed);
+    let ancestor = this.store.getRun(projectDirectory, runId)?.resumedFromRunId ?? this.store.getRun(projectDirectory, runId)?.rerunFromRunId;
+    for (let depth = 0; ancestor && depth < 50; depth++) {
+      if (!isRunId(ancestor) || seen.has(ancestor)) break;
+      seen.add(ancestor); allowed.push(ancestor);
+      const source = this.store.getRun(projectDirectory, ancestor);
+      ancestor = source?.resumedFromRunId ?? source?.rerunFromRunId;
+    }
+    return allowed;
+  }
+
   async getRun(projectDirectory: string, runId: string, allowPreparing = false): Promise<RunRecord | undefined> {
     this.ensureOpen();
     const saved = this.store.getRun(projectDirectory, runId);
@@ -362,7 +380,7 @@ export class RunService {
     let record = this.store.getRun(project, prepared.runId)!;
     try {
       await this.persist(project, { ...record, status: "running", startedAt: new Date().toISOString() }, [{ type: "run.started" }]);
-      const result = await (this.options.execute ?? executeWorkflow)(prepared, {
+      const result = await (this.options.execute ?? executeWorkflow)({ ...prepared, localExportRoot: this.options.getLocalExportRoot?.(), localExportRunIds: this.lineageRunIds(project, prepared.runId) }, {
         controller, executeStep: (context) => this.options.executors.execute(context),
         checkpoint: async (patch) => {
           if (this.closed || this.active.get(key(project, prepared.runId)) !== job) return;

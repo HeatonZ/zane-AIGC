@@ -4,6 +4,7 @@ import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest, type RequestOptions } from "node:https";
 import { thirdPartyMediaConfig, thirdPartyMultipart, thirdPartyResponseImages, THIRD_PARTY_MEDIA_LIMITS } from "./thirdPartyMedia.js";
 import { HttpError } from "../errors.js";
+import { redactErrorText } from "../security/errorHandler.js";
 import type { JsonValue, RunStep } from "../domain/types.js";
 import { resolveStepInputs } from "../domain/workflowValues.js";
 import { isRuntimeMediaValue } from "../runtimeValue.js";
@@ -19,8 +20,13 @@ const allowedMethods = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const MAX_THIRD_PARTY_RETRIES = 5;
 const MAX_THIRD_PARTY_RETRY_DELAY_SECONDS = 30;
 const MAX_THIRD_PARTY_RETRY_DELAY_MS = 60_000;
-/** Only failures an identical resend can plausibly fix; deterministic business errors never retry. */
-const retryableThirdPartyStatuses = new Set([408, 429, 500, 502, 503, 504]);
+/** Bounded upstream error excerpt; large enough for a JSON error object, small enough for a step message. */
+const MAX_THIRD_PARTY_ERROR_BODY_BYTES = 4 * 1024;
+const MAX_THIRD_PARTY_ERROR_BODY_CHARS = 600;
+/** Only failures an identical resend can plausibly fix; deterministic business errors never retry.
+ * 524 is the edge proxy's origin-timeout code: the upstream may still be producing the result, so a
+ * resend can recover it, but it can also duplicate third-party billing or state changes. */
+const retryableThirdPartyStatuses = new Set([408, 429, 500, 502, 503, 504, 524]);
 
 export const THIRD_PARTY_JSON_REQUEST_CONTRACT = {
   version: "2",
@@ -33,7 +39,7 @@ export const THIRD_PARTY_JSON_REQUEST_CONTRACT = {
     apiKeyHeader: { type: "string", required: false, default: "Authorization" },
     apiKeyPrefix: { type: "string", required: false, default: "Bearer " },
     bodyFormat: { type: "string", default: "json", enum: ["json", "multipart"] },
-    multipartImages: { type: "array", default: [], items: { inputKey: "declared image input", fieldName: "multipart file field; repeated in source order" }, localFiles: "authorized current-run private copies only; no URL/preview fallback", limits: THIRD_PARTY_MEDIA_LIMITS },
+    multipartImages: { type: "array", default: [], items: { inputKey: "declared image input", fieldName: "multipart file field; repeated in source order" }, localFiles: "authorized current-run media only: this run's archived private copies, or a ComfyUI attachment belonging to this run (uploaded input or upstream output in the same run) read from the configured ComfyUI view route; no arbitrary path, other run's file or URL/preview fallback", localRootFiles: { enable: "capabilityConfig.multipartLocalFiles = true (default false)", source: "a real file inside the admin-configured local-export setting root (the same single boundary used by core.code localExport/fileAccess)", containment: "real paths are resolved and compared, so .. escapes are rejected rather than normalized away and a symlink resolving outside the root is refused; the root path itself is never returned", disabled: "without a configured root this source is unavailable and the step fails HTTP_REQUEST_MEDIA_UNSUPPORTED", scope: "only meaningful with bodyFormat=multipart and a declared multipartImages mapping" }, comfyAttachmentPolicy: "only ordinary filename/subfolder segments are accepted, so a crafted name cannot point the request outside the ComfyUI media directory", limits: THIRD_PARTY_MEDIA_LIMITS },
     responseImages: { type: "object", required: false, fields: { path: "JSON path to array; default data", base64Field: "default b64_json", expectedCount: "optional integer 1..16" }, output: "images:image_list; validated local PNG/JPEG/WebP; base64 replaced with explicit omission marker", responseMaximumBytes: THIRD_PARTY_MEDIA_LIMITS.responseBytes },
     bodyTemplate: { type: "object|array", required: false, placeholder: "{{declaredInputKey}}", maximumBytes: MAX_REQUEST_BYTES, getBody: "rejected" },
     timeoutSeconds: { type: "integer", required: false, default: 120, minimum: 1, maximum: 600 },
@@ -42,7 +48,8 @@ export const THIRD_PARTY_JSON_REQUEST_CONTRACT = {
   },
   response: { status: "2xx required", outputs: { response: "optional declared output; JSON value, or UTF-8 text for non-JSON; null for empty; mapped base64 explicitly omitted", status: "optional declared output; HTTP status number", images: "optional image_list when responseImages configured; declare it alone for image-only scenes" }, maximumBytes: MAX_RESPONSE_BYTES },
   errors: ["INVALID_HTTP_REQUEST_CONFIG", "INVALID_HTTP_REQUEST_INPUT", "HTTP_REQUEST_MEDIA_UNSUPPORTED", "HTTP_REQUEST_BODY_TOO_LARGE", "THIRD_PARTY_HOST_NOT_PUBLIC", "THIRD_PARTY_CREDENTIAL_MISSING", "THIRD_PARTY_CREDENTIAL_INVALID", "THIRD_PARTY_REQUEST_TIMEOUT", "THIRD_PARTY_HTTP_ERROR", "THIRD_PARTY_REQUEST_FAILED", "THIRD_PARTY_RESPONSE_TOO_LARGE", "INVALID_THIRD_PARTY_JSON", "INVALID_THIRD_PARTY_IMAGE"],
-  sideEffects: { prepare: "none", publish: "none", execute: "one request per attempt; may incur third-party cost or mutate third-party state", automaticRetries: "opt-in through retries; resends the identical request only after network failures, timeouts or HTTP 408/429/500/502/503/504, so a lost acknowledgement can repeat third-party billing or state changes" },
+  diagnostics: { deterministicFailureExcerpt: { trigger: "non-2xx status that is not retryable", location: "step or item warnings, prefixed 第三方接口返回HTTP <status>的上游响应：", redaction: "redactErrorText applied before storage: credentials, tokens and URLs are masked", maximumBytes: MAX_THIRD_PARTY_ERROR_BODY_BYTES, maximumChars: MAX_THIRD_PARTY_ERROR_BODY_CHARS, truncation: "explicit …（已截断） suffix; never silently dropped", emptyBody: "no warning is fabricated when the upstream body is empty", unchanged: "error message, error code and details.status keep their existing contract; the excerpt is advisory only" } },
+  sideEffects: { prepare: "none", publish: "none", execute: "one request per attempt; may incur third-party cost or mutate third-party state", automaticRetries: "opt-in through retries; resends the identical request only after network failures, timeouts or HTTP 408/429/500/502/503/504/524, so a lost acknowledgement can repeat third-party billing or state changes", edgeTimeoutStatus: "524 means an edge proxy gave up waiting for the origin; the origin may still be producing the result, so a resend can duplicate the generation or its billing" },
 } as const;
 
 type Address = { address: string; family: number };
@@ -234,6 +241,17 @@ export const nodeTransport: ThirdPartyHttpTransport = {
 
 function isPrivateDnsResult(addresses: Address[]) { return !addresses.length || addresses.some(({ address, family }) => !isPublicAddress(address, family)); }
 
+/** Upstream error bodies are the only way to tell a rejected parameter from a policy block, so a bounded
+ *  redacted excerpt is kept. Reading is capped in bytes first: an image response can legitimately be 64MB,
+ *  and an error reply on that route must not be decoded in full just to be truncated. */
+function thirdPartyErrorExcerpt(response: ThirdPartyHttpResponse): string {
+  const bytes = Buffer.from(response.body).subarray(0, MAX_THIRD_PARTY_ERROR_BODY_BYTES);
+  const text = bytes.toString("utf8").trim();
+  if (!text) return "";
+  const redacted = redactErrorText(text).replace(/\s+/g, " ");
+  return redacted.length > MAX_THIRD_PARTY_ERROR_BODY_CHARS ? redacted.slice(0, MAX_THIRD_PARTY_ERROR_BODY_CHARS) + "…（已截断）" : redacted;
+}
+
 function parseResponse(response: ThirdPartyHttpResponse, maxResponseBytes = MAX_RESPONSE_BYTES): JsonValue {
   if (response.body.byteLength > maxResponseBytes) throw new HttpError(502, "第三方响应超过配置模式的大小限制", "THIRD_PARTY_RESPONSE_TOO_LARGE");
   const text = Buffer.from(response.body).toString("utf8");
@@ -293,7 +311,10 @@ async function sendThirdPartyAttempt(context: StepExecutionContext, transport: T
     const response = await transport.send({ url, method, headers, ...(body ? { body } : {}), addresses: resolved, signal, maxResponseBytes });
     if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
     if (timeoutSignal.aborted) throw new HttpError(504, "第三方请求超时", "THIRD_PARTY_REQUEST_TIMEOUT");
-    if (response.status < 200 || response.status >= 300) throw new HttpError(502, "第三方接口返回HTTP " + response.status, "THIRD_PARTY_HTTP_ERROR", { status: response.status });
+    if (response.status < 200 || response.status >= 300) {
+      const excerpt = thirdPartyErrorExcerpt(response);
+      throw new HttpError(502, "第三方接口返回HTTP " + response.status, "THIRD_PARTY_HTTP_ERROR", { status: response.status, ...(excerpt ? { responseExcerpt: excerpt } : {}) });
+    }
     return { ...await thirdPartyResponseImages(context, parseResponse(response, maxResponseBytes), signal), status: response.status };
   } catch (error) {
     if (context.signal.aborted) throw context.signal.reason ?? error;
@@ -349,11 +370,19 @@ export function createThirdPartyJsonRequester(transport: ThirdPartyHttpTransport
       } catch (error) {
         // A cancelled user run never retries, and the final failure is reported unchanged.
         if (context.signal.aborted) throw context.signal.reason ?? error;
-        const retrying = attempt < retries && isRetryableThirdPartyFailure(error);
+        const retryable = isRetryableThirdPartyFailure(error);
+        const retrying = attempt < retries && retryable;
         if (retrying) {
           const waitSeconds = Math.round(thirdPartyRetryDelayMs(attempt + 1, delayMs) / 1000);
           const reason = error instanceof HttpError ? error.message : "第三方请求失败";
           await context.warn?.(`第三方接口第${attempt + 1}次请求失败：${reason}；${waitSeconds}秒后重试第${attempt + 2}次请求`);
+        } else if (!retryable) {
+          // Only a deterministic rejection ends the run here, so its upstream error body is surfaced as
+          // an advisory warning: it is the only way to tell a rejected parameter from a policy block.
+          // A retryable failure that merely ran out of attempts keeps the established wording above.
+          // The thrown message, error code and details.status keep their existing contract.
+          const excerpt = error instanceof HttpError && typeof error.details?.responseExcerpt === "string" ? error.details.responseExcerpt : "";
+          if (excerpt) await context.warn?.(`第三方接口返回HTTP ${String(error instanceof HttpError ? error.details?.status ?? "错误" : "")}的上游响应：${excerpt}`);
         }
         if (!retrying) throw error;
       }

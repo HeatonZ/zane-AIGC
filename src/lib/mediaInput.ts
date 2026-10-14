@@ -13,6 +13,9 @@ function mediaValues(value: unknown): MediaInputValue[] {
   return [item];
 }
 
+/** 把任意已存值（数组/单值/运行时媒体包装）摊平成媒体项；语义与服务端 normalizeMediaList 一致。 */
+export function mediaItemsOf(value: unknown): MediaInputValue[] { return mediaValues(value); }
+
 export function mediaListValues(value: string): MediaInputValue[] {
   if (!value.trim()) return [];
   try {

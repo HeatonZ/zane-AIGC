@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { aiOperations, AI_CONTRACT_VERSION } from "../ai/operations.js";
 import { AI_OPERATOR_GUIDE, PUBLIC_USER_OPERATOR_GUIDE } from "../ai/guide.js";
+import { AI_OPERATOR_CHANGELOG } from "../ai/guideChangelog.js";
 import { createAiOpenApi } from "../ai/openapi.js";
 import { WorkbenchHttpClient } from "./httpClient.js";
 
@@ -18,7 +19,8 @@ export function createWorkbenchMcp(client: WorkbenchHttpClient) {
     const data = discovery.data as { security?: { entryMode?: string } } | undefined;
     return { discovery, userOnly: data?.security?.entryMode === "user-only" };
   }
-  server.registerResource("operator-guide", "zane://guide", { description: "AI操作手册、状态机、故障恢复与费用边界", mimeType: "text/markdown" }, async (uri, extra) => { const { discovery, userOnly } = await documentation(extra.mcpReq.signal); return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: !discovery.ok ? JSON.stringify(discovery) : userOnly ? PUBLIC_USER_OPERATOR_GUIDE : AI_OPERATOR_GUIDE }] }; });
+  server.registerResource("operator-guide", "zane://guide", { description: "AI操作手册、状态机、故障恢复与费用边界（当前生效契约；历史版本小节见 zane://guide/changelog）", mimeType: "text/markdown" }, async (uri, extra) => { const { discovery, userOnly } = await documentation(extra.mcpReq.signal); return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: !discovery.ok ? JSON.stringify(discovery) : userOnly ? PUBLIC_USER_OPERATOR_GUIDE : AI_OPERATOR_GUIDE }] }; });
+  server.registerResource("operator-changelog", "zane://guide/changelog", { description: "按版本倒序的历史功能/行为变更小节；已从 zane://guide 拆出，仅需核对历史行为时读取", mimeType: "text/markdown" }, async (uri, extra) => { const { discovery, userOnly } = await documentation(extra.mcpReq.signal); return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: !discovery.ok ? JSON.stringify(discovery) : userOnly ? PUBLIC_USER_OPERATOR_GUIDE : AI_OPERATOR_CHANGELOG }] }; });
   server.registerResource("openapi", "zane://openapi", { description: "与工具目录同源的OpenAPI 3.1契约", mimeType: "application/json" }, async (uri, extra) => { const { discovery, userOnly } = await documentation(extra.mcpReq.signal); return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(discovery.ok ? createAiOpenApi({ userOnly }) : discovery) }] }; });
   for (const [name, tool] of [["scenes", "list_scenes"], ["capabilities", "list_capabilities"]]) {
     server.registerResource(name, "zane://" + name, { description: "后台实时" + name + "目录", mimeType: "application/json" }, async (uri, extra) => {

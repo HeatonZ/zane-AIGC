@@ -12,6 +12,7 @@ import { accessPage, adminSetup, authLogin, userCreate, userUpdate, userAccess, 
 import { draftFavoriteRequest } from "../ai/taskDraftSchemas.js";
 import { outputQuery, stepResultQuery } from "../ai/sceneSchemas.js";
 import { AI_CONTRACT_VERSION, aiOperations } from "../ai/operations.js";
+import { CATALOGUE_SUMMARY_OMISSION, catalogueDetailQuery, catalogueOperations } from "../ai/discovery.js";
 import { ownAssetQuerySchema } from "../domain/assetLibraryContracts.js";
 const parsed = <S extends z.ZodType>(schema: S, value: unknown): z.output<S> => { const result = schema.safeParse(value); if (!result.success) throw new HttpError(400, result.error.issues.map(issue => issue.path.join(".") + ": " + issue.message).join("; "), "INVALID_ACCESS_REQUEST"); return result.data; };
 const identity = (res: Response): Identity => res.locals.identity;
@@ -39,10 +40,11 @@ export function createAccessRouter(access: AccessService, portal: UserPortalServ
   router.get("/api/v1/system-feedback", async (req,res) => res.json(await feedback.list(identity(res), req.query, true)));
   router.get("/api/v1/system-feedback/:feedbackId", async (req,res) => res.json(await feedback.get(identity(res), { feedbackId: req.params.feedbackId }, true)));
   router.post("/api/v1/system-feedback/:feedbackId/handle", async (req,res) => res.json(await feedback.handle(identity(res), { ...req.body, feedbackId: req.params.feedbackId })));
-  router.get("/api/v1/ai", (_req,res,next) => {
+  router.get("/api/v1/ai", (req,res,next) => {
     const current = identity(res);
     if (current.role === "admin") { next(); return; }
-    res.json({ name: "zane-workbench", contractVersion: AI_CONTRACT_VERSION, identity: publicUser(current), mode: "user", security: access.securityPolicy(Boolean(res.locals.publicUserOnly)), worker: { ready: portal.runs.metrics().ready, accepting: portal.runs.metrics().accepting }, operations: aiOperations.filter(operation => operation.access === "authenticated").map(({ name,path,method,effect,description }) => ({ name,path,method,effect,description })), nextAction: "list_available_scenes", submissionPolicy: { clientRunIdRequiredForAi: true, lostResponse: "query_same_run_id_do_not_resubmit" } });
+    const { detail } = parsed(catalogueDetailQuery, { detail: req.query.detail });
+    res.json({ name: "zane-workbench", contractVersion: AI_CONTRACT_VERSION, identity: publicUser(current), mode: "user", security: access.securityPolicy(Boolean(res.locals.publicUserOnly)), worker: { ready: portal.runs.metrics().ready, accepting: portal.runs.metrics().accepting }, operations: catalogueOperations(aiOperations.filter(operation => operation.access === "authenticated"), detail), nextAction: "list_available_scenes", submissionPolicy: { clientRunIdRequiredForAi: true, lostResponse: "query_same_run_id_do_not_resubmit" }, ...(detail === "summary" ? { catalogueSummary: CATALOGUE_SUMMARY_OMISSION } : {}) });
   });
   router.post("/api/v1/self/logout", (_req,res) => { access.logout(identity(res)); res.clearCookie("zane_session", { path: "/" }); res.json({ loggedOut: true }); });
   router.get("/api/v1/self/account", (_req,res) => res.json({ user: publicUser(access.refresh(identity(res))), nextAction: identity(res).role === "admin" ? "list_users" : "list_available_scenes" }));

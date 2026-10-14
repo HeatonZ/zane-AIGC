@@ -18,11 +18,15 @@ const evidence = [];
 for (const [runId, hasImages] of [[imageRunId, true], [textRunId, false]]) {
   const run = await json(base + "/api/v1/runs/" + runId);
   assert.equal(run.status, "completed", run.error ?? "运行尚未完成：" + runId);
-  const condition = run.workflow.steps.find(s => s.kind === "control" && s.control?.rules.some(r => r.leftRef === "input.reference_images"));
-  assert.ok(condition, "缺少普通参考图条件步骤");
+  // 当前发布版用 core.code 自定义代码判断参考图，再以开始条件分支；旧快照的条件节点同样接受。
+  const condition = run.workflow.steps.find(s => (s.control?.rules ?? []).some(r => r.leftRef === "input.reference_images")
+    || (s.capabilityId === "core.code" && (s.inputs ?? []).some(i => i.sourceRef === "input.reference_images") && (s.outputs ?? []).some(o => o.key === "result" && o.type === "boolean")));
+  assert.ok(condition, "缺少判断参考图的第一步");
   assert.equal(run.steps.find(s => s.stepId === condition.id)?.outputs?.result, hasImages);
-  const reverse = run.workflow.steps.find(s => s.kind === "hermes" && s.hermesProfile === "aixg" && s.runCondition?.conditionStepId === condition.id && s.runCondition.expectedResult === true);
-  assert.ok(reverse, "缺少 Hermes AIXG 条件反推步骤");
+  const branchMatches = (step, expected) => (step.startCondition?.rules ?? []).some(r => r.leftRef === `step.${condition.id}.outputs.result` && r.rightValue === String(expected))
+    || (step.runCondition?.conditionStepId === condition.id && step.runCondition.expectedResult === expected);
+  const reverse = run.workflow.steps.find(s => s.kind === "hermes" && s.hermesProfile === "aixg" && branchMatches(s, true));
+  assert.ok(reverse, "缺少 Hermes AIXG 有图分支步骤");
   const reversedRecord = run.steps.find(s => s.stepId === reverse.id);
   assert.equal(reversedRecord?.status, hasImages ? "completed" : "skipped");
   if (hasImages) {
@@ -33,7 +37,7 @@ for (const [runId, hasImages] of [[imageRunId, true], [textRunId, false]]) {
   const generators = run.workflow.steps.filter(s => s.kind === "comfyui");
   assert.equal(generators.length, 1, "只能存在一个纯文生图生成步骤");
   const generator = generators[0];
-  assert.equal(generator.runCondition, undefined, "有图和无图必须走同一生成步骤");
+  assert.ok(!branchMatches(generator, true) && !branchMatches(generator, false), "有图和无图必须走同一生成步骤");
   assert.equal(run.steps.find(s => s.stepId === generator.id)?.status, "completed");
   assert.ok((generator.inputs ?? []).every(i => i.sourceRef !== "input.reference_images"), "生成步骤不得绑定参考图");
   const bindings = generator.comfyui.bindings.filter(b => b.direction === "input");

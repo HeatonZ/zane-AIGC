@@ -125,13 +125,21 @@ export async function prepareRunArtifacts(settings: SavedSettings, runId: string
   }
 }
 
+/** Canonical media type → file extension. This is the single source of truth for naming
+ *  archived media: the extension is what later MIME inference reads, so every image format
+ *  the executors accept (see mimeTypeForMediaPath) must be listed here or the bytes get
+ *  stored as `.bin` and are later described to models as the wrong format. */
 export function mediaContentTypeExtension(contentType: string | null) {
   const type = contentType?.split(";")[0].trim().toLowerCase();
   return ({
+    "image/avif": ".avif",
+    "image/bmp": ".bmp",
+    "image/gif": ".gif",
+    "image/heic": ".heic",
     "image/jpeg": ".jpg",
     "image/png": ".png",
+    "image/tiff": ".tiff",
     "image/webp": ".webp",
-    "image/gif": ".gif",
     "video/mp4": ".mp4",
     "video/webm": ".webm",
     "audio/wav": ".wav",

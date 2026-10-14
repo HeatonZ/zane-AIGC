@@ -30,7 +30,7 @@ test("媒体输入响应与OpenAPI契约同源，发现不生成且不提供任�
     source: "same_authorized_fixed_version_private_run_copy",
     hermes: "private_image_bytes_to_inline_data_url",
     comfyui: "private_image_bytes_to_upload_in_reference_order",
-    thirdPartyHttp: "current_run_private_image_bytes_to_multipart_in_reference_order_no_preview_fallback",
+    thirdPartyHttp: "current_run_authorized_image_bytes_to_multipart_in_reference_order_no_preview_fallback; a ComfyUI attachment from the same run (uploaded input or upstream output) is read through the configured ComfyUI view route, because it has no run-local archive copy",
     hermesSizePolicy: "existing_inline_budget_may_resize_without_reselecting_asset_version",
   });
   assert.equal(ASSET_MEDIA_EXECUTION_CONTRACT.forwardsWorkbenchCredentials, false);

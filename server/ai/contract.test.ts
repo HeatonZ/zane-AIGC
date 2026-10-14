@@ -9,6 +9,9 @@ import { loadCapabilityPackages } from "../capabilities/loadPackages.js";
 import type { CapabilityRuntime } from "../capabilities/package.js";
 import { aiOperations } from "./operations.js";
 import { AI_OPERATOR_GUIDE } from "./guide.js";
+import { AI_OPERATOR_CHANGELOG } from "./guideChangelog.js";
+import { CATALOGUE_SUMMARY_OMISSION, catalogueDetailQuery, catalogueFeatures, catalogueOperations } from "./discovery.js";
+import { aiHarness } from "../testing/aiSupport.js";
 
 const runtime: CapabilityRuntime = { async hermes() { throw new Error("只读契约测试不调用 Hermes"); }, async comfyui() { throw new Error("只读契约测试不调用 ComfyUI"); }, async condition() { return { result: true }; } };
 
@@ -61,6 +64,7 @@ test("管理员运行响应契约声明提交人快照且普通用户响应不�
 
 test("AI文档同源：操作手册及OpenAPI快照与运行时契约一致", async () => {
   assert.equal((await readFile("docs/ai-operator.md", "utf8")).replace(/\r\n/g, "\n"), AI_OPERATOR_GUIDE);
+  assert.equal((await readFile("docs/ai-operator-changelog.md", "utf8")).replace(/\r\n/g, "\n"), AI_OPERATOR_CHANGELOG);
   assert.deepEqual(JSON.parse(await readFile("docs/ai-openapi.json", "utf8")), createAiOpenApi());
 });
 
@@ -75,6 +79,7 @@ test("能力散文只引用已注册能力：描述里出现的能力 ID 必须�
   const documents = [
     ...aiOperations.map((operation) => ({ name: "operation:" + operation.name, text: operation.description })),
     { name: "guide", text: AI_OPERATOR_GUIDE },
+    { name: "guide-changelog", text: AI_OPERATOR_CHANGELOG },
     { name: "foundation", text: AI_FOUNDATION_GUIDE },
   ];
   const unknown = new Map<string, string[]>();
@@ -90,10 +95,18 @@ test("能力散文只引用已注册能力：描述里出现的能力 ID 必须�
 test("AI手册体积预算：guide与foundation不随版本小节无限膨胀", () => {
   // 会话级上下文成本：guide 整体随每次 MCP 会话下发。超过预算时先合并历史小节，
   // 而不是继续追加；升级预算必须同时说明被合并的旧内容去哪了。
+  // 历史版本小节已拆到 AI_OPERATOR_CHANGELOG（zane://guide/changelog，按需读取），
+  // 因此这里只对会话级手册计费；changelog 单独给上限，避免它变成无界倾倒场。
   const guideBytes = Buffer.byteLength(AI_OPERATOR_GUIDE, "utf8");
   const foundationBytes = Buffer.byteLength(AI_FOUNDATION_GUIDE, "utf8");
-  assert.ok(guideBytes <= 90_000, `操作手册 ${guideBytes} 字节超过 90000 预算：请合并历史版本小节或把一次性细节移出会话级资源`);
+  const changelogBytes = Buffer.byteLength(AI_OPERATOR_CHANGELOG, "utf8");
+  assert.ok(guideBytes <= 60_000, `操作手册 ${guideBytes} 字节超过 60000 预算：把历史版本小节移到 AI_OPERATOR_CHANGELOG，不要留在会话级资源里`);
   assert.ok(foundationBytes <= 50_000, `基础能力文档 ${foundationBytes} 字节超过 50000 预算`);
+  assert.ok(changelogBytes <= 80_000, `变更记录 ${changelogBytes} 字节超过 80000 预算：合并更早的历史小节`);
+  // 拆分不得丢内容：手册正文与变更记录合起来仍覆盖原来的版本小节。
+  assert.ok(!AI_OPERATOR_GUIDE.includes("## 局域网管理入口（1.5.34）"), "版本小节不应留在会话级手册里");
+  assert.ok(AI_OPERATOR_CHANGELOG.includes("## 局域网管理入口（1.5.34）"));
+  assert.ok(AI_OPERATOR_GUIDE.includes("## 1. 接管前先检查"));
 });
 
 test("AI契约接受 Hermes 单项反馈和退回意见，拒绝空文本和伪造快照", () => {
@@ -106,6 +119,53 @@ test("AI契约接受 Hermes 单项反馈和退回意见，拒绝空文本和伪�
   assert.equal(review.safeParse({ runId: sourceRunId, reviewId: "review", action: "redo", feedback: "缩短开头" }).success, true);
 });
 
+
+test("AI发现契约：summary默认省略说明文本且明确标记，full与契约同源，非法detail拒绝", () => {
+  // get_workbench 每次会话都会被读取：默认 summary 只保留路由/副作用/权限事实并显式声明省略，
+  // full 仍返回与契约完全一致的说明，避免静默变薄。
+  assert.deepEqual(catalogueDetailQuery.parse({}), { detail: "summary" });
+  assert.equal(catalogueDetailQuery.safeParse({ detail: "full" }).success, true);
+  assert.equal(catalogueDetailQuery.safeParse({ detail: "everything" }).success, false);
+
+  const summary = catalogueOperations(aiOperations, "summary");
+  const full = catalogueOperations(aiOperations, "full");
+  assert.equal(summary.length, aiOperations.length);
+  assert.equal(full.length, aiOperations.length);
+  assert.deepEqual(summary.map(o => o.name), aiOperations.map(o => o.name));
+  for (const operation of summary) {
+    assert.equal(operation.description, undefined, operation.name + " 在 summary 里不应带说明文本");
+    assert.ok(operation.path && operation.method && operation.effect && operation.access);
+  }
+  for (const operation of full) assert.equal(operation.description, aiOperations.find(item => item.name === operation.name)!.description);
+  const summaryBytes = Buffer.byteLength(JSON.stringify({ features: catalogueFeatures(AI_FOUNDATION_FEATURES, "summary"), operations: summary }));
+  const fullBytes = Buffer.byteLength(JSON.stringify({ features: catalogueFeatures(AI_FOUNDATION_FEATURES, "full"), operations: full }));
+  assert.ok(summaryBytes < fullBytes / 2, "summary 必须显著小于 full：" + summaryBytes + " vs " + fullBytes);
+  assert.equal(CATALOGUE_SUMMARY_OMISSION.descriptionsOmitted, true);
+  assert.ok(CATALOGUE_SUMMARY_OMISSION.omissionReason.includes("detail=full"));
+});
+
+test("AI手册拆分契约：会话级手册不含历史版本小节，变更记录按需读取且不丢内容", () => {
+  // 会话级资源只保留当前生效契约；历史小节移到 changelog，避免每次会话都付整部版本历史的成本。
+  assert.ok(!AI_OPERATOR_GUIDE.includes("## 局域网管理入口（1.5.34）"));
+  assert.ok(AI_OPERATOR_CHANGELOG.includes("## 局域网管理入口（1.5.34）"));
+  assert.ok(AI_OPERATOR_CHANGELOG.includes("## 通用开始条件（1.5.32）"));
+  // 手册正文（编号章节）必须留在会话级资源里。
+  for (const section of ["## 1. 接管前先检查", "## 9. 响应丢失与冲突恢复（最重要）", "## 11. 接管验收清单"]) assert.ok(AI_OPERATOR_GUIDE.includes(section), section);
+  assert.ok(AI_OPERATOR_CHANGELOG.startsWith("# 版本变更记录"));
+});
+
+test("AI发现接口：detail分级经HTTP契约暴露，默认与full都可用", async t => {
+  const h = await aiHarness(t);
+  const summary = await (await fetch(h.base + "/api/v1/ai")).json() as { operations: Array<{ name: string; description?: string }>; features: Array<{ id: string; description?: string }>; catalogueSummary?: { descriptionsOmitted: boolean } };
+  assert.equal(summary.operations.length, aiOperations.length);
+  assert.equal(summary.operations[0].description, undefined);
+  assert.equal(summary.features[0].description, undefined);
+  assert.equal(summary.catalogueSummary?.descriptionsOmitted, true);
+  const full = await (await fetch(h.base + "/api/v1/ai?detail=full")).json() as { operations: Array<{ name: string; description?: string }>; catalogueSummary?: unknown };
+  assert.equal(full.operations[0].description, aiOperations.find(operation => operation.name === full.operations[0].name)!.description);
+  assert.equal(full.catalogueSummary, undefined);
+  assert.equal((await fetch(h.base + "/api/v1/ai?detail=bogus")).status, 400);
+});
 
 test("AI基础能力覆盖门禁：每个功能的工具存在，每个工具都有功能归属", () => {
   const operations = new Set(aiOperations.map(operation => operation.name)); const covered = new Set<string>(); const ids = new Set<string>();
@@ -241,7 +301,7 @@ test("AI机器契约：通用开始条件进入步骤schema，拒绝无效规则
   const legacy = { id: "cond", name: "判断", kind: "control", control: { type: "condition", match: "all", rules: [{ id: "r1", leftRef: "input.flag", operator: "is_not_empty", valueSource: "literal", rightValue: "", rightRef: "" }] }, outputs: [{ key: "result", type: "boolean" }] };
   assert.equal(operation.schema.safeParse({ ...base, workflow: { inputs: [], outputs: [], steps: [legacy] } }).success, true);
   assert.ok(JSON.stringify(createAiOpenApi()).includes("startCondition"), "OpenAPI 必须包含开始条件");
-  assert.match(AI_OPERATOR_GUIDE, /通用开始条件（1\.5\.32）/);
+  assert.match(AI_OPERATOR_CHANGELOG, /通用开始条件（1\.5\.32）/);
 });
 
 test("AI草稿媒体引用类型字段显式可操作，拒绝未声明类型与伪造配置", () => {
@@ -262,9 +322,9 @@ test("AI机器契约公开静态开关、命名动态标量与连续序号配置
   assert.match(aiOperations.find(operation => operation.name === "submit_scene")!.description, /x-comfy-static-switch/);
   assert.match(aiOperations.find(operation => operation.name === "update_scene_draft")!.description, /ordinalField/);
   assert.ok(api.components.schemas.DataZipConfig.properties.ordinalField);
-  assert.match(AI_OPERATOR_GUIDE, /Writer一次输出制作级storyboard\/shots（不含prompt）/);
-  assert.match(AI_OPERATOR_GUIDE, /AIXG一次批量/);
-  assert.match(AI_OPERATOR_GUIDE, /共7步、两次AI调用/);
+  assert.match(AI_OPERATOR_CHANGELOG, /Writer一次输出制作级storyboard\/shots（不含prompt）/);
+  assert.match(AI_OPERATOR_CHANGELOG, /AIXG一次批量/);
+  assert.match(AI_OPERATOR_CHANGELOG, /共7步、两次AI调用/);
 });
 
 
@@ -278,6 +338,6 @@ test("固定音色上传契约经既有HTTP/MCP入口发现，预检无生成", 
   assert.equal(audio.failure, "fail_before_prompt_submission_no_automatic_retry");
   assert.deepEqual(api.components.schemas.MediaExecutionAccess.const, api["x-asset-media-execution"]);
   assert.match(aiOperations.find(operation => operation.name === "submit_scene")!.description, /audioConsumers/);
-  assert.match(AI_OPERATOR_GUIDE, /固定音色的基础ComfyUI上传/);
+  assert.match(AI_OPERATOR_CHANGELOG, /固定音色的基础ComfyUI上传/);
   assert.ok(AI_FOUNDATION_FEATURES.find(feature => feature.id === "asset-execution-access")!.description.includes("audio_list"));
 });

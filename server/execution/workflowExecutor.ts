@@ -23,6 +23,10 @@ export interface PreparedRun {
   resumeSource?: RunRecord;
   rerunFromRunId?: string;
   rerun?: import("../services/rerunPlanner.js").PlannedRerun;
+  /** Resolved once per run from the admin local-export setting; absent means the feature is off. */
+  localExportRoot?: string;
+  /** 本运行及其授权祖先运行；本地导出只在这些运行的归档目录里读取媒体字节。 */
+  localExportRunIds?: string[];
 }
 export interface StepExecutionContext {
   /** Advisory business warning, persisted before external generation; does not change run status. */
@@ -46,6 +50,10 @@ export interface StepExecutionContext {
   types: Map<string, string>;
   settings: SavedSettings;
   inputFields: RunInputField[];
+  /** Admin-configured allowlist root for optional core.code local export; empty disables it. */
+  localExportRoot?: string;
+  /** 本运行及其授权祖先运行；本地导出只在这些运行的归档目录里读取媒体字节。 */
+  localExportRunIds?: string[];
   signal: AbortSignal;
 }
 export type ExecutionResult = Pick<RunRecord, "runId" | "status" | "steps" | "outputs" | "startedAt" | "finishedAt" | "durationMs" | "error" | "cancellationReason" | "archiveWarnings" | "pendingReview" | "resumedFromRunId" | "artifacts">;
@@ -208,7 +216,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
     } : undefined, captureAgentResponse: warningTarget ? async response => {
       warningTarget.agentResponse = response;
       await persistRuntime("running");
-    } : undefined, runId, artifacts, runInputValues: inputValues, iterationItems, itemIndex, feedback, step, inputValues: stepInputValues, stepValues, types, settings, inputFields: executionWorkflow.inputs, signal: runController.signal });
+    } : undefined, runId, artifacts, runInputValues: inputValues, iterationItems, itemIndex, feedback, step, inputValues: stepInputValues, stepValues, types, settings, inputFields: executionWorkflow.inputs, localExportRoot: prepared.localExportRoot, localExportRunIds: prepared.localExportRunIds, signal: runController.signal });
   }
 
   async function executeWorkflowItem(itemIndex: number, itemInputValues: Record<string, JsonValue>, resumeState?: { steps: RunStepRecord[]; values: Map<string, Record<string, JsonValue>>; types: Map<string, string>; startIndex: number }): Promise<RunItemResult> {

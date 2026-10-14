@@ -34,8 +34,11 @@ test("真实stdio MCP：工具schema/资源/提示词发现，发布场景→预
   const tools = await client.listTools(); assert.deepEqual(tools.tools.map(tool => tool.name).sort(), aiOperations.map(operation => operation.name).sort());
   const submitSchema = tools.tools.find(tool => tool.name === "submit_scene")!.inputSchema; assert.ok(submitSchema.required?.includes("versionId")); assert.ok(submitSchema.required?.includes("runId"));
   assert.equal(tools.tools.find(tool => tool.name === "prepare_scene")!.annotations?.readOnlyHint, true); assert.equal(tools.tools.find(tool => tool.name === "submit_scene")!.annotations?.idempotentHint, false);
-  const resources = await client.listResources(); assert.deepEqual(resources.resources.map(resource => resource.uri).sort(), ["zane://capabilities", "zane://guide", "zane://openapi", "zane://scenes"]);
+  const resources = await client.listResources(); assert.deepEqual(resources.resources.map(resource => resource.uri).sort(), ["zane://capabilities", "zane://guide", "zane://guide/changelog", "zane://openapi", "zane://scenes"]);
   const guide = await client.readResource({ uri: "zane://guide" }); assert.ok("text" in guide.contents[0]); assert.match(String(guide.contents[0].text), /响应丢失/);
+  // 历史版本小节已拆出会话级手册：默认读取不再付整部版本历史的成本，按需再读 changelog。
+  assert.doesNotMatch(String(guide.contents[0].text), /## 局域网管理入口（1\.5\.34）/);
+  const changelog = await client.readResource({ uri: "zane://guide/changelog" }); assert.ok("text" in changelog.contents[0]); assert.match(String(changelog.contents[0].text), /## 局域网管理入口（1\.5\.34）/);
   const openapi = await client.readResource({ uri: "zane://openapi" }); assert.ok("text" in openapi.contents[0]); assert.equal(JSON.parse(String(openapi.contents[0].text)).openapi, "3.1.0");
   const prompt = await client.getPrompt({ name: "operate-workbench", arguments: { goal: "测试接管" } }); assert.match(JSON.stringify(prompt), /测试接管/);
   assert.equal((await call("get_workbench")).payload.ok, true); assert.equal((await call("list_scenes")).payload.ok, true); assert.equal((await call("list_capabilities")).payload.ok, true);

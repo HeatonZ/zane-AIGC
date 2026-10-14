@@ -12,6 +12,8 @@ import type * as z from "zod/v4";
 import { aiOperations, AI_CONTRACT_VERSION } from "../ai/operations.js";
 import { scenePreparation, sceneSubmission } from "../ai/schemas.js";
 import { AI_OPERATOR_GUIDE, PUBLIC_USER_OPERATOR_GUIDE } from "../ai/guide.js";
+import { AI_OPERATOR_CHANGELOG } from "../ai/guideChangelog.js";
+import { CATALOGUE_SUMMARY_OMISSION, catalogueDetailQuery, catalogueFeatures, catalogueOperations } from "../ai/discovery.js";
 import { createAiOpenApi } from "../ai/openapi.js";
 import type { RunRecord, SavedSettings } from "../domain/types.js";
 import { isActiveRunStatus } from "../domain/types.js";
@@ -44,12 +46,20 @@ export function createAiRouter(scenes: AiSceneService, runs: RunService, loadSet
   router.get("/api/v1/task-drafts/:draftId", async (req, res) => res.json(await drafts.get(String(req.params.draftId))));
   router.patch("/api/v1/task-drafts/:draftId/favorite", async (req, res) => res.json(await drafts.setFavorite(String(req.params.draftId), parsed(draftFavoriteRequest, req.body), res.locals.authorizeAdmin)));
   router.use(["/api/workspace/status", "/api/v1/ai", "/api/v1/scenes", "/api/v1/option-presets", "/api/v1/runs/:runId/wait", "/api/v1/runs/:runId/outputs", "/api/v1/runs/:runId/steps"], (_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
-  router.get("/api/v1/ai", async (_req, res) => {
+  router.get("/api/v1/ai", async (req, res) => {
     const settings = await loadSettings();
-    res.json({ ...(res.locals.identity ? {identity:publicUser(res.locals.identity),mode:"admin"} : {}), name: "zane-workbench", contractVersion: AI_CONTRACT_VERSION, security: res.locals.httpSecurityPolicy, worker: runs.metrics(), projectConfigured: Boolean(settings.projectDirectory), projectDirectory: settings.projectDirectory, endpoints: { openapi: "/api/v1/ai/openapi.json", guide: "/api/v1/ai/guide", scenes: "/api/v1/scenes", capabilities: "/api/v1/capabilities", assets: "/api/v1/assets" }, features: AI_FOUNDATION_FEATURES, runtimeContext: { enabledHermesProfiles: settings.enabledHermesProfiles, workflowTimeoutMinutes: settings.workflowTimeoutMinutes, comfyuiConfigured: Boolean(settings.comfyuiBaseUrl) }, submissionPolicy: { clientRunIdRequiredForAi: true, duplicateRunId: "409_RUN_ALREADY_EXISTS", lostResponse: "query_same_run_id_do_not_resubmit", exactlyOnce: false }, operations: aiOperations.map(({ name, path, method, description, effect, access }) => ({ name, path, method, description, effect, access:access ?? "admin" })) });
+    const { detail } = parsed(catalogueDetailQuery, { detail: req.query.detail });
+    res.json({ ...(res.locals.identity ? {identity:publicUser(res.locals.identity),mode:"admin"} : {}), name: "zane-workbench", contractVersion: AI_CONTRACT_VERSION, security: res.locals.httpSecurityPolicy, worker: runs.metrics(), projectConfigured: Boolean(settings.projectDirectory), projectDirectory: settings.projectDirectory, endpoints: { openapi: "/api/v1/ai/openapi.json", guide: "/api/v1/ai/guide", scenes: "/api/v1/scenes", capabilities: "/api/v1/capabilities", assets: "/api/v1/assets" }, features: catalogueFeatures(AI_FOUNDATION_FEATURES, detail), runtimeContext: { enabledHermesProfiles: settings.enabledHermesProfiles, workflowTimeoutMinutes: settings.workflowTimeoutMinutes, comfyuiConfigured: Boolean(settings.comfyuiBaseUrl) }, submissionPolicy: { clientRunIdRequiredForAi: true, duplicateRunId: "409_RUN_ALREADY_EXISTS", lostResponse: "query_same_run_id_do_not_resubmit", exactlyOnce: false }, operations: catalogueOperations(aiOperations, detail), ...(detail === "summary" ? { catalogueSummary: CATALOGUE_SUMMARY_OMISSION } : {}) });
   });
   router.get("/api/v1/ai/openapi.json", (_req, res) => res.json(createAiOpenApi({ userOnly: Boolean(res.locals.publicUserOnly) })));
-  router.get("/api/v1/ai/guide", (_req, res) => res.type("text/markdown").send(res.locals.publicUserOnly ? PUBLIC_USER_OPERATOR_GUIDE : AI_OPERATOR_GUIDE));
+  router.get("/api/v1/ai/guide", (req, res) => {
+    if (res.locals.publicUserOnly) { res.type("text/markdown").send(PUBLIC_USER_OPERATOR_GUIDE); return; }
+    const detail = req.query.detail === undefined ? "handbook" : req.query.detail;
+    if (detail !== "handbook" && detail !== "changelog" && detail !== "full") throw new HttpError(400, "detail 必须是 handbook、changelog 或 full", "INVALID_AI_REQUEST");
+    // Default stays the session-level handbook; the historical version notes are opt-in so that
+    // reading the manual no longer costs the whole version history.
+    res.type("text/markdown").send(detail === "changelog" ? AI_OPERATOR_CHANGELOG : detail === "full" ? AI_OPERATOR_CHANGELOG + "\n\n" + AI_OPERATOR_GUIDE : AI_OPERATOR_GUIDE);
+  });
   router.get("/api/workspace/status", async (_req, res) => res.json(await scenes.workspace.status()));
   // Read-only Hermes profile/model discovery. Same services as the web editor; no scene writes,
   // no publishing and no generation. Model catalogs come from the gateway's own picker inventory.

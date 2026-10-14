@@ -135,6 +135,8 @@ export const defaults: SavedSettings = {
 
 export const databaseFile = path.join(localDirectory, "zane.db");
 export const maxActiveRuns = boundedInteger(process.env.ZANE_MAX_ACTIVE_RUNS, 2, 1, 32);
+/** 可选的本地导出根目录环境默认值；空表示该能力默认关闭，需管理员显式配置 SQLite 设置。 */
+export const localExportRoot = nonEmpty(process.env.ZANE_LOCAL_EXPORT_ROOT) ?? "";
 // 同一 ComfyUI 上游地址的全局请求并发预算；步骤 for_each 的 maxConcurrency 在此之内生效，防止多任务同时压垮单 GPU。
 export const comfyuiMaxConcurrency = boundedInteger(process.env.ZANE_COMFYUI_MAX_CONCURRENCY, 2, 1, 32);
 export const shutdownTimeoutMs = Math.max(1000, Number.parseInt(process.env.ZANE_SHUTDOWN_TIMEOUT_MS ?? "15000", 10) || 15000);
@@ -142,6 +144,13 @@ export const shutdownTimeoutMs = Math.max(1000, Number.parseInt(process.env.ZANE
 // Optional second ingress: same process/services/SQLite, ordinary users only. Not enabled by default.
 export const publicUserPort = nonEmpty(process.env.ZANE_PUBLIC_USER_PORT) === undefined ? undefined : Number(process.env.ZANE_PUBLIC_USER_PORT);
 export const publicUserHost = nonEmpty(process.env.ZANE_PUBLIC_USER_HOST) ?? "127.0.0.1";
+// Explicit opt-in for a non-loopback management ingress (e.g. LAN). Default false keeps the
+// fail-closed rule that the user-only entry may not coexist with a published management port.
+const allowLanIngressValue = nonEmpty(process.env.ZANE_ALLOW_LAN_INGRESS);
+if (allowLanIngressValue !== undefined && allowLanIngressValue !== "true" && allowLanIngressValue !== "false") {
+  throw new Error("ZANE_ALLOW_LAN_INGRESS 只接受 true/false");
+}
+export const allowLanIngress = allowLanIngressValue === "true";
 const loginNumber = (key: string) => nonEmpty(process.env[key]) === undefined ? undefined : Number(process.env[key]);
 const loginWindowSeconds = loginNumber("ZANE_LOGIN_WINDOW_SECONDS");
 if (loginWindowSeconds !== undefined && !Number.isInteger(loginWindowSeconds)) throw new Error("ZANE_LOGIN_WINDOW_SECONDS 必须为整数秒");

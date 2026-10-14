@@ -252,6 +252,127 @@ test("第三方multipart：拒绝当前运行之外路径、目录跳转、远�
   }
 });
 
+test("第三方multipart：显式开启multipartLocalFiles后读取受控根目录内图片，默认关闭时拒绝", async t => {
+  const { image, context } = await imageContext(t);
+  // The admin-configured local root is a sibling of the run directory: exactly the shape used by
+  // the pillow scenes, where core.code lists a batch folder and the HTTP step consumes that image.
+  const localRoot = path.join(path.dirname(context.artifacts.directory), "library");
+  await mkdir(path.join(localRoot, "11 - 手动", "原始角色"), { recursive: true });
+  const source = path.join(localRoot, "11 - 手动", "原始角色", "AZKi.jpg");
+  await writeFile(source, image);
+  const seen: { request?: any } = {};
+  const requester = createThirdPartyJsonRequester(transport({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ b64_json: image.toString("base64") }] }) }, seen));
+  context.inputValues = { product_images: createRuntimeMediaValue("image", [source]), prompt: "preserve the character" };
+
+  // Default: this source stays unavailable, so the established "no arbitrary path" rule holds.
+  await assert.rejects(() => requester(context), { code: "HTTP_REQUEST_MEDIA_UNSUPPORTED" });
+
+  // Opted in but no configured root: still refused, never silently read.
+  context.step.capabilityConfig = { ...context.step.capabilityConfig, multipartLocalFiles: true };
+  await assert.rejects(() => requester(context), { code: "HTTP_REQUEST_MEDIA_UNSUPPORTED" });
+
+  context.localExportRoot = localRoot;
+  const result = await requester(context);
+  const form = await new Response(seen.request.body, { headers: { "content-type": seen.request.headers["content-type"] } }).formData();
+  assert.deepEqual(Buffer.from(await (form.get("image[]") as File).arrayBuffer()), image);
+  assert.equal(form.get("prompt"), "preserve the character");
+  assert.ok(isRuntimeMediaValue(result.images));
+});
+
+test("第三方multipart：multipartLocalFiles仍拒绝越界、符号链接逃逸与非图片；不发送", async t => {
+  const { image, context } = await imageContext(t);
+  const localRoot = path.join(path.dirname(context.artifacts.directory), "library");
+  await mkdir(localRoot, { recursive: true });
+  const inside = path.join(localRoot, "ok.png"); await writeFile(inside, image);
+  const outside = path.join(path.dirname(localRoot), "outside.png"); await writeFile(outside, image);
+  const notImage = path.join(localRoot, "fake.png"); await writeFile(notImage, "not a real image");
+  // A junction inside the root pointing outside it must not become a read pivot.
+  const escapeDir = path.join(path.dirname(localRoot), "elsewhere"); await mkdir(escapeDir);
+  await writeFile(path.join(escapeDir, "secret.png"), image);
+  const link = path.join(localRoot, "link"); await symlink(escapeDir, link, "junction");
+  context.step.capabilityConfig = { ...context.step.capabilityConfig, multipartLocalFiles: true };
+  context.localExportRoot = localRoot;
+  const fake = transport(jsonReply); fake.send = async () => assert.fail("unsafe local file reached transport");
+  for (const input of [
+    outside,
+    path.join(localRoot, "..", "outside.png"),
+    path.join(link, "secret.png"),
+    path.join(localRoot, "missing.png"),
+    notImage,
+    "https://api.example.net/product.png",
+  ]) {
+    context.inputValues = { product_images: createRuntimeMediaValue("image", [input]), prompt: "preserve the character" };
+    await assert.rejects(() => createThirdPartyJsonRequester(fake)(context), { code: "HTTP_REQUEST_MEDIA_UNSUPPORTED" }, input);
+  }
+});
+
+test("第三方multipart：multipartLocalFiles的配置形状在传输前校验", async t => {
+  const { context } = await imageContext(t);
+  for (const extra of [
+    { multipartLocalFiles: "yes" },
+    { multipartLocalFiles: true, multipartImages: [] as Array<{ inputKey: string; fieldName: string }> },
+  ] as Array<Record<string, JsonValue>>) {
+    assert.throws(() => validateThirdPartyRequestStep({ ...context.step, capabilityConfig: { ...context.step.capabilityConfig, ...extra } }), { code: "INVALID_HTTP_REQUEST_CONFIG" });
+  }
+  // bodyFormat=json 下开启本地读取没有意义，必须拒绝而不是静默忽略。
+  assert.throws(() => validateThirdPartyRequestStep({ ...context.step, capabilityConfig: { ...context.step.capabilityConfig, bodyFormat: "json", multipartLocalFiles: true } }), { code: "INVALID_HTTP_REQUEST_CONFIG" });
+});
+
+test("第三方multipart：ComfyUI已上传附件按引用顺序取回原字节上传，不要求运行内归档副本", async t => {
+  const { image, context } = await imageContext(t);
+  const seen: { request?: any } = {};
+  // The recorded failing run passed a ComfyUI input attachment (the admin studio
+  // upload shape) straight from the scene input. It must be accepted and its
+  // bytes fetched from the configured ComfyUI /view route.
+  const attachment = { id: "upload", filename: "ヘスティア.jpg", subfolder: "zane-studio", type: "input", url: "/api/comfyui/view?filename=%E3%83%98.jpg&subfolder=zane-studio&type=input" };
+  context.step.inputs = [{ key: "product_images", sourceRef: "input.product_images" }, { key: "prompt", sourceRef: "input.prompt" }];
+  context.inputValues = { product_images: createRuntimeMediaValue("image", [attachment]), prompt: "preserve the product" };
+  context.settings = { ...context.settings, comfyuiBaseUrl: "http://comfy.invalid:8188" };
+  const fetched: string[] = [];
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = (async (url: any) => { fetched.push(String(url)); return new Response(image, { status: 200, headers: { "content-type": "image/jpeg" } }); }) as typeof fetch;
+  const requester = createThirdPartyJsonRequester(transport({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ b64_json: image.toString("base64") }] }) }, seen));
+  const result = await requester(context);
+  assert.equal(fetched.length, 1);
+  assert.match(fetched[0]!, /^http:\/\/comfy\.invalid:8188\/view\?/);
+  assert.match(fetched[0]!, /filename=%E3%83%98%E3%82%B9%E3%83%86%E3%82%A3%E3%82%A2.jpg/);
+  assert.match(fetched[0]!, /subfolder=zane-studio/);
+  assert.match(fetched[0]!, /type=input/);
+  const form = await new Response(seen.request.body, { headers: { "content-type": seen.request.headers["content-type"] } }).formData();
+  assert.deepEqual(Buffer.from(await (form.get("image[]") as File).arrayBuffer()), image);
+  assert.ok(isRuntimeMediaValue(result.images));
+});
+
+test("第三方multipart：ComfyUI附件路径越界、未配置地址或非图片都在发送前失败", async t => {
+  const { image, context } = await imageContext(t);
+  context.step.inputs = [{ key: "product_images", sourceRef: "input.product_images" }, { key: "prompt", sourceRef: "input.prompt" }];
+  context.settings = { ...context.settings, comfyuiBaseUrl: "http://comfy.invalid:8188" };
+  const fake = transport(jsonReply); fake.send = async () => assert.fail("unsafe ComfyUI attachment reached transport");
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => { fetchCalls++; return new Response(image, { status: 200, headers: { "content-type": "image/png" } }); }) as typeof fetch;
+  // A crafted subfolder/filename must never be turned into a request outside the media route.
+  for (const item of [
+    { id: "a", filename: "../secret.png", subfolder: "", type: "input", url: "/api/comfyui/view?filename=../secret.png" },
+    { id: "b", filename: "ok.png", subfolder: "../../etc", type: "input", url: "/api/comfyui/view?filename=ok.png" },
+    { id: "c", filename: "sub/ok.png", subfolder: "", type: "input", url: "/api/comfyui/view?filename=sub/ok.png" },
+  ]) {
+    context.inputValues = { product_images: createRuntimeMediaValue("image", [item]), prompt: "preserve the product" };
+    await assert.rejects(() => createThirdPartyJsonRequester(fake)(context), { code: "HTTP_REQUEST_MEDIA_UNSUPPORTED" });
+  }
+  assert.equal(fetchCalls, 0, "非法附件不得发出任何 ComfyUI 请求");
+  // Without a configured ComfyUI address the attachment cannot be read at all.
+  context.settings = { ...context.settings, comfyuiBaseUrl: "" };
+  context.inputValues = { product_images: createRuntimeMediaValue("image", [{ id: "d", filename: "ok.png", subfolder: "", type: "input", url: "/api/comfyui/view?filename=ok.png" }]), prompt: "preserve the product" };
+  await assert.rejects(() => createThirdPartyJsonRequester(fake)(context), { code: "HTTP_REQUEST_MEDIA_UNSUPPORTED" });
+  // ComfyUI answering with a non-image body is still rejected before the third party is called.
+  context.settings = { ...context.settings, comfyuiBaseUrl: "http://comfy.invalid:8188" };
+  globalThis.fetch = (async () => new Response("not an image", { status: 200, headers: { "content-type": "text/plain" } })) as typeof fetch;
+  await assert.rejects(() => createThirdPartyJsonRequester(fake)(context), { code: "HTTP_REQUEST_MEDIA_UNSUPPORTED" });
+});
+
 test("第三方multipart：映射、输出、GET和标量字段约束在执行前拒绝", async t => {
   const { context } = await imageContext(t);
   const invalidConfigs: Array<Record<string, JsonValue>> = [
@@ -283,7 +404,7 @@ test("第三方JSON请求：重试次数与间隔的边界值在传输前校验"
 });
 
 test("第三方JSON请求：可重试失败按配置重发并在成功时返回结果", async () => {
-  for (const status of [408, 429, 500, 502, 503, 504]) {
+  for (const status of [408, 429, 500, 502, 503, 504, 524]) {
     const fake = transport(jsonReply); let sends = 0;
     fake.send = async () => { sends += 1; return sends === 1 ? { status, contentType: "application/json", body: Buffer.from("{}") } : { status: 200, contentType: "application/json", body: Buffer.from('{"ok":true}') }; };
     assert.deepEqual(await createThirdPartyJsonRequester(fake)(requestContext({ retries: 1, retryDelaySeconds: 0 })), { response: { ok: true }, status: 200 });
@@ -308,6 +429,32 @@ test("第三方JSON请求：重试用尽后返回最后一次原始错误，不�
   assert.equal(attempts, 3);
 });
 
+test("第三方JSON请求：524边缘超时按可重试处理并保留原始状态码", async () => {
+  const recovered = transport(jsonReply); let sends = 0;
+  recovered.send = async () => {
+    sends += 1;
+    return sends === 1
+      ? { status: 524, contentType: "text/html", body: Buffer.from("<html>origin timeout</html>") }
+      : { status: 200, contentType: "application/json", body: Buffer.from('{"ok":true}') };
+  };
+  assert.deepEqual(await createThirdPartyJsonRequester(recovered)(requestContext({ retries: 2, retryDelaySeconds: 0 })), { response: { ok: true }, status: 200 });
+  assert.equal(sends, 2);
+
+  const exhausted = transport(jsonReply); let attempts = 0; const warnings: string[] = [];
+  exhausted.send = async () => { attempts += 1; return { status: 524, contentType: "text/html", body: Buffer.from("<html>origin timeout</html>") }; };
+  const context = requestContext({ retries: 2, retryDelaySeconds: 0 });
+  context.warn = async (message: string) => { warnings.push(message); };
+  await assert.rejects(() => createThirdPartyJsonRequester(exhausted)(context), error => {
+    assert.equal((error as any).code, "THIRD_PARTY_HTTP_ERROR");
+    assert.equal((error as any).message, "第三方接口返回HTTP 524");
+    assert.equal((error as any).details.status, 524);
+    return true;
+  });
+  assert.equal(attempts, 3);
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0]!, /第1次请求失败：第三方接口返回HTTP 524/);
+});
+
 test("第三方JSON请求：确定性失败只发一次，即使配置了重试", async () => {
   for (const [reply, code] of [
     [{ status: 400, contentType: "application/json", body: '{"error":"bad request"}' }, "THIRD_PARTY_HTTP_ERROR"],
@@ -327,6 +474,51 @@ test("第三方JSON请求：确定性失败只发一次，即使配置了重试"
   privateDns.send = async () => { sends += 1; throw new Error("non-public address must never be requested"); };
   await assert.rejects(() => createThirdPartyJsonRequester(privateDns)(requestContext({ retries: 3, retryDelaySeconds: 0 })), { code: "THIRD_PARTY_HOST_NOT_PUBLIC" });
   assert.equal(sends, 0);
+});
+
+test("第三方JSON请求：确定性失败附带上游响应摘要，且不改写错误码与状态码", async () => {
+  const warnings: string[] = [];
+  const rejected = transport({ status: 400, contentType: "application/json", body: '{"error":{"message":"model gpt-image-2.5-sunburst not found","type":"invalid_request_error","code":"model_not_found"}}' });
+  await assert.rejects(() => createThirdPartyJsonRequester(rejected)(baseContext(requestContext({ retries: 3, retryDelaySeconds: 0 }).step, {}, warnings)), error => {
+    assert.equal((error as any).code, "THIRD_PARTY_HTTP_ERROR");
+    assert.equal((error as any).message, "第三方接口返回HTTP 400");
+    assert.equal((error as any).details.status, 400);
+    return true;
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /第三方接口返回HTTP 400的上游响应：/);
+  assert.match(warnings[0]!, /model_not_found/);
+  assert.match(warnings[0]!, /gpt-image-2\.5-sunburst not found/);
+});
+
+test("第三方JSON请求：上游响应摘要先脱敏、再按字节与字符有界截断", async () => {
+  const warnings: string[] = [];
+  const leaked = transport({ status: 422, contentType: "application/json", body: '{"error":"bad","api_key":"SUPER_SECRET_VALUE","hint":"see https://internal.example.net/x"}' });
+  await assert.rejects(() => createThirdPartyJsonRequester(leaked)(baseContext(requestContext({ retries: 0 }).step, {}, warnings)), { code: "THIRD_PARTY_HTTP_ERROR" });
+  assert.equal(warnings.length, 1);
+  assert.doesNotMatch(warnings[0]!, /SUPER_SECRET_VALUE/);
+  assert.doesNotMatch(warnings[0]!, /internal\.example\.net/);
+  assert.match(warnings[0]!, /REDACTED/);
+
+  const huge: string[] = [];
+  const oversized = transport({ status: 400, contentType: "text/plain", body: "E".repeat(200_000) });
+  await assert.rejects(() => createThirdPartyJsonRequester(oversized)(baseContext(requestContext({ retries: 0 }).step, {}, huge)), { code: "THIRD_PARTY_HTTP_ERROR" });
+  assert.equal(huge.length, 1);
+  assert.match(huge[0]!, /…（已截断）$/);
+  assert.ok(huge[0]!.length < 900, `excerpt must stay bounded, got ${huge[0]!.length}`);
+});
+
+test("第三方JSON请求：可重试失败与空响应体不产生额外的上游摘要提示", async () => {
+  // A retryable status keeps the established retry wording only; the final throw stays unchanged.
+  const retryable: string[] = []; const busy = transport({ status: 503, contentType: "application/json", body: '{"error":"overloaded"}' });
+  await assert.rejects(() => createThirdPartyJsonRequester(busy)(baseContext(requestContext({ retries: 1, retryDelaySeconds: 0 }).step, {}, retryable)), { code: "THIRD_PARTY_HTTP_ERROR" });
+  assert.equal(retryable.length, 1);
+  assert.match(retryable[0]!, /^第三方接口第1次请求失败：第三方接口返回HTTP 503；0秒后重试第2次请求$/);
+
+  // An empty error body has nothing to report, so no advisory warning is fabricated.
+  const empty: string[] = []; const silent = transport({ status: 404, contentType: "text/plain", body: "" });
+  await assert.rejects(() => createThirdPartyJsonRequester(silent)(baseContext(requestContext({ retries: 0 }).step, {}, empty)), { code: "THIRD_PARTY_HTTP_ERROR" });
+  assert.equal(empty.length, 0);
 });
 
 test("第三方JSON请求：每次重试重发完全相同的请求体与密钥头", async () => {
@@ -394,7 +586,7 @@ test("第三方重试退避：指数增长且不超过单次上限", () => {
 test("第三方重试判定：只有可补偿失败算可重试", () => {
   assert.equal(isRetryableThirdPartyFailure(new HttpError(502, "x", "THIRD_PARTY_REQUEST_FAILED")), true);
   assert.equal(isRetryableThirdPartyFailure(new HttpError(504, "x", "THIRD_PARTY_REQUEST_TIMEOUT")), true);
-  for (const status of [408, 429, 500, 502, 503, 504]) assert.equal(isRetryableThirdPartyFailure(new HttpError(502, "x", "THIRD_PARTY_HTTP_ERROR", { status })), true, `status ${status}`);
+  for (const status of [408, 429, 500, 502, 503, 504, 524]) assert.equal(isRetryableThirdPartyFailure(new HttpError(502, "x", "THIRD_PARTY_HTTP_ERROR", { status })), true, `status ${status}`);
   for (const status of [400, 401, 403, 404, 409, 413, 422, 501]) assert.equal(isRetryableThirdPartyFailure(new HttpError(502, "x", "THIRD_PARTY_HTTP_ERROR", { status })), false, `status ${status}`);
   for (const code of ["INVALID_HTTP_REQUEST_CONFIG", "INVALID_HTTP_REQUEST_INPUT", "HTTP_REQUEST_MEDIA_UNSUPPORTED", "THIRD_PARTY_HOST_NOT_PUBLIC", "THIRD_PARTY_CREDENTIAL_MISSING", "THIRD_PARTY_CREDENTIAL_INVALID", "THIRD_PARTY_RESPONSE_TOO_LARGE", "INVALID_THIRD_PARTY_JSON", "INVALID_THIRD_PARTY_IMAGE"]) assert.equal(isRetryableThirdPartyFailure(new HttpError(400, "x", code)), false, code);
   assert.equal(isRetryableThirdPartyFailure(new Error("plain error")), false);

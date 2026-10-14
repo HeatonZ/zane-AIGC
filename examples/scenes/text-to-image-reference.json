@@ -60,9 +60,15 @@
     "steps": [
       {
         "id": "step_reference_images_condition",
-        "name": "判断是否有参考图",
-        "kind": "control",
-        "inputs": [],
+        "name": "自定义代码 · 判断是否有参考图",
+        "kind": "capability",
+        "inputs": [
+          {
+            "key": "reference_images",
+            "label": "参考图片",
+            "sourceRef": "input.reference_images"
+          }
+        ],
         "outputs": [
           {
             "key": "result",
@@ -71,19 +77,11 @@
           }
         ],
         "promptTemplate": "",
-        "control": {
-          "type": "condition",
-          "match": "all",
-          "rules": [
-            {
-              "id": "reference_images_present",
-              "leftRef": "input.reference_images",
-              "operator": "is_not_empty",
-              "valueSource": "literal",
-              "rightValue": "",
-              "rightRef": ""
-            }
-          ]
+        "capabilityId": "core.code",
+        "capabilityVersion": "1",
+        "capabilityConfig": {
+          "code": "// 判断是否提供了参考图：只做确定性判断，不调用模型或外部服务。\nconst images = Array.isArray(inputs.reference_images) ? inputs.reference_images : [];\nreturn { result: images.length > 0 };",
+          "timeoutMs": 5000
         }
       },
       {
@@ -107,9 +105,18 @@
           }
         ],
         "promptTemplate": "请读取附带的参考图片，反推出一条详细、独立的纯文生图提示词。生成模型不会看到任何参考图片，提示词必须只靠文字完整说明画面。按全景构图→前景/中景/背景→由左到右的顺序描述：主体的准确数量、可辨识外观、大小、位置、朝向和相互关系，以及场景、物品层级、背景、摄影视角、画面裁切、风格、材质、光线和色彩。多张图片时以第一张为主要画面，其他图片只补充同一主体的可见细节，不拼贴互相矛盾的场景。不臆测不可见细节或无法辨认的文字，不新增、删减或美化主体。输出必须是具体画面描述，不写“参考原图”“保持原图”“按图编辑”等依赖图片的指令。仅返回提示词文本，不附加解释，不调用工具，不搜索，不生成或编辑图片。",
-        "runCondition": {
-          "conditionStepId": "step_reference_images_condition",
-          "expectedResult": true
+        "startCondition": {
+          "match": "all",
+          "rules": [
+            {
+              "id": "has_reference_images",
+              "leftRef": "step.step_reference_images_condition.outputs.result",
+              "operator": "equals",
+              "valueSource": "literal",
+              "rightValue": "true",
+              "rightRef": ""
+            }
+          ]
         }
       },
       {
@@ -127,9 +134,18 @@
           }
         ],
         "promptTemplate": "基于用户想法来联想并扩写画面，画面参数： {{input.ratio}}，自然语言描述主体、场景、构图、动作、细节：{{input.thought}}",
-        "runCondition": {
-          "conditionStepId": "step_reference_images_condition",
-          "expectedResult": false
+        "startCondition": {
+          "match": "all",
+          "rules": [
+            {
+              "id": "no_reference_images",
+              "leftRef": "step.step_reference_images_condition.outputs.result",
+              "operator": "equals",
+              "valueSource": "literal",
+              "rightValue": "false",
+              "rightRef": ""
+            }
+          ]
         }
       },
       {

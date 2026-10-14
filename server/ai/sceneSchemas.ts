@@ -6,7 +6,12 @@ import { id, selection, stepInput, values } from "./schemas.js";
 
 // Keep editor metadata and future package fields, while validating known fields.
 // Replacements are whole scene/workflow documents, not ambiguous deep patches.
-const extensible = <S extends z.ZodRawShape>(shape: S) => z.object(shape).catchall(z.json());
+// One shared recursive JSON instance for every extensible value: a fresh z.json() per call site
+// makes zod emit a separate near-identical $defs entry for each one, which inflated the scene
+// tool schema (create_scene/update_scene_draft) to ~18KB each. Reusing one instance keeps the
+// validation semantics identical and collapses those entries into a single $ref.
+const jsonValue = z.json();
+const extensible = <S extends z.ZodRawShape>(shape: S) => z.object(shape).catchall(jsonValue);
 export const resourceId = id.regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
 export const contentRevision = z.string().regex(/^[a-f0-9]{64}$/).describe("get_scene_draft或预设读取返回的内容revision，不是全工作区数字revision");
 export const fieldType = z.enum(["text", "textarea", "number", "boolean", "select", "json", "image", "video", "audio", "image_list", "video_list", "audio_list"]);
@@ -14,7 +19,7 @@ export const mediaRole = z.enum(workflowMediaRoles).describe("仅兼容旧发布
 export const objectArrayItemField = extensible({ key: id, label: z.string().min(1).max(200), type: z.enum(["text", "number", "boolean", "select"]), required: z.boolean(), minimum: z.number().finite().optional().describe("number类型的可选包含下限"), maximum: z.number().finite().optional().describe("number类型的可选包含上限"), placeholder: z.string().optional(), options: z.array(z.string()).max(1000).optional() })
   .refine(field => field.type === "number" || (field.minimum === undefined && field.maximum === undefined), { message: "最小值和最大值只适用于数字字段", path: ["minimum"] })
   .refine(field => field.minimum === undefined || field.maximum === undefined || field.minimum <= field.maximum, { message: "最小值不能大于最大值", path: ["maximum"] });
-export const inputField = extensible({ mediaRole: mediaRole.optional(), key: id, label: z.string().optional(), type: fieldType, required: z.boolean().optional(), minimum: z.number().finite().optional().describe("number类型的可选包含下限"), maximum: z.number().finite().optional().describe("number类型的可选包含上限"), hidden: z.boolean().optional().describe("true时从网页创作/用户输入表单隐藏；字段仍保留在输入契约、草稿与流程执行中。隐藏的必填字段需要有效defaultValue；这是展示设置，不限制HTTP/MCP调用"), placeholder: z.string().optional(), options: z.array(z.string()).max(1000).optional(), optionPresetId: resourceId.optional(), inputMode: z.literal("object_array").optional().describe("将json字段作为可增删的对象数组表单填写；必须同时声明itemFields；数组最多100行"), itemFields: z.array(objectArrayItemField).max(50).optional().describe("对象数组每行字段；支持文本、数字、布尔和带选项的下拉框；key须唯一，必填字段需填写") , defaultValue: z.json().optional().describe("可选默认输入值；类型和select选项必须匹配。发布后作为创作表单预填，用户输入可覆盖；媒体默认值使用授权的固定素材引用") })
+export const inputField = extensible({ mediaRole: mediaRole.optional(), key: id, label: z.string().optional(), type: fieldType, required: z.boolean().optional(), minimum: z.number().finite().optional().describe("number类型的可选包含下限"), maximum: z.number().finite().optional().describe("number类型的可选包含上限"), hidden: z.boolean().optional().describe("true时从网页创作/用户输入表单隐藏；字段仍保留在输入契约、草稿与流程执行中。隐藏的必填字段需要有效defaultValue；这是展示设置，不限制HTTP/MCP调用"), placeholder: z.string().optional(), options: z.array(z.string()).max(1000).optional(), optionPresetId: resourceId.optional(), inputMode: z.literal("object_array").optional().describe("将json字段作为可增删的对象数组表单填写；必须同时声明itemFields；数组最多100行"), itemFields: z.array(objectArrayItemField).max(50).optional().describe("对象数组每行字段；支持文本、数字、布尔和带选项的下拉框；key须唯一，必填字段需填写") , defaultValue: jsonValue.optional().describe("可选默认输入值；类型和select选项必须匹配。发布后作为创作表单预填，用户输入可覆盖；媒体默认值使用授权的固定素材引用") })
   .refine(field => validWorkflowMediaRole(field.mediaRole, field.type), { message: "素材用途与场景输入类型不兼容", path: ["mediaRole"] })
   .refine(field => field.type === "number" || (field.minimum === undefined && field.maximum === undefined), { message: "最小值和最大值只适用于数字字段", path: ["minimum"] })
   .refine(field => field.minimum === undefined || field.maximum === undefined || field.minimum <= field.maximum, { message: "最小值不能大于最大值", path: ["maximum"] })

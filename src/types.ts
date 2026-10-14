@@ -3,7 +3,7 @@ export type { WorkflowMediaRole };
 
 export type SceneId = string;
 
-export type PageId = "home" | "history" | "runs" | "assets" | "connections" | "studio" | "flows" | "users" | "feedback";
+export type PageId = "home" | "history" | "tasks" | "runs" | "assets" | "connections" | "studio" | "flows" | "users" | "feedback";
 
 export interface SceneModule {
   id: SceneId;
@@ -488,5 +488,22 @@ export interface TaskConcurrencySettings {
   scope: "system";
   applyPolicy: "immediate_without_interrupting_active_runs";
   worker: { active: number; queued: number; preparing: number };
+  nextAction: "update_with_revision";
+}
+
+/** Administrator-only controlled local export root; never cached in localStorage.
+ *  空 root 表示能力关闭。只有 core.code 步骤可选使用，且写盘由宿主在沙箱之外完成。 */
+export interface LocalExportSettings {
+  format: "zane-studio.local-export/v1";
+  id: "local-export";
+  revision: number;
+  root: string;
+  source: "environment" | "saved" | "unset";
+  configured: boolean;
+  enabled: boolean;
+  scope: "system";
+  appliesTo: "core.code.localExport";
+  conflictPolicies: string[];
+  limits: { files: number; fileBytes: number; totalBytes: number };
   nextAction: "update_with_revision";
 }

@@ -12,6 +12,7 @@ import Sidebar from "./components/Sidebar";
 import Connections from "./features/Connections";
 import Dashboard from "./features/Dashboard";
 import History from "./features/History";
+import Tasks from "./features/Tasks";
 import WorkflowRuns from "./features/WorkflowRuns";
 import Library from "./features/Library";
 import Studio from "./features/Studio";
@@ -35,6 +36,7 @@ const navLabels: Record<PageId, string> = {
   users: "用户管理",
   feedback: "系统反馈",
   history: "任务草稿",
+  tasks: "任务",
   runs: "运行记录",
   assets: "素材库",
   connections: "集成连接",
@@ -636,6 +638,7 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
             {page === "studio" && activeStudioPublication && <Studio sceneId={sceneId} scene={activeStudioPublication.scene} workflow={activeStudioPublication.workflow} publication={activeStudioPublication} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} onStartRun={startWorkflowRun} onCancelRun={cancelWorkflowRun} onRerunRun={rerunWorkflowRun} />}
             {page === "studio" && !activeStudioPublication && <section className="scene-unpublished"><span className="scene-unpublished-icon"><Rocket size={17} /></span><div><h2>这个场景还没有发布版本</h2><p>暂存配置不会用于创作。完成流程配置并发布后，场景才可使用。</p></div><button className="button button-dark" onClick={() => setPage("flows")}>前往流程配置</button></section>}
             {page === "history" && <History drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} onSetFavorite={changeDraftFavorite} favoriteBusy={draftFavoriteBusy} favoriteUnknown={draftFavoriteUnknown} onReconcileFavorites={reconcileDraftFavorites} />}
+            {page === "tasks" && <Tasks onOpenRun={runId => { selectRun(runId); setPage("runs"); }} />}
             {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} selectedRunId={selectedRunId} onSelectRun={selectRun} onCancelRun={cancelWorkflowRun} onResumeRun={resumeWorkflowRun} onRerunRun={rerunWorkflowRun} activeRunId={selectedRunId !== null && activeRunIds.includes(selectedRunId) ? selectedRunId : null} submissionPending={selectedRunId !== null && pendingSubmissionIds.includes(selectedRunId)} runStartError={selectedRunId ? runStartErrors[selectedRunId] : undefined} />}
             {page === "assets" && <Library drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} onOpenRun={runId => { selectRun(runId); setPage("runs"); }} />}
             {page === "users" && <UserManagement scenes={scenes} />}

@@ -10,7 +10,7 @@ import type { AssetRecord, AssetReference, AssetSource, AssetKind, AssetCategory
 import { asRecord, normalizeMediaList } from "../domain/workflowValues.js";
 import { isRuntimeMediaValue, mediaKindFromWorkflowType, runtimeMediaItemValue } from "../runtimeValue.js";
 import { assetReferenceFromMediaUrl } from "../domain/assetMediaReference.js";
-import { isRunId, runArtifactPaths } from "../artifacts/runArtifacts.js";
+import { isRunId, mediaContentTypeExtension, runArtifactPaths } from "../artifacts/runArtifacts.js";
 import { SqliteStore } from "../storage/sqliteStore.js";
 import { HttpError } from "../errors.js";
 import { assetMetadataSchema, assetKindSchema, assetSourceSchema, updateAssetSchema } from "../domain/assetLibraryContracts.js";
@@ -138,7 +138,13 @@ export class AssetService {
       const match = /^data:([^;]+);base64,([a-z0-9+/=\s]+)$/i.exec(source);
       if (!match) throw new HttpError(400, "媒体 data URL 无效");
       stream = Readable.from(Buffer.from(match[2].replace(/\s/g, ""), "base64"));
-      originalName = ({ "image/png": "image.png", "image/jpeg": "image.jpg", "audio/wav": "voice.wav", "video/mp4": "video.mp4" } as Record<string,string>)[match[1]] ?? kind + ".bin";
+      // Reuse the shared media type → extension map so a WebP (or GIF/BMP/AVIF) data URL
+      // keeps its real extension. The archived file name is what later MIME inference reads,
+      // so falling back to `.bin` here would make executors describe the bytes as JPEG.
+      const extension = mediaContentTypeExtension(match[1]);
+      originalName = extension === ".bin"
+        ? kind + ".bin"
+        : (kind === "image" ? "image" : kind === "video" ? "video" : "voice") + extension;
     } else {
       if (!(await stat(source).catch(() => undefined))?.isFile()) throw new HttpError(400, "无法读取来源媒体文件");
       stream = createReadStream(source);

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, writeFile, mkdir, unlink, readdir } from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
 import { productionHarness } from "../testing/productionSupport.js";
 import { id, submission, workflow } from "../testing/testSupport.js";
 import { externalizeRuntimeValue, normalizeWorkflowMediaInputs } from "../domain/workflowValues.js";
@@ -123,4 +124,23 @@ test("旧401失败运行保留原URL快照；显式续跑解析固定素材且�
   assert.deepEqual(h.store.getRun(h.settings.projectDirectory, sourceId), source);
   await assert.rejects(h.service.submit(request), error => error instanceof HttpError && error.status === 409);
   assert.equal(imageCalls, 1);
+});
+
+test("WebP 等图像 data URL 归档保留真实扩展名，执行器不再把它当 JPEG", async t => {
+  const h = await productionHarness(t);
+  const webp = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#3366cc" } }).webp().toBuffer();
+  const dataUrl = "data:image/webp;base64," + webp.toString("base64");
+  // 归档文件名是后续 MIME 推断的唯一依据：退化成 .bin 就会让执行器把 WebP 当 JPEG。
+  const blob = await h.assets.materialize(h.settings, dataUrl, "image");
+  assert.equal(blob.originalName, "image.webp");
+  assert.match(blob.filename, /\.webp$/);
+
+  const gif = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#33cc66" } }).gif().toBuffer();
+  const gifBlob = await h.assets.materialize(h.settings, "data:image/gif;base64," + gif.toString("base64"), "image");
+  assert.equal(gifBlob.originalName, "image.gif");
+
+  // 音频仍按 kind 命名，不能被图像前缀影响。
+  const wav = Buffer.from("RIFF....WAVEfmt ");
+  const wavBlob = await h.assets.materialize(h.settings, "data:audio/wav;base64," + wav.toString("base64"), "audio");
+  assert.equal(wavBlob.originalName, "voice.wav");
 });

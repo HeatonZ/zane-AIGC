@@ -6,9 +6,12 @@ import vm from "node:vm";
 import { HttpError } from "../errors.js";
 import type { JsonValue, RunStep } from "../domain/types.js";
 import { asRecord, resolveStepInputs } from "../domain/workflowValues.js";
+import { parseLocalExportConfig, parseLocalFileAccessConfig, pickExportPlanSource, type LocalFileAccessConfig, type LocalExportConfig } from "../domain/localExport.js";
+import { executeLocalExport } from "./localExport.js";
+import { listLocalDirectory, readLocalText, statLocalPath } from "./localFileAccess.js";
 import { createRuntimeMediaValue, isRuntimeMediaValue, type RuntimeMediaItem } from "../runtimeValue.js";
 import type { StepExecutionContext } from "./workflowExecutor.js";
-import type { CodeSandboxJob, CodeSandboxReply } from "./codeSandboxWorker.js";
+import type { CodeSandboxAttach, CodeSandboxJob, CodeSandboxReply } from "./codeSandboxWorker.js";
 
 /** Machine contract for the core.code step; mirrored into the AI OpenAPI as x-code-step. */
 export const CODE_STEP_CONTRACT = {
@@ -17,15 +20,36 @@ export const CODE_STEP_CONTRACT = {
   language: "javascript",
   entry: "async function body evaluated once; return an object keyed by the declared output ports",
   sandbox: {
-    isolation: "worker_thread + node:vm; one single-use worker per execution",
-    sharedGlobals: "none; only ECMAScript built-ins and console",
-    nodeBuiltins: false, network: false, filesystem: false, process: false, environment: false, timers: false, webAssembly: "engine-level only; bounded by timeout and memory",
+    isolation: "worker_thread + node:vm over a contextified null-prototype global; one single-use worker per execution; string code generation disabled inside the context",
+    sharedGlobals: "none; only ECMAScript built-ins and a console defined inside the sandbox realm",
+    nodeBuiltins: false, network: false, filesystem: false, process: false, environment: false, timers: false, webAssembly: "engine-level only; bounded by timeout and memory", mediatedFileAccess: "filesystem:false stays literal: the sandbox holds no fs capability. Optional read-only directory listing and metadata are host-mediated data requests (see fileAccess), and optional local export is a host-side write of a plan; neither hands a host object to user code",
   },
   code: { maximumBytes: 65536, inputAccess: "inputs keyed by the declared input port keys; media inputs enter as a read-only [{filename}] projection with no path, URL or bytes", inputMaximumBytes: 4194304, output: "must return an object containing every declared output port with the declared type; extra keys are rejected", mediaOutputs: { ports: "image_list/video_list/audio_list", value: "ordered array of file names (strings) or {filename} objects; duplicates are allowed and order is preserved", scope: "only media already present on this step's declared input ports, resolved to the same archived items of the current run; the sandbox never creates, moves, renames or exposes media bytes, paths or URLs", mismatch: "an unknown file name or a media kind that does not match the declared port is INVALID_CODE_OUTPUT" } },
   limits: { timeoutMs: { default: 5000, minimum: 200, maximum: 60000 }, memoryMb: 128, outputMaximumBytes: 1048576, logs: { maximumLines: 200, maximumBytes: 32768 } },
   determinism: "pure data transformation expected; Date/Math.random are available but recorded results stay the authority",
-  errors: ["INVALID_CODE_CONFIG", "INVALID_CODE_INPUT", "INVALID_CODE_OUTPUT", "CODE_SYNTAX_ERROR", "CODE_TIMEOUT", "CODE_OUTPUT_NOT_SERIALIZABLE", "CODE_OUTPUT_TOO_LARGE", "CODE_EXECUTION_FAILED"],
-  sideEffects: { prepare: "none", publish: "none", execute: "local CPU and memory only; no external service, no provider cost", automaticRetries: false, cancellable: true },
+  localExport: {
+    enable: "capabilityConfig.localExport = { enabled: true, planKey?: string, onConflict?: overwrite|skip|fail }",
+    mediated: "the sandbox still has no filesystem access: user code returns a { items: [{ source, target }] } plan, and the host performs every write after the step",
+    root: "only inside the admin-configured local-export setting root; unset root makes the step fail with LOCAL_EXPORT_DISABLED",
+    containment: "each target is resolved and must stay inside the root, otherwise LOCAL_EXPORT_OUTSIDE_ROOT; .. escapes are rejected, not normalized away",
+    target: "absolute path or path relative to the root; must end with a supported media extension",
+    source: "a media file name that exists on this step's declared input ports; bytes come from this run's or an authorized source run's archive, and for media generated earlier in the same run that is not archived yet (archiving happens at the end of the workflow) the host fetches it from the configured comfyuiBaseUrl. Arbitrary external URLs and other unarchived media still fail",
+    onConflict: "overwrite (default, atomic temp file + rename), skip (keep existing bytes) or fail",
+    output: "when the step declares a local_export output port, the written/skipped items are recorded there",
+  },
+  fileAccess: {
+    enable: "capabilityConfig.fileAccess = { enabled: true }",
+    mediated: "the sandbox still has no filesystem access of its own: it gets a read-only zane.fs facade whose list/stat/readText calls are answered by the host outside the sandbox; no host function object ever enters the sandbox realm",
+    root: "the same admin-configured local-export setting root; unset root makes a file call fail with FILE_ACCESS_DISABLED",
+    containment: "each requested path is resolved and must stay inside the root, otherwise FILE_OUTSIDE_ROOT; .. escapes are rejected, not normalized away",
+    symlinks: "an existing path whose real path leaves the root is rejected, so symlinks cannot read outside the authorized directory",
+    api: "globalThis.zane.fs.list(path) -> [{ name, path, isFile, isDir, isSymbolicLink, size }] sorted by name; zane.fs.stat(path) -> { path, exists, isFile, isDir, isSymbolicLink, size } with exists:false instead of throwing when missing; zane.fs.readText(path) -> the file's UTF-8 text (for picking one line out of an action/prompt list), FILE_NOT_FOUND when missing and FILE_TOO_LARGE above the byte cap",
+    returnedPaths: "paths returned by list/stat are absolute paths inside the root, so existing files there can be handed to downstream steps (for example a ComfyUI upload); they never expose anything outside the root",
+    readOnly: "no write, create, delete or rename; directory listings, metadata, and explicitly requested text via readText (never executed or parsed, never written back)",
+    limits: "at most 500 directory entries per list call, otherwise FILE_LIST_TOO_LARGE; at most 1 MB per readText call, otherwise FILE_TOO_LARGE; paths at most 1024 characters",
+  },
+  errors: ["INVALID_CODE_CONFIG", "INVALID_CODE_INPUT", "INVALID_CODE_OUTPUT", "CODE_SYNTAX_ERROR", "CODE_TIMEOUT", "CODE_OUTPUT_NOT_SERIALIZABLE", "CODE_OUTPUT_TOO_LARGE", "CODE_EXECUTION_FAILED", "LOCAL_EXPORT_DISABLED", "LOCAL_EXPORT_OUTSIDE_ROOT", "LOCAL_EXPORT_TOO_LARGE", "FILE_ACCESS_DISABLED", "FILE_OUTSIDE_ROOT", "FILE_NOT_FOUND", "FILE_LIST_TOO_LARGE", "FILE_TOO_LARGE", "FILE_ACCESS_FAILED"],
+  sideEffects: { prepare: "none", publish: "none", execute: "local CPU and memory only; no external service, no provider cost; with localExport enabled the host also copies declared input media into the admin-authorized root directory, and with fileAccess enabled it reads directory listings, metadata and explicitly requested text inside that same root", automaticRetries: false, cancellable: true },
 } as const;
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -83,6 +107,15 @@ export function validateCodeStep(step: RunStep) {
   }
   try { new vm.Script(wrapCode(code, "{}"), { filename: "core.code" }); }
   catch (error) { invalidConfig("代码语法错误：" + (error instanceof Error ? error.message : String(error))); }
+  // 本地导出配置在授权/发布前就校验完，避免运行到一半才发现端口或策略写错。
+  const exportConfig = parseLocalExportConfig(step.capabilityConfig);
+  if (exportConfig.enabled) {
+    pickExportPlanSource(step, exportConfig.planKey);
+    const output = (step.outputs ?? []).find((item) => item.key === "local_export");
+    if (output && output.type !== "json") invalidConfig("local_export 输出端口必须是 json 类型");
+  }
+  // 本地文件读取同样在预检阶段校验配置形状；根目录是否配置属于运行期授权，提交执行时才判定。
+  parseLocalFileAccessConfig(step.capabilityConfig);
 }
 
 /** Media lists enter the sandbox as a read-only JSON projection: only count, order and
@@ -157,7 +190,10 @@ function portTypeError(type: string, value: unknown) {
   return undefined;
 }
 
-function validateCodeOutputs(step: RunStep, value: unknown, media: Map<string, RuntimeMediaItem>): Record<string, JsonValue> {
+/** 宿主写入的输出端口：本地导出报告由宿主在沙箱之外填写，因此用户代码不必（也不应）返回它。 */
+const LOCAL_EXPORT_REPORT_KEY = "local_export";
+
+function validateCodeOutputs(step: RunStep, value: unknown, media: Map<string, RuntimeMediaItem>, hostFilled: ReadonlySet<string> = new Set()): Record<string, JsonValue> {
   const record = asRecord(value);
   if (!record) throw new HttpError(400, "自定义代码必须返回包含各输出端口的对象", "INVALID_CODE_OUTPUT");
   const outputs = step.outputs ?? [];
@@ -165,6 +201,8 @@ function validateCodeOutputs(step: RunStep, value: unknown, media: Map<string, R
   if (extra.length) throw new HttpError(400, "自定义代码返回了未声明的输出：" + extra.join("、") + "；只返回已声明的输出端口", "INVALID_CODE_OUTPUT");
   const result: Record<string, JsonValue> = {};
   for (const output of outputs) {
+    // 宿主负责填写的端口由调用方补齐；用户代码省略它不算缺输出。
+    if (hostFilled.has(output.key)) continue;
     if (!Object.prototype.hasOwnProperty.call(record, output.key)) throw new HttpError(400, "自定义代码缺少输出：" + output.key, "INVALID_CODE_OUTPUT");
     const kind = mediaPortKind(output.type);
     if (kind) {
@@ -226,6 +264,8 @@ async function acquireSandboxSlot(signal: AbortSignal) {
 export async function executeCodeStep(context: StepExecutionContext): Promise<Record<string, JsonValue>> {
   const step = context.step;
   validateCodeStep(step);
+  const exportConfig = parseLocalExportConfig(step.capabilityConfig);
+  const fileConfig = parseLocalFileAccessConfig(step.capabilityConfig);
   const timeoutMs = codeTimeoutMs(step);
   const resolved = resolveStepInputs(step, context.inputValues, context.stepValues) as Record<string, JsonValue>;
   const inputMedia = new Map<string, RuntimeMediaItem>();
@@ -235,41 +275,142 @@ export async function executeCodeStep(context: StepExecutionContext): Promise<Re
   if (Buffer.byteLength(inputsLiteral, "utf8") > MAX_INPUT_BYTES) throw new HttpError(400, "代码输入序列化后超过 " + MAX_INPUT_BYTES / 1024 / 1024 + " MB，请先用基础步骤裁剪数据", "INVALID_CODE_INPUT");
   if (context.signal.aborted) throw context.signal.reason ?? new Error("已取消");
   const releaseSlot = await acquireSandboxSlot(context.signal);
+  // local_export 由宿主填写：用户代码只负责返回计划，不需要（也不能）伪造导出报告。
+  const hostFilled = new Set(exportConfig.enabled && (step.outputs ?? []).some((output) => output.key === LOCAL_EXPORT_REPORT_KEY) ? [LOCAL_EXPORT_REPORT_KEY] : []);
+  let outputs: Record<string, JsonValue>;
   try {
-    return await runCodeStepInSandbox(context, step, inputsLiteral, inputMedia, timeoutMs);
+    outputs = await runCodeStepInSandbox(context, step, inputsLiteral, inputMedia, timeoutMs, hostFilled, fileConfig);
   } finally {
     releaseSlot();
   }
+  // 本地导出在沙箱之外由宿主完成：用户代码只提交 {source,target} 计划，拿不到写权限。
+  // 计划无效或目标越界都会让整个步骤失败，绝不静默跳过。
+  if (exportConfig.enabled) await runLocalExport(context, step, exportConfig, outputs, inputMedia);
+  return outputs;
 }
 
-async function runCodeStepInSandbox(context: StepExecutionContext, step: StepExecutionContext["step"], inputsLiteral: string, inputMedia: Map<string, RuntimeMediaItem>, timeoutMs: number): Promise<Record<string, JsonValue>> {
+/** 宿主侧落盘：计划来自用户代码但写入在这里完成，且只写入管理员配置的根目录内部。
+ *  导出结果写入输出端口 `local_export`（若已声明）供运行记录核对；不改变用户声明的媒体输出。 */
+async function runLocalExport(context: StepExecutionContext, step: RunStep, config: LocalExportConfig, outputs: Record<string, JsonValue>, inputMedia: Map<string, RuntimeMediaItem>) {
+  const planKey = pickExportPlanSource(step, config.planKey);
+  const result = await executeLocalExport({
+    plan: outputs[planKey], media: inputMedia, root: context.localExportRoot ?? "", onConflict: config.onConflict,
+    projectDirectory: context.settings.projectDirectory, runId: context.runId,
+    allowedRunIds: context.localExportRunIds, comfyuiBaseUrl: context.settings.comfyuiBaseUrl, signal: context.signal,
+  });
+  if ((step.outputs ?? []).some((output) => output.key === "local_export")) outputs.local_export = result as unknown as JsonValue;
+  await context.warn?.("本地导出已写入 " + result.written + " 个文件（跳过 " + result.skipped + " 个）到受控根目录");
+}
+
+/** Atomics.waitAsync 是 ES2024 才进 lib 的 API，而本项目 lib 仍是 ES2022（Node 运行时早已支持）。
+ *  这里只按实际用法窄化声明，避免为了一个调用把整个工程的 lib 目标抬高。 */
+interface AtomicsWaitAsync {
+  waitAsync(typedArray: Int32Array, index: number, value: number, timeout?: number): { async: boolean; value: Promise<string> };
+}
+const atomics = Atomics as unknown as AtomicsWaitAsync;
+
+/** 宿主侧文件通道：应答沙箱发出的 list/stat 数据请求，真正的文件系统调用只发生在宿主。
+ *
+ *  沙箱用 Atomics.wait 阻塞等待，这里用 Atomics.waitAsync 在自己的线程上应答；两侧只交换 JSON
+ *  文本，因此没有任何宿主函数对象跨进沙箱 realm（见 codeSandboxWorker 的逃逸不变量）。
+ *  停止服务不会挂死沙箱：等待有分片上限，且 worker 在步骤结束/取消时会被 terminate。 */
+function serveFileBridge(control: SharedArrayBuffer, data: SharedArrayBuffer, root: string, signal: AbortSignal) {
+  const ctrl = new Int32Array(control);
+  const bytes = new Uint8Array(data);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let stopped = false;
+  const stop = () => { stopped = true; };
+  signal.addEventListener("abort", stop, { once: true });
+  void (async () => {
+    while (!stopped) {
+      let current = Atomics.load(ctrl, 0);
+      while (current !== 1 && !stopped) {
+        const outcome = atomics.waitAsync(ctrl, 0, current, 200);
+        if (outcome.async) await outcome.value;
+        current = Atomics.load(ctrl, 0);
+      }
+      if (stopped) break;
+      const length = Atomics.load(ctrl, 1);
+      let payload: string;
+      let state: number;
+      try {
+        const request = JSON.parse(decoder.decode(bytes.subarray(0, Math.max(0, Math.min(length, bytes.length))))) as { op?: unknown; path?: unknown };
+        const op = request?.op;
+        if (op !== "list" && op !== "stat" && op !== "readText") throw new HttpError(400, "不支持的文件访问操作：" + String(op), "FILE_ACCESS_FAILED");
+        const value = op === "list" ? await listLocalDirectory(root, request.path)
+          : op === "stat" ? await statLocalPath(root, request.path)
+            : await readLocalText(root, request.path);
+        payload = JSON.stringify({ ok: true, value });
+        state = 2;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const code = error instanceof HttpError ? error.code : "FILE_ACCESS_FAILED";
+        payload = JSON.stringify({ ok: false, error: message, code });
+        state = 3;
+      }
+      const encoded = encoder.encode(payload);
+      if (encoded.length > bytes.length) {
+        const fallback = encoder.encode(JSON.stringify({ ok: false, error: "文件访问结果超过单次 " + Math.floor(bytes.length / 1024) + " KB 上限，请缩小到更具体的子目录", code: "FILE_ACCESS_FAILED" }));
+        bytes.set(fallback, 0);
+        Atomics.store(ctrl, 2, fallback.length);
+        Atomics.store(ctrl, 0, 3);
+      } else {
+        bytes.set(encoded, 0);
+        Atomics.store(ctrl, 2, encoded.length);
+        Atomics.store(ctrl, 0, state);
+      }
+      Atomics.notify(ctrl, 0);
+    }
+  })().catch(() => undefined);
+  return () => signal.removeEventListener("abort", stop);
+}
+
+async function runCodeStepInSandbox(context: StepExecutionContext, step: StepExecutionContext["step"], inputsLiteral: string, inputMedia: Map<string, RuntimeMediaItem>, timeoutMs: number, hostFilled: ReadonlySet<string>, fileConfig: LocalFileAccessConfig): Promise<Record<string, JsonValue>> {
   let worker: Worker;
   try {
-    worker = createCodeSandboxWorker({ source: wrapCode(String(asRecord(step.capabilityConfig)?.code ?? ""), inputsLiteral), timeoutMs, maxLogLines: MAX_LOG_LINES, maxLogBytes: MAX_LOG_BYTES, maxOutputBytes: MAX_OUTPUT_BYTES });
+    worker = createCodeSandboxWorker({ source: wrapCode(String(asRecord(step.capabilityConfig)?.code ?? ""), inputsLiteral), timeoutMs, maxLogLines: MAX_LOG_LINES, maxLogBytes: MAX_LOG_BYTES, maxOutputBytes: MAX_OUTPUT_BYTES, ...(fileConfig.enabled ? { fileAccess: true } : {}) });
   } catch (error) {
     throw new HttpError(500, "代码沙箱启动失败：" + (error instanceof Error ? error.message : String(error)), "CODE_EXECUTION_FAILED");
   }
   let settled = false;
   let failure: unknown;
   let timer: NodeJS.Timeout | undefined;
+  let stopBridge: (() => void) | undefined;
   let settleFailure: (error: unknown) => void = () => {};
   const onAbort = () => settleFailure(context.signal.reason ?? new Error("运行已取消"));
   context.signal.addEventListener("abort", onAbort, { once: true });
-  const reply = await new Promise<CodeSandboxReply>((resolve) => {
-    settleFailure = (error: unknown) => { if (settled) return; settled = true; failure = error; resolve({ ok: false, error: "", code: "", logs: [] }); };
+  const onMessage = (message: CodeSandboxAttach | CodeSandboxReply) => {
+    // 沙箱先建立文件通道（它自己创建 SAB，宿主只拿引用），随后才是执行结果。
+    if ((message as CodeSandboxAttach).kind === "attach") {
+      const attach = message as CodeSandboxAttach;
+      if (!stopBridge) stopBridge = serveFileBridge(attach.control, attach.data, context.localExportRoot ?? "", context.signal);
+      return;
+    }
+    if (settled) return;
+    settled = true;
+    resolve(message as CodeSandboxReply);
+  };
+  let resolve: (reply: CodeSandboxReply) => void = () => {};
+  const reply = await new Promise<CodeSandboxReply>((settle) => {
+    resolve = settle;
+    settleFailure = (error: unknown) => { if (settled) return; settled = true; failure = error; settle({ kind: "done", ok: false, error: "", code: "", logs: [] }); };
     timer = setTimeout(() => settleFailure(new HttpError(504, "代码执行超过 " + timeoutMs + " 毫秒已被强制终止", "CODE_TIMEOUT")), timeoutMs + WORKER_SLACK_MS);
-    worker.once("message", (message) => { if (settled) return; settled = true; resolve(message as CodeSandboxReply); });
+    worker.on("message", onMessage as (value: unknown) => void);
     worker.once("error", (error) => settleFailure(new HttpError(500, "代码沙箱进程异常：" + (error instanceof Error ? error.message : String(error)), "CODE_EXECUTION_FAILED")));
     worker.once("exit", (exitCode) => settleFailure(new HttpError(500, exitCode === 0 ? "自定义代码没有返回结果：代码在等待一个永远不会完成的 Promise；沙箱内没有定时器和外部事件可以唤醒它" : "代码沙箱异常退出（退出码 " + String(exitCode) + "），可能超出 " + MEMORY_LIMIT_MB + "MB 内存限制", "CODE_EXECUTION_FAILED")));
   }).finally(() => {
     if (timer) clearTimeout(timer);
+    stopBridge?.();
+    worker.off("message", onMessage as (value: unknown) => void);
     context.signal.removeEventListener("abort", onAbort);
   });
   await worker.terminate().catch(() => undefined);
   if (failure) throw failure;
-  if (reply.ok) return validateCodeOutputs(step, reply.value, inputMedia);
+  if (reply.ok) return validateCodeOutputs(step, reply.value, inputMedia, hostFilled);
   const trail = reply.logs?.length ? "；代码日志尾部：" + reply.logs.slice(-5).join(" | ") : "";
   if (reply.code === "CODE_TIMEOUT") throw new HttpError(504, reply.error + trail, "CODE_TIMEOUT");
   if (reply.code === "CODE_OUTPUT_NOT_SERIALIZABLE" || reply.code === "CODE_OUTPUT_TOO_LARGE") throw new HttpError(400, reply.error + trail, "INVALID_CODE_OUTPUT");
+  if (reply.code === "FILE_ACCESS_DISABLED" || reply.code === "FILE_OUTSIDE_ROOT" || reply.code === "FILE_NOT_FOUND" || reply.code === "FILE_LIST_TOO_LARGE" || reply.code === "FILE_TOO_LARGE") throw new HttpError(400, reply.error + trail, reply.code);
   throw new HttpError(500, "自定义代码执行失败：" + reply.error + trail, "CODE_EXECUTION_FAILED");
 }

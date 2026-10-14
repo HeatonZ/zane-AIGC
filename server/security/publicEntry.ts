@@ -37,8 +37,16 @@ export function createPublicUserApp(sharedApp: Express) {
   publicApp.use(sharedApp);
   return publicApp;
 }
-export function validatePublicListener(privateHost: string, privatePort: number, publicPort: number | undefined) {
+/**
+ * Fail closed by default: publishing the management ingress while the user-only entry is
+ * enabled requires an explicit `ZANE_ALLOW_LAN_INGRESS=true` opt-in. Without it the original
+ * rule stands (loopback management host only), so a stale config can never silently widen
+ * exposure. The opt-in never changes path/method allowlists or role gating — a LAN-reachable
+ * management port still serves the full management surface and must be firewalled accordingly.
+ */
+export function validatePublicListener(privateHost: string, privatePort: number, publicPort: number | undefined, allowLanIngress = false) {
   if (publicPort === undefined) return;
-  if (!["127.0.0.1", "::1", "localhost"].includes(privateHost)) throw new Error("用户专用入口开启时，API_HOST 必须为回环地址；只能公开用户入口，不能同时公开管理端口");
+  const loopbackHost = ["127.0.0.1", "::1", "localhost"].includes(privateHost);
+  if (!loopbackHost && !allowLanIngress) throw new Error("用户专用入口开启时，API_HOST 必须为回环地址；同时公开管理端口需要显式设置 ZANE_ALLOW_LAN_INGRESS=true");
   if (!Number.isInteger(publicPort) || publicPort < 0 || publicPort > 65535 || (publicPort !== 0 && publicPort === privatePort)) throw new Error("ZANE_PUBLIC_USER_PORT 必须为不同于 API_PORT 的有效端口（测试可用0）");
 }

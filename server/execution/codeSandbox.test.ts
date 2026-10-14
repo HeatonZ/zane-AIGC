@@ -4,10 +4,11 @@ import { executeCodeStep, validateCodeStep, CODE_STEP_CONTRACT } from "./codeSan
 import type { StepExecutionContext } from "./workflowExecutor.js";
 import type { JsonValue, RunStep } from "../domain/types.js";
 import path from "node:path";
-import { writeFile } from "node:fs/promises";
+import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import sharp from "sharp";
 import { createRuntimeMediaValue, runtimeMediaItems, type RuntimeMediaValue } from "../runtimeValue.js";
-import { harness, id } from "../testing/testSupport.js";
+import { harness, id, temporaryDirectory } from "../testing/testSupport.js";
 import codeStepFactory from "../capabilities/packages/codeStep.js";
 import type { CapabilityPackage, CapabilityRuntime } from "../capabilities/package.js";
 
@@ -37,6 +38,39 @@ test("自定义代码：await 异步、深结构输入和文本保留，空输�
 test("自定义代码：沙箱不暴露进程、Node 模块、网络、定时器和输入原型链", async () => {
   const current = step("return { exposed: [typeof process, typeof Buffer, typeof fetch, typeof require, typeof setTimeout, typeof structuredClone, typeof inputs.constructor, typeof inputs.__proto__].join(\",\") };", [{ key: "exposed", type: "text" }], [{ key: "items", sourceRef: "input.items" }]);
   assert.equal((await executeCodeStep(context(current, { items: [1] }))).exposed, "undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined");
+});
+
+test("自定义代码：无法经原型链/构造函数逃逸到宿主 process（安全回归）", async () => {
+  // 这些探针只读取 `typeof`，即使逃逸成功也不会产生副作用；断言的是「拿不到宿主对象」。
+  // 历史缺陷：沙箱全局是带 Object.prototype 的宿主对象、console 又是宿主函数，
+  // 于是 this.constructor.constructor / console.log.constructor 都能拿到宿主 realm 的
+  // Function，`Function("return process")()` 即得宿主 process，进而
+  // process.binding("spawn_sync") 执行任意命令、process.binding("fs") 读写任意文件。
+  const probes: Array<[string, string]> = [
+    ["this.constructor.constructor", "this.constructor.constructor"],
+    ["console.log.constructor", "console.log.constructor"],
+    ["Object.getPrototypeOf(console.log).constructor", "Object.getPrototypeOf(console.log).constructor"],
+    ["({}).constructor.constructor", "({}).constructor.constructor"],
+    ["[].filter.constructor", "([].filter).constructor"],
+    ["(function(){}).constructor", "(function() {}).constructor"],
+    ["console.log.constructor.constructor", "console.log.constructor.constructor"],
+  ];
+  for (const [label, expression] of probes) {
+    const current = step("try { const F = " + expression + "; return { kind: typeof F(\"return process\")() }; } catch (error) { return { kind: \"blocked\" }; }", [{ key: "kind", type: "text" }]);
+    const reachable = (await executeCodeStep(context(current))).kind;
+    assert.equal(reachable, "blocked", label + " 不应拿到宿主 process，实际为 " + reachable);
+  }
+  // 沙箱内仍必须是一个可用的 ECMAScript 环境：console 与语言内置能力不受加固影响。
+  const usable = step("const values = [3, 1, 2].sort();\nconsole.log(\"still-works\", 42);\nreturn { summary: values.join(\",\") + \"|\" + Math.max(1, 2, 3) + \"|\" + JSON.stringify({ a: [1] }) + \"|\" + /a(b)/.exec(\"ab\")[1] + \"|\" + typeof Date };", [{ key: "summary", type: "text" }]);
+  const result = await executeCodeStep(context(usable));
+  assert.equal(result.summary, "1,2,3|3|{\"a\":[1]}|b|function");
+  // 纵深防御：上下文禁用字符串代码生成，因此 eval/new Function 在沙箱内直接不可用。
+  // 这不是逃逸路径（逃逸已被上面的探针堵住），而是即使有宿主函数对象泄漏也构造不出新函数。
+  // 已核验当前 14 个场景的 9 个 core.code 步骤均未使用 eval/new Function。
+  for (const [label, expression] of [["eval", "eval(\"1+1\")"], ["new Function", "(function () {}).constructor(\"return 1\")()"]] as const) {
+    const attempt = step("try { " + expression + "; return { outcome: \"allowed\" }; } catch (error) { return { outcome: \"blocked\" }; }", [{ key: "outcome", type: "text" }]);
+    assert.equal((await executeCodeStep(context(attempt))).outcome, "blocked", label + " 应被上下文禁用");
+  }
 });
 
 test("自定义代码：抛错、console 日志尾部、不可序列化与超大返回都是明确错误", async () => {
@@ -195,6 +229,104 @@ test("自定义代码：经后台执行完成运行、记录能力身份，无�
   const broken = structuredClone(definition);
   (broken.steps[0] as Record<string, unknown>).capabilityConfig = { code: "return { count: \"x\";", timeoutMs: 5000 };
   await assert.rejects(() => service.submit({ runId: id("code-step-broken"), inputValues: { items: [1] }, workflow: broken }), { code: "INVALID_CODE_CONFIG" });
+});
+
+test("自定义代码：开启 fileAccess 后只能经宿主读取受控根目录，返回根内绝对路径", async (t) => {
+  const root = await temporaryDirectory(t);
+  const batch = path.join(root, "11");
+  await mkdir(path.join(batch, "角色"), { recursive: true });
+  for (const name of ["ちびムーン.png", "AZKi.png"]) await writeFile(path.join(batch, "角色", name), "x");
+  await writeFile(path.join(batch, "2.png"), "y");
+  const code = [
+    "const entries = zane.fs.list(inputs.batch + \"/角色\");",
+    "const missing = zane.fs.stat(inputs.batch + \"/不存在\");",
+    "const dir = zane.fs.stat(inputs.batch);",
+    "return { names: entries.map((entry) => entry.name).join(\",\"), sizes: entries.every((entry) => entry.isFile && entry.size === 1), first: entries[0].path, missing: missing.exists, isDir: dir.isDir };",
+  ].join("\n");
+  const current = step(code, [{ key: "names", type: "text" }, { key: "sizes", type: "boolean" }, { key: "first", type: "text" }, { key: "missing", type: "boolean" }, { key: "isDir", type: "boolean" }], [{ key: "batch", sourceRef: "input.batch" }], { fileAccess: { enabled: true } });
+  const base = context(current, { batch });
+  const result = await executeCodeStep({ ...base, localExportRoot: root } as StepExecutionContext);
+  // 目录按名称排序（与平台无关的稳定顺序），并返回根目录内的绝对路径交给下游步骤。
+  assert.equal(result.names, "AZKi.png,ちびムーン.png");
+  assert.equal(result.sizes, true);
+  assert.equal(result.first, path.join(batch, "角色", "AZKi.png"));
+  assert.equal(result.missing, false);
+  assert.equal(result.isDir, true);
+});
+
+test("自定义代码：readText 读取受控根目录内的文本，用于从动作集合里挑一行", async (t) => {
+  const root = await temporaryDirectory(t);
+  const batch = path.join(root, "11");
+  await mkdir(batch, { recursive: true });
+  // 动作集合：多行文本，行尾混用 \n 与 \r\n，并带一个空行。
+  await writeFile(path.join(batch, "动作1.txt"), "第一条动作\n\n第二条动作\r\n第三条动作\n", "utf8");
+  await writeFile(path.join(root, "binary.bin"), "无关内容");
+  const code = [
+    "const text = zane.fs.readText(inputs.batch + \"/动作1.txt\");",
+    "const lines = text.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);",
+    "const picked = lines[1];",
+    "const missing = (() => { try { zane.fs.readText(inputs.batch + \"/不存在.txt\"); return \"no-error\"; } catch (error) { return error.code; } })();",
+    "return { count: lines.length, picked: picked, first: lines[0], missing: missing, isString: typeof text === \"string\" };",
+  ].join("\n");
+  const current = step(code, [{ key: "count", type: "number" }, { key: "picked", type: "text" }, { key: "first", type: "text" }, { key: "missing", type: "text" }, { key: "isString", type: "boolean" }], [{ key: "batch", sourceRef: "input.batch" }], { fileAccess: { enabled: true } });
+  const result = await executeCodeStep({ ...context(current, { batch }), localExportRoot: root } as StepExecutionContext);
+  assert.equal(result.count, 3, "空行被过滤后应剩 3 条动作");
+  assert.equal(result.first, "第一条动作");
+  assert.equal(result.picked, "第二条动作", "\r\n 行尾也要能被正确切分");
+  assert.equal(result.isString, true);
+  assert.equal(result.missing, "FILE_NOT_FOUND");
+});
+
+test("自定义代码：readText 越界、非文件与超过大小上限都明确失败", async (t) => {
+  const root = await temporaryDirectory(t);
+  await mkdir(path.join(root, "11"), { recursive: true });
+  await writeFile(path.join(root, "11", "big.txt"), "x".repeat(1024 * 1024 + 1));
+  const base = (current: RunStep) => ({ ...context(current), localExportRoot: root } as StepExecutionContext);
+  const codeOf = (error: unknown) => (error as { code?: string }).code;
+  const read = (expression: string) => step("const value = zane.fs.readText(" + expression + ");\nreturn { value: String(value).length };", [{ key: "value", type: "text" }], [], { fileAccess: { enabled: true } });
+
+  // .. 逃逸与根外绝对路径都必须拒绝，读文本不放宽既有边界。
+  await assert.rejects(() => executeCodeStep(base(read("\"../outside.txt\""))), (error) => codeOf(error) === "FILE_OUTSIDE_ROOT");
+  await assert.rejects(() => executeCodeStep(base(read(JSON.stringify(path.join(os.tmpdir(), "outside.txt"))))), (error) => codeOf(error) === "FILE_OUTSIDE_ROOT");
+  // 目录不是文件：报错信息必须点明原因（FILE_ACCESS_FAILED 与既有 list 行为一致，按通用执行失败暴露）。
+  await assert.rejects(() => executeCodeStep(base(read("\"11\""))), (error) => /不是文件/.test(String((error as Error).message)));
+  // 超过 1MB 上限：明确失败，而不是把大文件读进内存。
+  await assert.rejects(() => executeCodeStep(base(read("\"11/big.txt\""))), (error) => codeOf(error) === "FILE_TOO_LARGE");
+});
+
+test("自定义代码：文件访问越界、未配置根目录与关闭时无 zane.fs 都明确失败", async (t) => {
+  const root = await temporaryDirectory(t);
+  await writeFile(path.join(root, "kept.png"), "x");
+  const code = (expression: string) => step("const value = " + expression + ";\nreturn { value: JSON.stringify(value) };", [{ key: "value", type: "text" }], [], { fileAccess: { enabled: true } });
+  const base = (current: RunStep) => ({ ...context(current), localExportRoot: root } as StepExecutionContext);
+  const codeOf = (error: unknown) => (error as { code?: string }).code;
+
+  // .. 逃逸必须被拒绝，而不是被归一化到根目录内。
+  for (const escape of ["\"../outside.png\"", "\"..\\\\outside.png\"", "inputs.batch + \"/../../outside.png\""]) {
+    const current = escape.startsWith("inputs") ? step("const value = zane.fs.list(" + escape + ");\nreturn { value: \"read\" };", [{ key: "value", type: "text" }], [{ key: "batch", sourceRef: "input.batch" }], { fileAccess: { enabled: true } }) : code("zane.fs.list(" + escape + ")");
+    await assert.rejects(() => executeCodeStep({ ...base(current), inputValues: { batch: path.join(root, "11") } } as StepExecutionContext), (error) => codeOf(error) === "FILE_OUTSIDE_ROOT", escape);
+  }
+  // 根目录之外的绝对路径同样拒绝。
+  const absolute = code("zane.fs.stat(" + JSON.stringify(path.join(os.tmpdir(), "outside.png")) + ")");
+  await assert.rejects(() => executeCodeStep(base(absolute)), (error) => codeOf(error) === "FILE_OUTSIDE_ROOT");
+
+  // 未配置根目录：整步失败，不退化到无限制读取。
+  const noRoot = code("zane.fs.list(\".\")");
+  await assert.rejects(() => executeCodeStep({ ...context(noRoot) } as StepExecutionContext), (error) => codeOf(error) === "FILE_ACCESS_DISABLED");
+
+  // 未开启 fileAccess：沙箱里根本没有 zane，配置也不会泄露成可用能力。
+  const disabled = step("return { value: [typeof zane, typeof globalThis.zane].join(\",\") };", [{ key: "value", type: "text" }]);
+  assert.equal((await executeCodeStep({ ...context(disabled), localExportRoot: root } as StepExecutionContext)).value, "undefined,undefined");
+});
+
+test("自定义代码：开启 fileAccess 不放宽隔离，宿主对象与进程仍不可达", async () => {
+  const probes = ["this.constructor.constructor", "console.log.constructor", "({}).constructor.constructor", "zane.fs.list.constructor", "Object.getPrototypeOf(zane.fs).constructor"];
+  for (const expression of probes) {
+    const current = step("try { const F = " + expression + "; return { kind: typeof F(\"return process\")() }; } catch { return { kind: \"blocked\" }; }", [{ key: "kind", type: "text" }], [], { fileAccess: { enabled: true } });
+    // 未配置根目录时 zane.fs 的调用会失败，但这里断言的是「拿不到宿主 Function」，与根目录无关。
+    const kind = (await executeCodeStep({ ...context(current), localExportRoot: os.tmpdir() } as StepExecutionContext)).kind;
+    assert.equal(kind, "blocked", expression + " 不应拿到宿主 process");
+  }
 });
 
 test("自定义代码：逐项执行每项一次代码执行并按序聚合输出", async (t) => {

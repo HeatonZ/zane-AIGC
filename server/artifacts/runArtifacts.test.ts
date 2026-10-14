@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { readFile, readdir, stat, writeFile, mkdir, unlink } from "node:fs/promises";
 import path from "node:path";
-import { archiveOutputMedia, prepareRunArtifacts, runArtifactPaths } from "./runArtifacts.js";
+import { archiveOutputMedia, mediaContentTypeExtension, prepareRunArtifacts, runArtifactPaths } from "./runArtifacts.js";
 import { harness, id, workflow, until } from "../testing/testSupport.js";
 import { externalizeRuntimeValue } from "../domain/workflowValues.js";
 import type { JsonValue } from "../domain/types.js";
@@ -162,4 +162,19 @@ test("压缩传输的长度不误判为解压后媒体损坏", async t => {
   const warnings: string[] = [];
   const result = await archiveOutputMedia(media, runId, paths, "http://upstream", new Map(), warnings) as Record<string, JsonValue>;
   assert.deepEqual(warnings, []); assert.equal(await readFile(path.join(paths.directory, String(result.file)), "utf8"), "decompressed media bytes");
+});
+
+test("媒体类型映射覆盖执行器接受的图像格式，WebP 不再退化为 .bin", () => {
+  // 扩展名是后续 MIME 推断的唯一依据：漏掉一种格式，归档文件就会变成 .bin，
+  // 执行器随后把 WebP 字节当成 image/jpeg 描述给模型。
+  assert.equal(mediaContentTypeExtension("image/webp"), ".webp");
+  assert.equal(mediaContentTypeExtension("image/png"), ".png");
+  assert.equal(mediaContentTypeExtension("image/jpeg"), ".jpg");
+  assert.equal(mediaContentTypeExtension("image/gif"), ".gif");
+  assert.equal(mediaContentTypeExtension("image/bmp"), ".bmp");
+  assert.equal(mediaContentTypeExtension("image/avif"), ".avif");
+  assert.equal(mediaContentTypeExtension("image/tiff"), ".tiff");
+  assert.equal(mediaContentTypeExtension("IMAGE/WEBP; charset=binary"), ".webp", "大小写与参数不影响映射");
+  assert.equal(mediaContentTypeExtension("application/octet-stream"), ".bin", "未知类型仍明确回退");
+  assert.equal(mediaContentTypeExtension(null), ".bin");
 });

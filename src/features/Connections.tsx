@@ -1,4 +1,5 @@
 import TaskConcurrencyConfig from "../components/TaskConcurrencyConfig";
+import LocalExportConfig from "../components/LocalExportConfig";
 import { Check, ChevronDown, CircleHelp, ExternalLink, FolderOpen, LoaderCircle, Save, ServerCog, ShieldCheck, Unplug, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { loadConnectionSettings, loadHermesProfiles, saveConnectionSettings } from "../lib/api";
@@ -149,6 +150,8 @@ export default function Connections({ connectors, onRefresh }: ConnectionsProps)
       </form>
 
       <TaskConcurrencyConfig />
+
+      <LocalExportConfig />
 
       <div className="connection-footnote"><Unplug size={15} /><span>Profile 由 Hermes CLI 管理。步骤可以单独指定 Hermes Profile；ComfyUI 仍使用原生 HTTP API。</span><a href="https://docs.comfy.org/" target="_blank" rel="noreferrer" aria-label="ComfyUI 文档"><ExternalLink size={14} /></a></div>
     </div>

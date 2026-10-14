@@ -20,3 +20,12 @@ backups/
 *.log
 *.db
 Python
+
+# tsc emit residue written beside sources. No current tsconfig emits here
+# (tsconfig.json is noEmit, tsconfig.server.json targets dist-server/), but a
+# one-off `tsc -b` with a stale .tsbuildinfo left 37 stale .js files that
+# dirtied every `git status`.
+server/**/*.js
+
+# Scratch output from local audit/verification runs.
+.run-artifacts/

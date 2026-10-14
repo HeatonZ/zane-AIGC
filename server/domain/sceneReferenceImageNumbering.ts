@@ -13,6 +13,7 @@
  * The fix is prompt-side, never a runtime re-labeling: each patch declares 图1、图2 … in upload
  * order and requires every produced unit to name the 图N its visible facts come from.
  */
+import { applyCommerceDesign, COMMERCE_DESIGN_MARKER } from "./sceneCommerceDesign.js";
 import type { RunStep, RunWorkflowDefinition } from "./types.js";
 
 export interface SceneImageNumberingPatch {
@@ -59,13 +60,6 @@ export const COMMERCE_PROMPT_NUMBERING = [
   COMMERCE_MARKER,
   "商品图附件按上传顺序编号为 图1、图2……（附件前的“第 N 张”即 图N）；提示词中引用商品外观时必须写明依据 图N，外观描述只能取自这些图可见的内容。",
 ].join("\n");
-
-/** 第 1 张/后续图片 read like attachment positions, which is what pushed cards 03-09 off the images. */
-const COMMERCE_PLAN_REWRITES: Array<[RegExp, string, string]> = [
-  [/- 第 1 张为主图或首张 hero 图；/, "- 第 1 个方案为主图或首张 hero 图；", "第 1 张 → 第 1 个方案"],
-  [/- 后续图片分别承担/, "- 后续方案分别承担", "后续图片 → 后续方案"],
-  [/- 每张图只表达一个主要目的/, "- 每个方案只表达一个主要目的", "每张图 → 每个方案"],
-];
 
 function hasMarker(prompt: string, marker: string): boolean {
   return prompt.includes(marker);
@@ -119,16 +113,11 @@ export function applyReferenceVideoImageNumbering(workflow: RunWorkflowDefinitio
   return { workflow: changed(workflow, steps, original), changes };
 }
 
+/** The design body replaces this prose wholesale, so only the 图N block and the input label remain here. */
 function patchCommercePlanStep(step: RunStep, changes: string[]): RunStep {
-  let prompt = step.promptTemplate ?? "";
-  for (const [pattern, replacement, note] of COMMERCE_PLAN_REWRITES) {
-    if (!pattern.test(prompt)) continue;
-    prompt = prompt.replace(pattern, replacement);
-    changes.push(`${step.name}：措辞消歧（${note}，指输出方案而非附件）`);
-  }
+  const prompt = step.promptTemplate ?? "";
   let next = step;
-  if (prompt !== (step.promptTemplate ?? "")) next = { ...next, promptTemplate: prompt };
-  if (!hasMarker(prompt, COMMERCE_MARKER)) {
+  if (!hasMarker(prompt, COMMERCE_MARKER) && !prompt.includes(COMMERCE_DESIGN_MARKER)) {
     next = { ...next, promptTemplate: appendBlock(prompt, COMMERCE_PLAN_NUMBERING) };
     changes.push(`${step.name}：系统提示词补充参考图编号（图1、图2……按上传顺序），并要求每个方案写明外观依据 图N`);
   }
@@ -145,16 +134,20 @@ function patchCommercePromptStep(step: RunStep, changes: string[]): RunStep {
   return labelImageInputs(next, COMMERCE_PRODUCT_IMAGE_INPUT_LABEL, "input.", changes);
 }
 
-/** Idempotent, and safe for both commerce scenes: only the two Hermes steps and their labels change. */
+/** Idempotent, and safe for both commerce scenes: only the two Hermes steps and their labels change.
+ * Reference numbering is applied first, then the e-commerce design body replaces the plan prose while
+ * preserving that numbering block verbatim (see sceneCommerceDesign). */
 export function applyCommercePackImageNumbering(workflow: RunWorkflowDefinition): { workflow: RunWorkflowDefinition; changes: string[] } {
   const changes: string[] = [];
   const original = workflow.steps ?? [];
-  const steps = original.map((step) => {
+  const numbered = original.map((step) => {
     if (step.id === COMMERCE_PLAN_STEP_ID) return patchCommercePlanStep(step, changes);
     if (step.id === COMMERCE_PROMPT_STEP_ID) return patchCommercePromptStep(step, changes);
     return step;
   });
-  return { workflow: changed(workflow, steps, original), changes };
+  const designed = applyCommerceDesign(changed(workflow, numbered, original), COMMERCE_PLAN_NUMBERING);
+  changes.push(...designed.changes);
+  return { workflow: designed.workflow, changes };
 }
 
 export const SCENE_REFERENCE_IMAGE_PATCHES: readonly SceneImageNumberingPatch[] = [

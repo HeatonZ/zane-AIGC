@@ -34,6 +34,22 @@ GET /api/v1/runs/{runId}/media-export
 
 读取指定最终/步骤媒体输出的归档ZIP信息；只核对已归档文件，不生成、不下载远程媒体。仅终态，stepId可导出已完成部分，返回incomplete、fileCount、revision和需鉴权downloadUrl。下载必须使用该revision；内容变化409重新读取。清单/媒体按既有get_run_outputs/get_step_result分页查看。
 
+## get_local_export
+
+GET /api/v1/settings/local-export
+
+副作用：read
+
+管理员读取本地导出根目录（固定单例local-export）、revision与容量上限。这是core.code步骤可选落盘（localExport）与可选只读文件访问（fileAccess）共用的唯一授权边界：只有该根目录内部可写、也只有其内部可读；未配置(root为空)时localExport报LOCAL_EXPORT_DISABLED、fileAccess报FILE_ACCESS_DISABLED。两者各自独立开关，开启一个不会获得另一个的权限。沙箱用户代码看不到根路径、也没有任何直接文件权限：写只提交 {source,target} 计划由宿主执行，读只提交相对路径由宿主返回文件名、元数据与显式请求的文本内容。只读，不写文件、不执行。机器契约x-local-export与x-local-file-access。
+
+## update_local_export
+
+PATCH /api/v1/settings/local-export
+
+副作用：write
+
+管理员用当前revision设置本地导出根目录root（必须是绝对路径、不能是盘符根，例如 E:\\AI-outsourcing\\二次元抱枕；空串关闭该能力）。保存前会真实创建并写入探测，不可写直接400。该 root 同时是 core.code localExport 写盘与 fileAccess 读目录/读文本的唯一安全边界：localExport 的任何 target、fileAccess 的任何路径归一化后都必须落在其内部，否则写报 LOCAL_EXPORT_OUTSIDE_ROOT、读报 FILE_OUTSIDE_ROOT；已存在路径经符号链接指向根外同样拒绝。仅改配置，不写业务媒体、不发布、不执行；已发布的步骤配置不变。错误：400 INVALID_LOCAL_EXPORT_REQUEST、401未认证、403 ADMIN_REQUIRED、409 RESOURCE_REVISION_CONFLICT；409或响应丢失先get_local_export按同一固定ID对账，不自动重放。
+
 ## get_own_run_media_export
 
 GET /api/v1/self/runs/{runId}/media-export
@@ -360,7 +376,7 @@ GET /api/v1/ai
 
 副作用：read
 
-同时返回security契约版本、entryMode和登录限流策略；用户专用入口仅接受普通用户，拒绝管理路径/管理员凭证，429遵守Retry-After且不自动重放。首先读取工作台契约版本、当前身份与可用操作入口。管理员包含项目配置和worker管理摘要；普通用户仅就绪/接受状态，不返回项目路径或全局运行数量。不会执行外部生成。正式后台就绪后MCP可保留stdio连接并更新适配子进程；接到目录变化通知后重读此入口核对契约，不能重放写入。
+同时返回security契约版本、entryMode、管理入口监听类别(managementIngress)和登录限流策略；用户专用入口仅接受普通用户，拒绝管理路径/管理员凭证，429遵守Retry-After且不自动重放。managementIngress.listener为loopback/lan/all-interfaces只读发现，lanOptIn表示是否显式开启ZANE_ALLOW_LAN_INGRESS，setupScope恒为loopback；只读字段不允许AI修改监听或限流配置。首先读取工作台契约版本、当前身份与可用操作入口。管理员包含项目配置和worker管理摘要；普通用户仅就绪/接受状态，不返回项目路径或全局运行数量。不会执行外部生成。正式后台就绪后MCP可保留stdio连接并更新适配子进程；接到目录变化通知后重读此入口核对契约，不能重放写入。**detail参数（默认summary）控制features/operations的详细度**：summary只返回路由、副作用与权限事实并显式标记省略的说明文本，用于降低每次会话的发现成本（完整说明本可由tools/list与zane://openapi获得）；detail=full返回与契约版本完全一致的完整说明。两者都是只读发现，不发布、不执行。
 
 ## list_capabilities
 
@@ -761,3 +777,67 @@ POST /api/v1/clip-selections/{id}/compose
 副作用：execute
 
 按完整选片清单创建仅本地自定义代码整理运行，按镜头顺序输出成片媒体序列与清单JSON，不调用模型、不生成新媒体文件。需要最新revision和保存的新runId。缺镜头拒绝整理；响应丢失先查询runId和清单lastRunId。
+
+## list_tasks
+
+GET /api/v1/tasks
+
+副作用：read
+
+分页读取任务目录。任务=批量执行容器：一个任务含多个任务项，每项固定自己的「已发布场景+versionId+输入」，用于「一个项目连续出几十张图」而不用建几十条互不相关的运行记录。进度完全由各项运行状态投影（pending/active/waiting/completed/failed/cancelled），不是另一套状态机。列表省略items与inputValues并显式标记itemsOmitted；用get_task读完整项。游标绑定任务目录快照，变化返回409 ACCESS_PAGE_CHANGED重读第一页。只读，不生成。
+
+## get_task
+
+GET /api/v1/tasks/{taskId}
+
+副作用：read
+
+读取单个任务的完整任务项（含每项inputValues、state、runId、reviewId、attemptCount、lastError）与进度。status为draft时任务项仍可编辑；confirmedAt非空后输入冻结，只能rerun_task_item。只读，不生成。
+
+## create_task
+
+POST /api/v1/tasks
+
+副作用：write
+
+创建任务草稿（中间态）：一次提交最多200个任务项，每项独立指定sceneId+versionId+inputValues，因此一个任务可以跨场景/跨发布版。创建时逐项按发布快照校验输入与固定素材版本，但不发布、不生成、不提交运行——确认前可反复修改。任务项之间互相独立、不自动串联数据；需要「下一步依赖上一步」时在场景内用步骤sourceRef或execution.carry表达。输入可先用get_scene读取发布版的inputDefaults/inputExamples/inputRequirements来填写。调用前保存taskId；响应丢失用get_task读同一ID对账，不要换ID重建。
+
+## update_task
+
+PATCH /api/v1/tasks/{taskId}
+
+副作用：write
+
+用当前revision修改确认前任务草稿的名称/说明/任务项（items为完整替换，不是局部patch；按位置保留itemId）。任务项同样逐项校验场景、发布版本与输入。已确认（confirmedAt非空）的任务拒绝编辑并返回TASK_ALREADY_CONFIRMED，只能单项重跑。不提交运行、不生成；409后重读同一任务，不盲重试。
+
+## confirm_task
+
+POST /api/v1/tasks/{taskId}/confirm
+
+副作用：execute
+
+确认任务并按项全自动批量提交为互相独立的运行，可能调用付费 Hermes/ComfyUI。确认是单向冻结：先为每项预分配稳定runId并落库，再逐项提交，因此响应丢失后用同一批runId对账、重复调用不会重复提交或重复计费（alreadyConfirmed:true）。单项提交失败不阻断整批，失败项在failures中返回并可在任务里单独重跑；并发上限、排队、审核与重启恢复全部复用现有运行队列。任务项之间互相独立、不自动串联数据；需要「下一步依赖上一步」时在场景内用步骤sourceRef或execution.carry表达，不要把跨项依赖寄托在提交顺序上。开始前需先get_task取当前revision。
+
+## rerun_task_item
+
+POST /api/v1/tasks/{taskId}/items/{itemId}/rerun
+
+副作用：execute
+
+重跑任务的单个任务项，可能计费。旧runId保留在previousRunIds中以便回溯，不覆盖历史结果。正在执行（TASK_ITEM_ACTIVE）或等待人工确认（REVIEW_REQUIRED）的项拒绝重跑，不能借重跑绕过审核。需确认后的任务与当前revision。
+
+## cancel_task
+
+POST /api/v1/tasks/{taskId}/cancel
+
+副作用：write
+
+取消任务：标记取消，并尽力取消所有仍在排队/执行/待确认的任务项；已完成的项保留结果，单项取消失败由该项真实状态反映，不回滚也不删除运行记录。可重复调用（已取消时直接返回当前状态）。不删除历史运行、媒体或素材。
+
+## delete_task
+
+DELETE /api/v1/tasks/{taskId}
+
+副作用：write
+
+用当前revision显式删除任务记录。不删除历史运行、媒体或素材。仍有排队/执行/等待确认的项时返回409 TASK_ITEM_ACTIVE，需先取消任务。只在用户明确要求删除任务时使用。

@@ -5,12 +5,15 @@ import { createAiOpenApi } from "../server/ai/openapi.ts";
 import { aiOperations } from "../server/ai/operations.ts";
 import { AI_FOUNDATION_GUIDE } from "../server/ai/foundationGuide.ts";
 import { AI_OPERATOR_GUIDE } from "../server/ai/guide.ts";
+import { AI_OPERATOR_CHANGELOG } from "../server/ai/guideChangelog.ts";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = new Map([
   ["docs/ai-foundation.md", AI_FOUNDATION_GUIDE],
 // ai-openapi.json 是机器契约（人类读者用 ai-tools.md），minified 入库以减小仓库体积与 diff。
   ["docs/ai-openapi.json", JSON.stringify(createAiOpenApi()) + "\n"],
   ["docs/ai-operator.md", AI_OPERATOR_GUIDE],
+// 历史版本小节拆出会话级资源后仍随仓库版本化，便于人工核对与代码评审。
+  ["docs/ai-operator-changelog.md", AI_OPERATOR_CHANGELOG],
   ["docs/ai-tools.md", "# AI 工具目录\n\n由 npm run docs:ai 生成；不要直接编辑。参数细节见 ai-openapi.json，流程/恢复见 ai-operator.md。\n\n" + aiOperations.map(operation => "## " + operation.name + "\n\n" + operation.method + " " + operation.path + "\n\n副作用：" + operation.effect + "\n\n" + operation.description + "\n").join("\n")],
 ]);
 let drift = false;
