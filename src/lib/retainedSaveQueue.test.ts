@@ -34,6 +34,41 @@ test("重载后保留的 outbox 仅显式恢复；存储失败时停止发送", 
   quota = false; await queue.retry(); assert.equal(calls, 1); assert.equal(queue.pendingCount, 0);
 });
 
+test("outbox 写满不能永久卡住队列：收据写回后自动继续发送剩余编辑", async () => {
+  // 真实故障：第一条在工作区快照约 2.9M 字符时落盘成功；发送期间的第二条把
+  // outbox 撑过 localStorage 配额，persist 抛错。修复前 paused 永久为真，
+  // pendingCount 卡在 1，saveStatus 一直是 saving，发布与差异全被卡死。
+  const first = gate<number>(); const calls: Array<[number, number]> = []; const errors: string[] = [];
+  const queue = new RetainedSaveQueue<number>({
+    send: async (base, desired) => { calls.push([base, desired]); return calls.length === 1 ? first.promise : desired; },
+    persist: (entries) => { if (entries.length > 1) throw new Error("QuotaExceededError"); },
+    saved: () => {}, failed: (error) => errors.push(error.message),
+  });
+  queue.enqueue(0, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  queue.enqueue(1, 2);
+  assert.equal(queue.pendingCount, 2);
+  assert.deepEqual(errors, ["QuotaExceededError"]);
+  first.resolve(1);
+  await queue.waitForSaved();
+  assert.deepEqual(calls, [[0, 1], [1, 2]]);
+  assert.equal(queue.pendingCount, 0);
+});
+
+test("outbox 超限时按合并基线丢弃冗余快照，不丢最后内容也不重复提交", async () => {
+  const calls: Array<[number, number]> = [];
+  const queue = new RetainedSaveQueue<number>({
+    initial: [{ base: 0, desired: 1 }, { base: 1, desired: 2 }, { base: 2, desired: 3 }],
+    send: async (base, desired) => { calls.push([base, desired]); return desired; },
+    persist: (entries) => { if (entries.length > 1) throw new Error("QuotaExceededError"); },
+    saved: () => {}, failed: (error) => { throw error; },
+  });
+  await queue.retry();
+  // 首条基线 + 末条 desired 与逐条重放等价：仍是基于 0 的一次三方合并。
+  assert.deepEqual(calls, [[0, 3]]);
+  assert.equal(queue.pendingCount, 0);
+});
+
 test("重载保存的意图不因后续enqueue自动发送，只有显式恢复才提交", async () => {
   const calls: Array<[number, number]> = [];
   const queue = new RetainedSaveQueue<number>({ initial: [{ base: 1, desired: 2 }], send: async (base, desired) => { calls.push([base, desired]); return desired; }, persist: () => {}, saved: () => {}, failed: () => {} });

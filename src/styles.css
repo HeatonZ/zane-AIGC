@@ -750,6 +750,9 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .scene-versions-heading p { margin-top: 4px; color: #92998f; font-size: 9px; }
 .scene-version-list { display: grid; gap: 0; padding: 0 20px; margin: 0; overflow-y: auto; list-style: none; }
 .scene-version-list li { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 13px 0; border-bottom: 1px solid #edf0eb; }
+/* 发布按钮用 aria-disabled 保持可点击（disabled 会让浏览器把点击改派给父元素，
+   焦点里的能力配置草稿就没机会提交，必须点两次）。外观仍按禁用态呈现。 */
+.designer-publish-button[aria-disabled="true"] { cursor: not-allowed !important; opacity: .58; }
 .scene-version-list li:last-child { border-bottom: 0; }
 .scene-version-marker { display: grid; place-items: center; width: 27px; height: 27px; flex: 0 0 auto; color: #8b9287; background: #f1f3ee; border-radius: 50%; }
 .scene-version-list li.current .scene-version-marker { color: #4f7447; background: #edf3e8; }

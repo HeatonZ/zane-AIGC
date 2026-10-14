@@ -52,6 +52,31 @@ test("ComfyUI物理媒体列表不再展示业务分类按钮或用途下拉，�
 });
 
 
+test("能力配置草稿在发布前被同步提交，发布按钮不再用 disabled 吞掉第一次点击", async () => {
+  const designer = await readFile(new URL("./FlowDesigner.tsx", import.meta.url), "utf8");
+  const flush = designer.indexOf("for (const flush of flushes) flush();");
+  const publish = designer.indexOf("await onPublish()");
+  assert.ok(flush >= 0, "发布前必须取回焦点里尚未提交的能力配置草稿");
+  assert.ok(publish > flush, "草稿提交必须发生在调用 onPublish 之前");
+  assert.match(designer, /pendingConfigFlushRef = useRef\(new Map<string, \(\) => void>\(\)\)/);
+  assert.match(designer, /onDraftPending=\{\(key, flush\) => \{ if \(flush\) pendingConfigFlushRef\.current\.set\(key, flush\); else pendingConfigFlushRef\.current\.delete\(key\); \}\}/);
+  // disabled 的按钮会被浏览器改派点击，onClick 不执行：必须用 aria-disabled 保持可点击。
+  assert.match(designer, /aria-disabled=\{!canPublish\}/);
+  assert.doesNotMatch(designer, /\sdisabled=\{!canPublish\}/);
+  assert.match(designer, /designer-publish-button/);
+  const styles = await readFile(new URL("../styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.designer-publish-button\[aria-disabled="true"\]/);
+});
+
+test("能力配置编辑器保留焦点中的草稿，切换步骤时不提交到已离开的字段", async () => {
+  const editor = await readFile(new URL("../components/CapabilityConfigEditor.tsx", import.meta.url), "utf8");
+  assert.match(editor, /if \(!switched && focusedRef\.current\) return;/);
+  assert.match(editor, /pendingRef\.current\?\.\(fieldKey, commit\)/);
+  assert.match(editor, /useEffect\(\(\) => \(\) => pendingRef\.current\?\.\(fieldKey, null\), \[fieldKey, step\.id\]\)/);
+  // 延迟调用的提交句柄必须写回最新步骤与最新回调，否则发布会覆盖同能力包其它字段。
+  assert.match(editor, /changeRef\.current\(writeCapabilityConfig\(stepRef\.current, field, parseCapabilityDraft\(field, draftRef\.current\)\)\)/);
+});
+
 test("状态链配置导入不丢失；设计器提供previous媒体列表和串行锁定，不修改快照", async () => {
   const raw = JSON.parse(await readFile(new URL("../../examples/scenes/long-text-to-video.json", import.meta.url), "utf8"));
   raw.workflow.steps = [{ ...raw.workflow.steps[0], inputs: [{ key: "previous", label: "上一段", sourceRef: "iteration.previous[0]" }], outputs: [{ key: "video", label: "本段视频", type: "video_list" }],

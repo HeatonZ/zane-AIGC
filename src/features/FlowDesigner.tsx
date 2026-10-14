@@ -536,6 +536,10 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
   const [showVersions, setShowVersions] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  // 能力配置的文本/JSON 字段只在失焦时提交；点「发布更新」时按钮还是 disabled 的话，
+  // 浏览器会把这次点击改派给父元素，onClick 根本不执行，于是要连点两次。
+  // 这里保存尚未提交的草稿句柄，发布前先同步提交，点击一次即可。
+  const pendingConfigFlushRef = useRef(new Map<string, () => void>());
   const [referenceToInsert, setReferenceToInsert] = useState("");
   const [referencePathToInsert, setReferencePathToInsert] = useState("");
   const workflowRef = useRef(workflow);
@@ -685,10 +689,18 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
     return () => { active = false; };
   }, [selectedStep?.id, selectedStep?.kind, selectedStep?.comfyui?.workflowFile, selectedStep?.comfyui?.adapter, selectedCapability?.editor.bindings]);
 
+  /** 短暂提示；每次调用都会重置计时，避免残留提示把发布状态一直顶掉。 */
+  const noticeTimerRef = useRef<number | undefined>(undefined);
+  function flash(message: string, duration = 1800) {
+    setNotice(message);
+    window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(""), duration);
+  }
+  useEffect(() => () => window.clearTimeout(noticeTimerRef.current), []);
+
   function update(next: WorkflowDefinition) {
     onChange(next);
-    setNotice("已暂存");
-    window.setTimeout(() => setNotice(""), 1600);
+    flash("已暂存", 1600);
   }
 
   function updateStep(stepId: string, mutate: (step: WorkflowStepDefinition) => WorkflowStepDefinition) {
@@ -959,16 +971,14 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
     }
     setComfyNodeError("");
     if (comfyNodeInfos[node.type]) {
-      setNotice(`已加载节点 ${node.id} 的属性`);
-      window.setTimeout(() => setNotice(""), 1600);
+      flash(`已加载节点 ${node.id} 的属性`, 1600);
       return;
     }
     setComfyNodeLoadingTypes((current) => [...new Set([...current, node.type])]);
     try {
       const info = await loadComfyUINodeInfo(node.type);
       setComfyNodeInfos((current) => ({ ...current, [node.type]: info }));
-      setNotice(`已加载 ${node.type} 的类型和选项`);
-      window.setTimeout(() => setNotice(""), 1600);
+      flash(`已加载 ${node.type} 的类型和选项`, 1600);
     } catch (error) {
       setComfyNodeError(error instanceof Error ? error.message : `无法读取 ${node.type} 的属性定义`);
     } finally {
@@ -1161,12 +1171,15 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
   const canPublish = validation.length === 0 && hasUnpublishedChanges && saveStatus === "saved";
 
   async function publish() {
+    // 先把焦点里的草稿落到工作流：否则点第一次时按钮仍是 disabled，点击被改派、不进入本函数。
+    const flushes = [...pendingConfigFlushRef.current.values()];
+    pendingConfigFlushRef.current.clear();
+    for (const flush of flushes) flush();
+    // 校验错误里只有「没有待发布差异」这一条能被本次提交改变，其余仍然阻止发布。
+    if (validation.length || (!hasUnpublishedChanges && !flushes.length)) { flash(validation[0] ?? "没有待发布的修改"); return; }
     let version: SceneVersion | undefined;
-    try { version = await onPublish(); } catch (error) { setNotice(error instanceof Error ? error.message : "发布尚未确认"); return; }
-    if (version) {
-      setNotice(`已发布 v${version.version}`);
-      window.setTimeout(() => setNotice(""), 1800);
-    }
+    try { version = await onPublish(); } catch (error) { flash(error instanceof Error ? error.message : "发布尚未确认"); return; }
+    flash(version ? `已发布 v${version.version}` : "发布尚未确认：请先处理未同步的配置或读取服务端配置");
   }
 
   function setComfyBindingSource(index: number, valueSource: WorkflowValueSource) {
@@ -1197,7 +1210,9 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
           </span>
           <button type="button" className="button button-outline designer-diff-button" onClick={() => setShowDiff(true)} title="对比草稿与当前发布快照，不会发布或生成"><GitCompareArrows size={14} />差异预览</button>
           <button className="button button-outline designer-versions-button" onClick={() => setShowVersions(true)}><HistoryIcon size={14} />版本管理</button>
-          <button className="button button-dark designer-publish-button" onClick={publish} disabled={!canPublish} title={validation[0] ?? undefined}>
+          {/* 用 aria-disabled 而不是 disabled：disabled 的按钮会被浏览器改派点击，
+              正在编辑的能力配置字段就无法靠一次点击触发失焦提交并发布。 */}
+          <button type="button" className="button button-dark designer-publish-button" onClick={() => void publish()} aria-disabled={!canPublish} title={validation[0] ?? undefined}>
             {currentPublishedVersion && !hasUnpublishedChanges ? <Check size={14} /> : <Rocket size={14} />}
             {currentPublishedVersion && !hasUnpublishedChanges ? `已发布 v${currentPublishedVersion.version}` : currentPublishedVersion ? "发布更新" : "发布场景"}
           </button>
@@ -1337,7 +1352,7 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
               <StepCapabilityPicker key={selectedStep.id} step={selectedStep} capabilities={capabilities} onChange={(id) => changeStepCapability(selectedStep.id, id)} />
             </div>
             {capabilityError && <div className="notice" role="status">能力目录未连接，暂时显示内置能力。{capabilityError}</div>}
-            {selectedCapability ? <CapabilityConfigEditor step={selectedStep} definition={selectedCapability} references={selectedStepReferenceOptions} onChange={(next) => updateStep(selectedStep.id, () => next)} /> : <div className="notice error" role="alert">此能力包未安装，现有配置保留；请安装对应能力后再运行。</div>}
+            {selectedCapability ? <CapabilityConfigEditor step={selectedStep} definition={selectedCapability} references={selectedStepReferenceOptions} onChange={(next) => updateStep(selectedStep.id, () => next)} onDraftPending={(key, flush) => { if (flush) pendingConfigFlushRef.current.set(key, flush); else pendingConfigFlushRef.current.delete(key); }} /> : <div className="notice error" role="alert">此能力包未安装，现有配置保留；请安装对应能力后再运行。</div>}
             <div className="designer-subsection execution-config-section step-execution-section">
               <div className="field-group"><label className="field-label"><input type="checkbox" checked={selectedStep.review?.enabled ?? false} onChange={event => updateStep(selectedStep.id, step => ({ ...step, review: { ...step.review, enabled: event.target.checked } }))} /> 完成后等待人工确认</label><p className="studio-field-hint">结果确认或修改后才执行后续步骤。逐项执行时，整批完成后确认。</p>{selectedStep.review?.enabled && <input className="text-input" placeholder="确认说明，例如：核对人物设定、对白和镜头顺序" value={selectedStep.review.instruction ?? ""} onChange={event => updateStep(selectedStep.id, step => ({ ...step, review: { enabled: true, instruction: event.target.value } }))} />}</div>
               <div className="designer-subsection-heading"><div><h3>步骤执行</h3><p>只让当前步骤按列表逐项运行，前后步骤仍按一次执行</p></div></div>
