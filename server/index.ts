@@ -15,6 +15,7 @@ import { AccessService, runSubmitter } from "./services/accessService.js";
 import { UserPortalService } from "./services/userPortalService.js";
 import { createAuthRouter, createAccessRouter } from "./api/accessRoutes.js";
 import { createAiRouter } from "./api/aiRoutes.js";
+import { createCompressionMiddleware } from "./api/compression.js";
 import { createTaskRouter } from "./api/taskRoutes.js";
 import { TaskService } from "./services/taskService.js";
 import { AiSceneService } from "./services/aiSceneService.js";
@@ -92,6 +93,9 @@ app.use((request, response, next) => {
   next();
 });
 app.use(publicEntryGuard);
+// Registered before the routers so every JSON reply can negotiate an encoding.
+// Streamed bodies (media, ranged video, SSE) pass through untouched.
+app.use(createCompressionMiddleware());
 app.use(express.json({ limit: "16mb" }));
 const aiScenes = new AiSceneService(workspaceService, executors, assetService, readSettings);
 const accessService = new AccessService(metadataStore, workspaceService, process.env.ZANE_ADMIN_TOKEN ?? "", new LoginLimiter(loginLimitOptions));
