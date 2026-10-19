@@ -52,7 +52,7 @@ export const DIRECTOR_CONSOLE_PREPARE_CODE = [
   "  if (!shot) fail(\"第 \" + index + \" 条分镜无效\");",
   "  if (shot.index !== index) fail(\"分镜 index 必须从 1 开始连续递增，第 \" + index + \" 条为 \" + shot.index);",
   "  const seconds = shot.seconds;",
-  "  if (typeof seconds !== \"number\" || !(seconds >= 5 && seconds <= 15)) fail(\"分镜 \" + index + \" 的时长需要在 5 到 15 秒之间\");",
+  "  if (typeof seconds !== \"number\" || !(seconds >= 2 && seconds <= 15)) fail(\"分镜 \" + index + \" 的时长需要在 2 到 15 秒之间\");",
   "  const selection = record(shot.selection);",
   "  if (!selection) fail(\"分镜 \" + index + \" 缺少素材选择 selection\");",
   "  const chosen = {};",

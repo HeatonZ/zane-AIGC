@@ -208,8 +208,8 @@ test("导演台合并计划：未选中的全局标记、幽灵引用、断号�
   const cases: Array<[string, Record<string, JsonValue>, RegExp]> = [
     ["提示词数量不符", baseValues(shots, [prompt, prompt]), /提示词数量/],
     ["分镜断号", baseValues([shot(2, 5, { characters: [1], scenes: [1], props: [], voices: [] })], [prompt]), /index/],
-    ["时长越界", baseValues([shot(1, 4.9, { characters: [1], scenes: [1], props: [], voices: [] })], [prompt]), /5 到 15 秒/],
-    ["时长越界上界", baseValues([shot(1, 15.1, { characters: [1], scenes: [1], props: [], voices: [] })], [prompt]), /5 到 15 秒/],
+    ["时长越界", baseValues([shot(1, 1.9, { characters: [1], scenes: [1], props: [], voices: [] })], [prompt]), /2 到 15 秒/],
+    ["时长越界上界", baseValues([shot(1, 15.1, { characters: [1], scenes: [1], props: [], voices: [] })], [prompt]), /2 到 15 秒/],
     ["素材不存在", baseValues([shot(1, 5, { characters: [4], scenes: [1], props: [], voices: [] })], [prompt]), /不存在的人物/],
     ["音色不存在", baseValues([shot(1, 5, { characters: [1], scenes: [1], props: [], voices: [4] })], [prompt]), /不存在的参考音色/],
     ["音色超过 3 条", baseValues([shot(1, 5, { characters: [1], scenes: [1], props: [], voices: [1, 2, 3, 4] })], [prompt]), /最多引用 3 项参考音色/],
@@ -223,6 +223,17 @@ test("导演台合并计划：未选中的全局标记、幽灵引用、断号�
   for (const [, values, pattern] of cases) await assert.rejects(executeCodeStep(codeContext(values as Record<string, JsonValue>)), pattern);
   const emptyAssets = baseValues(shots, [prompt], { characters: 0, scenes: 0, props: 0, voices: 0 });
   await assert.rejects(executeCodeStep(codeContext(emptyAssets)), /不存在的人物/);
+});
+
+test("导演台合并计划：2.0 秒是新的合法下界，1.9 秒仍被拒绝", async () => {
+  const selection = { characters: [1], scenes: [1], props: [], voices: [] };
+  const prompt = localPrompt([1, 2], []);
+  // 2.0 秒必须通过，并且按 24fps 四舍五入为 48 帧。
+  const floor = await executeCodeStep(codeContext(baseValues([shot(1, 2, selection)], [prompt]))) as Record<string, JsonValue>;
+  const floorSegments = (floor.manifest as Record<string, JsonValue>).segments as Array<Record<string, JsonValue>>;
+  assert.deepEqual(floorSegments.map(item => [item.index, item.seconds, item.frames]), [[1, 2, 48]]);
+  // 1.9 秒必须失败，且错误文案是 2 到 15 秒。
+  await assert.rejects(executeCodeStep(codeContext(baseValues([shot(1, 1.9, selection)], [prompt]))), /2 到 15 秒/);
 });
 
 test("导演台合并计划：空音色列表时没有音轨，纯图镜头仍可生成", async () => {

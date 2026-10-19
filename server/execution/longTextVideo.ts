@@ -39,7 +39,7 @@ export function prepareLongTextShot(value: unknown, assets: LongTextAssets) {
   const row = asRecord(value);
   if (!row || typeof row.index !== "number" || !Number.isSafeInteger(row.index) || row.index < 1) throw new Error("分镜必须有从1开始的整数 index");
   const index = row.index;
-  if (typeof row.seconds !== "number" || !Number.isFinite(row.seconds) || row.seconds < 5 || row.seconds > 15) throw new Error(`分镜 ${index} 的 seconds 需要在5到15秒之间；长对白或复杂动作请拆成多个片段`);
+  if (typeof row.seconds !== "number" || !Number.isFinite(row.seconds) || row.seconds < 2 || row.seconds > 15) throw new Error(`分镜 ${index} 的 seconds 需要在2到15秒之间；长对白或复杂动作请拆成多个片段`);
   if (typeof row.prompt !== "string" || !row.prompt.trim() || row.prompt.length > 16000) throw new Error(`分镜 ${index} 的 prompt 必须是非空文本，最多16000字`);
   const media = {
     characters: runtimeMediaItems(assets.characters, "image"),

@@ -32,7 +32,7 @@ test("compiles per-shot global asset IDs in character-scene-prop and voice order
 });
 
 test("aligns duration to H3 native 24fps instead of speeding video to 30fps", () => {
-  for (let seconds = 5; seconds <= 15; seconds += 0.1) {
+  for (let seconds = 2; seconds <= 15; seconds += 0.1) {
     const frames = longTextFrameCount(seconds);
     assert.equal((frames - 5) % 17, 0);
     assert.ok(frames / 24 >= seconds - 1e-9);
@@ -41,12 +41,27 @@ test("aligns duration to H3 native 24fps instead of speeding video to 30fps", ()
 });
 
 test("rejects unsupported lengths, invalid asset IDs and unselected tags; prompt format is advisory", () => {
-  assert.throws(() => prepareLongTextShot(shot({ seconds: 16 }), assets), /5到15秒/);
+  assert.throws(() => prepareLongTextShot(shot({ seconds: 16 }), assets), /2到15秒/);
+  assert.throws(() => prepareLongTextShot(shot({ seconds: 1.9 }), assets), /2到15秒/);
   assert.throws(() => prepareLongTextShot(shot({ characters: [3] }), assets), /不存在/);
   assert.throws(() => prepareLongTextShot(shot({ characters: [1, 1] }), assets), /不能重复/);
   assert.throws(() => prepareLongTextShot(shot({ characters: [] }), assets), /未选中/);
   assert.throws(() => prepareLongTextShot(shot({ prompt: "<Picture 1>" }), assets), /全局资产标记/);
   assert.equal((prepareLongTextShot(shot({ prompt: "not an H3 prompt" }), assets).shot as Record<string, JsonValue>).prompt_warnings instanceof Array, true);
+});
+
+test("accepts the 2.0s lower bound for fast-cut short drama and aligns it to 56 frames", () => {
+  // 2.0s is the new floor: H3's 17k+5 grid at 24fps rounds it up to 56 frames (2.333s).
+  // Anything below 2s gains no extra frames (1.0s and 1.5s both land on 39), so 2s is the binding minimum.
+  for (const seconds of [2, 2.5, 4]) {
+    const prepared = prepareLongTextShot(shot({ seconds }), assets);
+    const applied = prepared.shot as Record<string, JsonValue>;
+    assert.equal(applied.seconds, seconds);
+    assert.equal(applied.frames, longTextFrameCount(seconds));
+    assert.equal((Number(applied.frames) - 5) % 17, 0);
+  }
+  assert.equal(longTextFrameCount(2), 56);
+  assert.throws(() => prepareLongTextShot(shot({ seconds: 1.99 }), assets), /2到15秒/);
 });
 
 test("enforces each shot's reference capacity without silently dropping assets", () => {
@@ -58,7 +73,7 @@ test("enforces each shot's reference capacity without silently dropping assets",
 test("validates the whole iteration source before starting an expensive first clip", async () => {
   const rows = [shot(), shot({ index: 2, seconds: 22 })];
   let generated = false;
-  await assert.rejects(runLongTextVideoStep(context(rows), async () => { generated = true; return {}; }), /5到15秒/);
+  await assert.rejects(runLongTextVideoStep(context(rows), async () => { generated = true; return {}; }), /2到15秒/);
   assert.equal(generated, false);
   assert.throws(() => validateLongTextStoryboard([shot({ index: 2 })], assets), /连续递增/);
 });
