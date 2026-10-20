@@ -63,11 +63,24 @@ node --import tsx scripts/update-production.mjs recover --id <UUID>
 
 ## 看门狗调度与降级处置
 
-`npm run watch:prod` 是单次执行的自愈检查（加锁防并发，`APP_DATA_DIR/watchdog.log` 记录事件），不会常驻；定时拉起方式由部署方决定，例如 Windows 计划任务每 1–5 分钟运行一次：
+`npm run watch:prod` 是单次执行的自愈检查（加锁防并发，`APP_DATA_DIR/watchdog.log` 记录事件），不会常驻；定时拉起方式由部署方决定，例如 Windows 计划任务每 1–5 分钟运行一次。
+
+计划任务的触发动作必须隐藏控制台，否则每次触发都会在桌面闪出一个黑窗。用 `scripts/watchdog-hidden.vbs` 作为入口（`wscript` 以隐藏窗口启动 node 并等待退出，任务原有的执行时限仍然生效）：
 
 ```powershell
-schtasks /Create /TN "Zane Watchdog" /SC MINUTE /MO 2 /TR "cmd /c cd /d F:\code\zane-drama && node scripts\watch-production.mjs"
+schtasks /Create /TN "Zane Watchdog" /SC MINUTE /MO 2 /TR "wscript.exe //nologo \"F:\code\zane-drama\scripts\watchdog-hidden.vbs\""
 ```
+
+已注册的任务改成隐藏入口（注册时把任务本身也设为隐藏）：
+
+```powershell
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '//nologo "F:\code\zane-drama\scripts\watchdog-hidden.vbs"' -WorkingDirectory 'F:\code\zane-drama'
+$settings = (Get-ScheduledTask -TaskName 'Zane Watchdog').Settings
+$settings.Hidden = $true
+Set-ScheduledTask -TaskName 'Zane Watchdog' -Action $action -Settings $settings
+```
+
+直接用 `node.exe` 或 `cmd /c` 作为动作时，`Hidden` 只隐藏任务本身，不隐藏它启动的控制台程序。
 
 每次运行都会把最近一次结果写入 `APP_DATA_DIR/watchdog-status.json`（time/event/port），供监控面板或脚本轮询读取。行为语义：
 
