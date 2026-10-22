@@ -21,20 +21,39 @@ const STORE_KEY_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,200}$/;
 // 必须与配置型场景包的 `packageRuns` 集合分开：两者记录形状不同，共用会让读取方互相污染。
 const PACKAGE_RUNS_COLLECTION = "codeScenePackageRuns";
 const PACKAGE_STORE_COLLECTION = "codeScenePackageStore";
-const DEFAULT_ENTRY = "index.mjs";
-const MAX_STORE_VALUE_BYTES = 1_000_000;
-const MAX_ERROR_LENGTH = 500;
-
+const PACKAGE_CONFIG_COLLECTION = "codePackageConfigs";
 const executorSchema = z.object({
   sceneId: z.string().min(1),
   versionId: z.string().min(1),
 });
 
+const configDocumentSchema = z.object({
+  id: z.string().min(1),
+  revision: z.int().min(0),
+  enabled: z.boolean(),
+  executor: executorSchema.nullable().optional(),
+  inputs: z.array(z.object({
+    key: z.string().min(1).max(200),
+    label: z.string().max(200).optional(),
+    required: z.boolean().optional(),
+    defaultValue: z.unknown().optional(),
+  }).strict()).max(200).optional(),
+  presentation: z.record(z.string(), z.unknown()).optional(),
+  pricing: z.record(z.string(), z.unknown()).optional(),
+  updatedAt: z.string().optional(),
+}).strict();
+
+export type CodeScenePackageConfigDocument = z.output<typeof configDocumentSchema>;
+const DEFAULT_ENTRY = "index.mjs";
+const MAX_STORE_VALUE_BYTES = 1_000_000;
+const MAX_ERROR_LENGTH = 500;
+
 const packageJsonSchema = z.object({
   zaneScenePackage: z.object({
     title: z.string().min(1),
     version: z.string().min(1),
-    executor: executorSchema,
+    // 规格 §2：executor 可省略，省略时取管理端配置（管理端为准）。
+    executor: executorSchema.optional(),
     inputs: z.array(z.record(z.string(), z.unknown())).optional(),
     entry: z.string().min(1).optional(),
   }),
@@ -45,24 +64,46 @@ export interface CodeScenePackageExecutor {
   versionId: string;
 }
 
-export interface CodeScenePackageManifest {
+/** package.json 里声明的元数据：executor 可省略（省略时取管理端配置）。 */
+export interface DeclaredScenePackageManifest {
   title: string;
   version: string;
-  executor: CodeScenePackageExecutor;
+  executor?: CodeScenePackageExecutor;
   inputs: Array<Record<string, unknown>>;
   entry: string;
 }
 
-export type CodeScenePackageStatus = "ok" | "error";
+/** 已解析的执行契约：executor 一定存在，运行期只认这个形状。 */
+export interface CodeScenePackageManifest extends DeclaredScenePackageManifest {
+  executor: CodeScenePackageExecutor;
+}
+
+export type CodeScenePackageStatus = "ok" | "error" | "disabled";
+
+export interface CodeScenePackageConfig {
+  id: string;
+  revision: number;
+  enabled: boolean;
+  /** null = 显式清空管理端覆盖，回退 package.json 默认值。 */
+  executor?: { sceneId: string; versionId: string } | null;
+  inputs?: Array<{ key: string; label?: string; required?: boolean; defaultValue?: unknown }>;
+  presentation?: Record<string, unknown>;
+  pricing?: Record<string, unknown>;
+  updatedAt?: string;
+}
 
 export interface CodeScenePackageRegistryEntry {
   packageId: string;
   status: CodeScenePackageStatus;
   directory: string;
   error?: string;
-  manifest?: CodeScenePackageManifest;
+  manifest?: DeclaredScenePackageManifest;
   entryPath?: string;
   loadedAt?: string;
+  enabled: boolean;
+  executor?: { sceneId: string; versionId: string };
+  config?: CodeScenePackageConfig;
+  revision?: number;
 }
 
 export interface CodeScenePackageRun {
@@ -143,6 +184,8 @@ interface LoadedPackage {
   directory: string;
   projectDirectory: string;
   manifest: CodeScenePackageManifest;
+  /** 生效的执行场景：管理端配置优先，package.json 只作默认值（规格 §2/§6）。 */
+  executor: CodeScenePackageExecutor;
   entryPath: string;
   framework: CodeScenePackageFramework;
   run: (input: unknown) => unknown;
@@ -189,21 +232,21 @@ export class CodeScenePackageService {
     return this.statuses.get(packageId);
   }
 
-  async loadAll(): Promise<{ loaded: number; failed: number; packages: CodeScenePackageRegistryEntry[] }> {
+  async loadAll(): Promise<{ loaded: number; failed: number; disabled: number; packages: CodeScenePackageRegistryEntry[] }> {
     const project = await this.projectDirectory();
     this.statuses.clear();
     this.entries.clear();
-    if (!project) return { loaded: 0, failed: 0, packages: [] };
+    if (!project) return { loaded: 0, failed: 0, disabled: 0, packages: [] };
 
     const root = this.rootFor(project);
     let dirents: Array<{ name: string; isDirectory(): boolean }>;
     try {
       dirents = await readdir(root, { withFileTypes: true });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { loaded: 0, failed: 0, packages: [] };
-      const failure: CodeScenePackageRegistryEntry = { packageId: root, status: "error", directory: root, error: this.safeError(error), loadedAt: this.now().toISOString() };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { loaded: 0, failed: 0, disabled: 0, packages: [] };
+      const failure: CodeScenePackageRegistryEntry = { packageId: root, status: "error", directory: root, error: this.safeError(error), loadedAt: this.now().toISOString(), enabled: true };
       this.statuses.set(root, failure);
-      return { loaded: 0, failed: 1, packages: [failure] };
+      return { loaded: 0, failed: 1, disabled: 0, packages: [failure] };
     }
 
     const ids = dirents.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
@@ -212,15 +255,112 @@ export class CodeScenePackageService {
     const packages = this.list();
     const loaded = packages.filter((entry) => entry.status === "ok").length;
     const failed = packages.filter((entry) => entry.status === "error").length;
+    const disabled = packages.filter((entry) => entry.status === "disabled").length;
     // 启动日志按业务口径给一行可读汇总（验收依赖这一行），明细另走 scene_package.* 事件。
-    writeLog(failed ? "warn" : "info", `已加载 ${loaded} 个场景包：${packages.filter((entry) => entry.status === "ok").map((entry) => entry.packageId).join(", ") || "无"}`, { loaded, failed, packages: packages.map((entry) => ({ packageId: entry.packageId, status: entry.status })) });
-    return { loaded, failed, packages };
+    writeLog(failed ? "warn" : "info", `已加载 ${loaded} 个场景包：${packages.filter((entry) => entry.status === "ok").map((entry) => entry.packageId).join(", ") || "无"}`, { loaded, failed, disabled, packages: packages.map((entry) => ({ packageId: entry.packageId, status: entry.status })) });
+    return { loaded, failed, disabled, packages };
+  }
+
+  private configFor(project: string, packageId: string): CodeScenePackageConfigDocument | undefined {
+    const raw = this.deps.store.getDocument<unknown>(project, PACKAGE_CONFIG_COLLECTION, packageId);
+    if (raw === undefined) return undefined;
+    const parsed = configDocumentSchema.safeParse(raw);
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  private effectiveExecutor(config: CodeScenePackageConfigDocument | undefined, manifest: DeclaredScenePackageManifest): CodeScenePackageExecutor | undefined {
+    return config?.executor ?? manifest.executor;
+  }
+
+  private decorateStatus(project: string, entry: CodeScenePackageRegistryEntry): CodeScenePackageRegistryEntry {
+    const config = this.configFor(project, entry.packageId);
+    const manifest = entry.manifest;
+    const enabled = config?.enabled ?? true;
+    const executor = manifest ? this.effectiveExecutor(config, manifest) : config?.executor ?? undefined;
+    return {
+      ...entry,
+      enabled,
+      ...(config ? { config, revision: config.revision } : { revision: 0 }),
+      ...(executor ? { executor } : {}),
+      ...(enabled ? {} : { status: "disabled" as const }),
+    };
+  }
+
+  async getAdminList(): Promise<{ packages: CodeScenePackageRegistryEntry[]; nextAction: "configure_code_package" }> {
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const root = this.rootFor(project);
+    let names: string[] = [];
+    try {
+      names = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    // 保留 registry 中启动时失败的目录状态；同时也能呈现启动后新增的磁盘目录。
+    const ids = new Set([...names, ...this.statuses.keys()].filter((id) => id && id !== root));
+    const packages: CodeScenePackageRegistryEntry[] = [];
+    for (const packageId of [...ids].sort()) {
+      let entry = this.statuses.get(packageId);
+      if (!entry && names.includes(packageId)) {
+        entry = await this.loadOne(project, packageId, root);
+      }
+      if (!entry) continue;
+      packages.push(this.decorateStatus(project, entry));
+    }
+    return { packages, nextAction: "configure_code_package" };
+  }
+
+  async updateConfig(packageId: string, raw: unknown): Promise<{ package: CodeScenePackageRegistryEntry; nextAction: "reload_code_package" }> {
+    if (!PACKAGE_ID_PATTERN.test(packageId)) throw new HttpError(400, "场景包ID无效", "INVALID_PACKAGE_ID", { packageId });
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const body = asRecord(raw) ?? {};
+    const current = this.configFor(project, packageId);
+    const expectedRevision = body.revision;
+    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 0) throw new HttpError(400, "revision 无效", "INVALID_CODE_PACKAGE_REVISION");
+    if ((current?.revision ?? 0) !== expectedRevision) throw new HttpError(409, "场景包配置已变化，请重新读取", "CODE_PACKAGE_REVISION_CONFLICT", { currentRevision: current?.revision ?? 0 });
+    const manifestEntry = this.statuses.get(packageId);
+    const manifest = manifestEntry?.manifest;
+    const next = {
+      id: packageId,
+      revision: expectedRevision as number,
+      enabled: typeof body.enabled === "boolean" ? body.enabled : current?.enabled ?? true,
+      executor: body.executor === null ? null : body.executor === undefined ? current?.executor ?? null : body.executor,
+      inputs: Array.isArray(body.inputs) ? body.inputs : current?.inputs ?? [],
+      ...(body.presentation !== undefined ? { presentation: body.presentation } : current?.presentation ? { presentation: current.presentation } : {}),
+      ...(body.pricing !== undefined ? { pricing: body.pricing } : current?.pricing ? { pricing: current.pricing } : {}),
+      updatedAt: this.now().toISOString(),
+    };
+    const parsed = configDocumentSchema.safeParse(next);
+    if (!parsed.success) throw new HttpError(400, "场景包配置格式无效", "INVALID_CODE_PACKAGE_CONFIG", { issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) });
+    const effective = parsed.data.executor ?? manifest?.executor;
+    if (parsed.data.enabled && (!effective?.sceneId || !effective.versionId)) throw new HttpError(400, "必须选择执行场景和已发布版本", "CODE_PACKAGE_EXECUTOR_REQUIRED");
+    try {
+      const saved = this.deps.store.putDocumentChecked(project, PACKAGE_CONFIG_COLLECTION, parsed.data, expectedRevision as number);
+      if (!saved.enabled) {
+        this.entries.delete(packageId);
+        const old = this.statuses.get(packageId);
+        if (old) this.statuses.set(packageId, { ...old, enabled: false, status: "disabled", config: saved, revision: saved.revision });
+      } else {
+        const old = this.statuses.get(packageId);
+        if (old) this.statuses.set(packageId, this.decorateStatus(project, { ...old, enabled: true, config: saved, revision: saved.revision }));
+      }
+      const entry = this.statuses.get(packageId);
+      if (!entry) throw new HttpError(404, "磁盘上没有此场景包", "CODE_PACKAGE_NOT_FOUND", { packageId });
+      return { package: this.decorateStatus(project, entry), nextAction: "reload_code_package" };
+    } catch (error) {
+      if ((error as Error).message === "DOCUMENT_CONFLICT") {
+        const latest = this.configFor(project, packageId);
+        throw new HttpError(409, "场景包配置已变化，请重新读取", "CODE_PACKAGE_REVISION_CONFLICT", { currentRevision: latest?.revision ?? 0 });
+      }
+      throw error;
+    }
   }
 
   async reload(packageId: string): Promise<CodeScenePackageRegistryEntry> {
     if (!PACKAGE_ID_PATTERN.test(packageId)) {
       const error = new HttpError(400, "场景包ID无效", "INVALID_PACKAGE_ID", { packageId });
-      const status: CodeScenePackageRegistryEntry = { packageId, status: "error", directory: "", error: this.safeError(error), loadedAt: this.now().toISOString() };
+      const status: CodeScenePackageRegistryEntry = { packageId, status: "error", directory: "", enabled: true, revision: 0, error: this.safeError(error), loadedAt: this.now().toISOString() };
       this.statuses.set(packageId, status);
       this.entries.delete(packageId);
       throw error;
@@ -235,15 +375,37 @@ export class CodeScenePackageService {
     const loadedAt = this.now().toISOString();
 
     if (!PACKAGE_ID_PATTERN.test(packageId)) {
-      const entry: CodeScenePackageRegistryEntry = { packageId, status: "error", directory, error: "场景包目录名无效：只允许字母、数字、下划线、点与短横线，且必须以字母或数字开头", loadedAt };
+      const entry: CodeScenePackageRegistryEntry = { packageId, status: "error", directory, enabled: true, revision: 0, error: "场景包目录名无效：只允许字母、数字、下划线、点与短横线，且必须以字母或数字开头", loadedAt };
       this.statuses.set(packageId, entry);
       this.entries.delete(packageId);
       return entry;
     }
 
     try {
-      const manifest = await this.readManifest(packageId, directory);
-      const entryPath = path.resolve(directory, manifest.entry);
+      const declared = await this.readManifest(packageId, directory);
+      const config = this.configFor(project, packageId);
+      const enabled = config?.enabled ?? true;
+      const executor = this.effectiveExecutor(config, declared);
+      // 管理端配置为准（规格 §2/§6）：package.json 只作默认值。缺执行场景时该包不可运行，
+      // 但磁盘代码仍要能列出来，让管理员在配置面板里补选。
+      const manifest: DeclaredScenePackageManifest = declared;
+      if (!enabled) {
+        const status: CodeScenePackageRegistryEntry = {
+          packageId, status: "disabled", directory, manifest, enabled: false,
+          ...(executor ? { executor } : {}),
+          ...(config ? { config, revision: config.revision } : { revision: 0 }),
+          loadedAt,
+        };
+        this.statuses.set(packageId, status);
+        this.entries.delete(packageId);
+        writeLog("info", "scene_package.disabled", { packageId, directory });
+        return status;
+      }
+      if (!executor) {
+        throw new HttpError(400, "未配置执行场景：请在此场景包的配置面板选择执行场景与已发布版本", "CODE_PACKAGE_EXECUTOR_REQUIRED", { packageId });
+      }
+      const resolved: CodeScenePackageManifest = { ...manifest, executor };
+      const entryPath = path.resolve(directory, resolved.entry);
       const relative = path.relative(directory, entryPath);
       if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
         throw new HttpError(400, "场景包入口不能指向包目录之外", "PACKAGE_ENTRY_INVALID", { packageId, entry: manifest.entry });
@@ -262,7 +424,7 @@ export class CodeScenePackageService {
         throw new HttpError(400, "场景包入口缺少 default 工厂函数", "PACKAGE_ENTRY_INVALID", { packageId });
       }
 
-      const framework = this.createFramework(packageId, manifest);
+      const framework = this.createFramework(packageId, resolved);
       let created: unknown;
       try {
         created = await (factory as (framework: CodeScenePackageFramework) => unknown)(framework);
@@ -278,7 +440,8 @@ export class CodeScenePackageService {
         packageId,
         directory,
         projectDirectory: project,
-        manifest,
+        manifest: resolved,
+        executor,
         entryPath,
         framework,
         run: run as (input: unknown) => unknown,
@@ -291,6 +454,9 @@ export class CodeScenePackageService {
         status: "ok",
         directory,
         manifest,
+        enabled: true,
+        executor,
+        ...(config ? { config, revision: config.revision } : { revision: 0 }),
         entryPath,
         loadedAt,
       };
@@ -299,7 +465,13 @@ export class CodeScenePackageService {
       return status;
     } catch (error) {
       const message = this.safeError(error);
-      const status: CodeScenePackageRegistryEntry = { packageId, status: "error", directory, error: message, loadedAt };
+      const config = this.configFor(project, packageId);
+      const status: CodeScenePackageRegistryEntry = {
+        packageId, status: "error", directory, error: message, loadedAt,
+        enabled: config?.enabled ?? true,
+        ...(config?.executor ? { executor: config.executor } : {}),
+        ...(config ? { config, revision: config.revision } : { revision: 0 }),
+      };
       this.statuses.set(packageId, status);
       this.entries.delete(packageId);
       writeLog("warn", "scene_package.load_failed", { packageId, directory, error: message });
@@ -307,7 +479,7 @@ export class CodeScenePackageService {
     }
   }
 
-  private async readManifest(packageId: string, directory: string): Promise<CodeScenePackageManifest> {
+  private async readManifest(packageId: string, directory: string): Promise<DeclaredScenePackageManifest> {
     let text: string;
     try {
       text = await readFile(path.join(directory, "package.json"), "utf8");
