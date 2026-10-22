@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mergePackageCatalog, describeCodePackageStatus, executorSelectionError, packageRunsFilter, inputContractRows } from "./packageCatalog.js";
+import { mergePackageCatalog, describeCodePackageStatus, executorSelectionError, packageRunsFilter, inputContractRows, inputOverridePayload } from "./packageCatalog.js";
 
 test("mergePackageCatalog sorts code before config and sorts each group by title", () => {
   const merged = mergePackageCatalog(
@@ -52,4 +52,27 @@ test("inputContractRows merges label/required/defaultValue by key", () => {
   assert.equal(rows[0].label, "新主题");
   assert.equal(rows[0].required, true);
   assert.equal(rows[0].defaultValue, "d");
+});
+
+test("inputContractRows keeps package.json fields when overrides are empty", () => {
+  const rows = inputContractRows([{ key: "content", label: "剧情", required: true }], []);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].label, "剧情");
+  assert.equal(rows[0].required, true);
+});
+
+test("inputOverridePayload only sends fields that differ from package.json", () => {
+  const manifest = [{ key: "content", label: "剧情", required: true }];
+  // 管理员没改任何东西：不应产生覆盖，磁盘改标签后仍然生效。
+  assert.deepEqual(inputOverridePayload([{ key: "content", label: "剧情", required: true }], manifest), []);
+  // 改了标签与默认值：只送改过的字段。
+  assert.deepEqual(
+    inputOverridePayload([{ key: "content", label: "故事", required: true, defaultValue: "默认剧情" }], manifest),
+    [{ key: "content", label: "故事", defaultValue: "默认剧情" }],
+  );
+  // 把必填从 true 改成 false 也要落库（false 是有意义的覆盖）。
+  assert.deepEqual(
+    inputOverridePayload([{ key: "content", label: "剧情", required: false }], manifest),
+    [{ key: "content", required: false }],
+  );
 });

@@ -83,3 +83,32 @@ export function inputContractRows(
     };
   });
 }
+
+/**
+ * 保存时送出的输入契约覆盖：只保留与 package.json 声明不同的字段。
+ *
+ * 全量送出会把「管理员没动过的默认值」固化进配置，之后改 package.json 的标签或必填
+ * 就不再生效（配置优先于磁盘）。所以这里按字段逐项比对，只写真正改过的。
+ */
+export function inputOverridePayload(
+  rows: Array<Record<string, unknown>>,
+  manifestInputs: Array<Record<string, unknown>>,
+): Array<{ key: string; label?: string; required?: boolean; defaultValue?: unknown }> {
+  const manifestByKey = new Map(manifestInputs.map((field) => [String((field as any).key ?? ""), field as Record<string, unknown>]));
+  const payload: Array<{ key: string; label?: string; required?: boolean; defaultValue?: unknown }> = [];
+  for (const row of rows) {
+    const key = String((row as any).key ?? "");
+    if (!key) continue;
+    const base = manifestByKey.get(key) ?? {};
+    const item: { key: string; label?: string; required?: boolean; defaultValue?: unknown } = { key };
+    const label = (row as any).label;
+    if (typeof label === "string" && label !== "" && label !== base.label) item.label = label;
+    const required = (row as any).required === true;
+    if (required !== (base.required === true)) item.required = required;
+    const defaultValue = (row as any).defaultValue;
+    if (defaultValue !== undefined && defaultValue !== "" && defaultValue !== base.defaultValue) item.defaultValue = defaultValue;
+    // 只保留至少一项覆盖的字段：纯 key 的行对配置没有意义。
+    if (item.label !== undefined || item.required !== undefined || item.defaultValue !== undefined) payload.push(item);
+  }
+  return payload;
+}
