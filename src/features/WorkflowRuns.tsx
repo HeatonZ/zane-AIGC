@@ -1,4 +1,4 @@
-import { Clock3, FolderOpen, LoaderCircle, RefreshCw, Workflow } from "lucide-react";
+import { Clock3, FolderOpen, LoaderCircle, RefreshCw, Search, Workflow, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getScene } from "../data/scenes";
 import { loadWorkflowRuns, loadWorkflowRun, subscribeWorkflowRun } from "../lib/api";
@@ -45,6 +45,9 @@ function formatDuration(value?: number) {
 interface WorkflowRunsProps {
   scenes: SceneModule[];
   onNavigate: (page: PageId) => void;
+  /** 从场景包跳转过来时带上的执行场景筛选（只读初值，后续由本页自己维护）。 */
+  initialSceneFilter?: string;
+  onSceneFilterChange?: (sceneId: string) => void;
   selectedRunId: string | null;
   onSelectRun: (runId: string | null) => void;
   onCancelRun: (runId: string) => void;
@@ -55,7 +58,7 @@ interface WorkflowRunsProps {
   submissionPending?: boolean;
 }
 
-export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSelectRun, onCancelRun, onResumeRun, onRerunRun, activeRunId, runStartError, submissionPending = false }: WorkflowRunsProps) {
+export default function WorkflowRuns({ scenes, onNavigate, initialSceneFilter = "", onSceneFilterChange, selectedRunId, onSelectRun, onCancelRun, onResumeRun, onRerunRun, activeRunId, runStartError, submissionPending = false }: WorkflowRunsProps) {
   const [projectDirectory, setProjectDirectory] = useState("");
   const [runs, setRuns] = useState<WorkflowRunHistoryItem[]>([]);
   const [selectedRun, setSelectedRun] = useState<WorkflowRunRecord | null>(null);
@@ -65,6 +68,9 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailsVersion, setDetailsVersion] = useState(0);
   const [error, setError] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [query, setQuery] = useState("");
+  const [sceneFilter, setSceneFilter] = useState(initialSceneFilter);
   const [rerunTarget, setRerunTarget] = useState<RerunTarget | null>(null);
   const [comparison, setComparison] = useState<WorkflowRunRecord | null>(null);
   const [comparing, setComparing] = useState(false);
@@ -100,23 +106,36 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
     }
   }
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (keyword = query, cursor?: string, scene = sceneFilter) => {
+    if (!cursor) setLoading(true);
     setError("");
     try {
-      const response = await loadWorkflowRuns();
+      const response = await loadWorkflowRuns(cursor, keyword, scene);
       setProjectDirectory(response.projectDirectory);
-      setRuns(response.runs);
+      const page = response.runs;
+      setRuns((current) => cursor ? [...current, ...page.filter((item) => !current.some((existing) => existing.runId === item.runId))] : page);
       setNextCursor(response.nextCursor);
-      if (!selectedRunIdRef.current && response.runs[0]) onSelectRun(response.runs[0].runId);
+      // 第一页选中最新一条；搜索结果为空时清空详情，避免右栏停在筛选外的旧运行上。
+      if (!cursor && !selectedRunIdRef.current && page[0]) onSelectRun(page[0].runId);
+      if (!cursor && !page[0]) onSelectRun(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "读取运行记录失败");
     } finally {
       setLoading(false);
     }
-  }, [onSelectRun]);
+  }, [onSelectRun, query, sceneFilter]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // 外部带入的筛选（场景包「查看运行记录」）：只在 prop 本身变化时应用一次。
+  // 不能用 sceneFilter 做依赖——本页自己的下拉变化会让这个 effect 把值推回旧 prop。
+  const appliedSceneFilter = useRef(initialSceneFilter);
+  useEffect(() => {
+    if (initialSceneFilter === appliedSceneFilter.current) return;
+    appliedSceneFilter.current = initialSceneFilter;
+    setSceneFilter(initialSceneFilter);
+    setNextCursor(undefined);
+  }, [initialSceneFilter]);
 
   useEffect(() => {
     if (!selectedRunId) { setSelectedRun(null); return; }
@@ -143,18 +162,30 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const response = await loadWorkflowRuns(nextCursor);
-      setRuns((current) => [...current, ...response.runs.filter((item) => !current.some((existing) => existing.runId === item.runId))]);
-      setNextCursor(response.nextCursor);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "读取更多运行失败"); }
-    finally { setLoadingMore(false); }
+      await refresh(query, nextCursor, sceneFilter);
+    } finally { setLoadingMore(false); }
+  }
+
+  function changeSceneFilter(next: string) {
+    setSceneFilter(next);
+    onSceneFilterChange?.(next);
+    setNextCursor(undefined);
+  }
+
+  function submitSearch() {
+    const next = searchText.trim();
+    setSearchText(next);
+    if (next === query) { void refresh(next); return; }
+    // 关键字变化必须从第一页重读：旧游标绑定的是上一组筛选条件。query 变更由 refresh 的依赖触发。
+    setQuery(next);
+    setNextCursor(undefined);
   }
 
   return (
     <div className="workflow-runs-page">
       <div className="welcome-row">
         <div><div className="eyebrow"><span className="eyebrow-line" />PROJECT RUNS</div><h1>运行记录</h1><p className="page-subtitle">查看每次运行的输入、执行状态和生成结果。</p></div>
-        <button className="button button-outline" onClick={() => { setDetailsVersion((version) => version + 1); void refresh(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />刷新记录</button>
+        <button className="button button-outline" onClick={() => { setDetailsVersion((version) => version + 1); void refresh(query); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />刷新记录</button>
       </div>
 
       {projectDirectory && <div className="runs-project-path"><FolderOpen size={15} /><span><strong>项目目录</strong><code>{projectDirectory}</code></span></div>}
@@ -171,8 +202,22 @@ export default function WorkflowRuns({ scenes, onNavigate, selectedRunId, onSele
         <div className="runs-layout">
           <section className="runs-list" aria-label="运行记录列表">
             <div className="runs-list-heading"><strong>最近运行</strong><span>{runs.length}</span></div>
+            <div className="runs-scene-filter">
+              <label>场景<select value={sceneFilter} onChange={(event) => changeSceneFilter(event.target.value)} aria-label="按场景筛选运行记录">
+                <option value="">全部场景</option>
+                {scenes.map((scene) => <option key={scene.id} value={scene.id}>{scene.shortTitle}</option>)}
+              </select></label>
+              {sceneFilter && <button className="text-button" onClick={() => changeSceneFilter("")} type="button">清除筛选</button>}
+            </div>
+            <div className="runs-search">
+              <Search size={14} aria-hidden />
+              <input value={searchText} onChange={(event) => setSearchText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitSearch(); }} placeholder="搜索标题、流程、场景、编号、错误或提交人" aria-label="搜索运行记录" maxLength={200} />
+              {searchText && <button className="runs-search-clear" onClick={() => { setSearchText(""); if (query) { setQuery(""); setNextCursor(undefined); } }} aria-label="清空搜索" type="button"><X size={13} /></button>}
+              <button className="runs-search-submit" onClick={submitSearch} disabled={loading} type="button">搜索</button>
+            </div>
+            {query && <div className="runs-search-active">筛选「{query}」· {runs.length} 条匹配</div>}
             <div className="runs-list-items">
-              {!runs.length && <div className="run-detail-empty">{activeRunId ? "正在创建运行记录…" : "暂无运行记录。"}</div>}
+              {!runs.length && <div className="run-detail-empty">{activeRunId ? "正在创建运行记录…" : query ? `没有匹配「${query}」的运行记录。` : "暂无运行记录。"}</div>}
               {runs.map((run) => {
                 const scene = getScene(run.sceneId, scenes);
                 return <button className={`run-history-item ${selectedRunId === run.runId ? "active" : ""}`} key={run.runId} onClick={() => { setError(""); onSelectRun(run.runId); }}>
