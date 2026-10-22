@@ -430,8 +430,10 @@ export async function uploadComfyUIAudio(file: File): Promise<ComfyAudioAttachme
   return body;
 }
 
-export function loadWorkflowRuns(cursor?: string) {
-  const query = `?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+export function loadWorkflowRuns(cursor?: string, q?: string, sceneId?: string) {
+  const keyword = q?.trim();
+  const scene = sceneId?.trim();
+  const query = `?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${keyword ? `&q=${encodeURIComponent(keyword)}` : ""}${scene ? `&sceneId=${encodeURIComponent(scene)}` : ""}`;
   return requestWithLegacyRoute<{ projectDirectory: string; runs: WorkflowRunHistoryItem[]; nextCursor?: string }>(`/api/v1/runs${query}`, `/api/workflows/runs${query}`).then(({ value }) => value);
 }
 
