@@ -253,6 +253,8 @@ export interface RunRecord {
   reviewHistory?: import("./productionContracts.js").ReviewDecision[];
   feedbackHistory?: import("./feedbackContracts.js").StepFeedbackRecord[];
   resumedFromRunId?: string;
+  /** 由哪个服务（包）运行创建；媒体授权据此跳过内部场景授权，用户无需被单独授予场景。 */
+  packageRunId?: string;
   rerunFromRunId?: string;
   rerunPlan?: import("./rerunContracts.js").RerunPlan;
   rerunRequest?: import("./rerunContracts.js").RerunRequest;
