@@ -3,7 +3,7 @@ export type { WorkflowMediaRole };
 
 export type SceneId = string;
 
-export type PageId = "home" | "history" | "tasks" | "runs" | "assets" | "packages" | "connections" | "studio" | "flows" | "users" | "credits" | "feedback" | "logs";
+export type PageId = "home" | "history" | "runs" | "assets" | "packages" | "connections" | "studio" | "flows" | "users" | "credits" | "feedback" | "logs";
 
 export interface SceneModule {
   id: SceneId;

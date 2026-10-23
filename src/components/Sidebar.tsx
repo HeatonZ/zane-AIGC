@@ -7,7 +7,6 @@ import {
   Image,
   History as HistoryIcon,
   LayoutDashboard,
-  ListChecks,
   Orbit,
   Package,
   ScrollText,
@@ -49,9 +48,6 @@ export default function Sidebar({ page, sceneId, scenes, onNavigate, onOpenScene
         <span className="nav-section-label">管理导航</span>
         <button className={`nav-item ${page === "home" ? "active" : ""}`} onClick={() => onNavigate("home")} aria-label="管理概览" title="管理概览">
           <LayoutDashboard size={17} /><span>管理概览</span>
-        </button>
-        <button className={`nav-item ${page === "tasks" ? "active" : ""}`} onClick={() => onNavigate("tasks")} aria-label="任务" title="任务">
-          <ListChecks size={17} /><span>任务</span>
         </button>
         <button className={`nav-item ${page === "history" ? "active" : ""}`} onClick={() => onNavigate("history")} aria-label="任务草稿" title="任务草稿">
           <Archive size={17} /><span>任务草稿</span>

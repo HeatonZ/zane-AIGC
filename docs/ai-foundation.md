@@ -1,6 +1,6 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.7.12。当前 150 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.7.13。当前 142 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
 
@@ -720,21 +720,6 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 | `get_clip_candidates` | read |
 | `update_clip_selection` | write |
 | `compose_clip_selection` | execute |
-
-### tasks
-
-任务=批量执行容器：一个任务含最多200个任务项，每项独立固定「已发布场景+versionId+输入」，因此一个任务可以跨场景/跨发布版，用于「一个项目连续出几十张图」而不必建几十条互不相关的运行记录。中间态草稿可反复编辑（items为完整替换、按位置保留itemId），逐项按发布快照校验输入类型/选项与固定素材版本，但保存草稿不校验必填（可以边填边存）；确认前整体判一次必填，缺项返回400 TASK_ITEMS_INCOMPLETE且不冻结、不提交、不计费；确认是单向冻结：先为每项预分配稳定runId落库再逐项提交，响应丢失用同一批runId对账、重复确认不会重复提交或重复计费（alreadyConfirmed）。单项提交失败不阻断整批，失败项可单独重跑（旧runId保留在previousRunIds），等待人工确认的项拒绝重跑、不能绕过审核。进度与状态完全由各项运行状态投影，复用现有运行队列的并发上限、排队、审核与重启恢复，不新建调度器、不新建旁路任务库。取消尽力取消在途项并保留已完成结果；删除任务不删除历史运行、媒体或素材
-
-| 工具 | 副作用 |
-| --- | --- |
-| `list_tasks` | read |
-| `get_task` | read |
-| `create_task` | write |
-| `update_task` | write |
-| `confirm_task` | execute |
-| `rerun_task_item` | execute |
-| `cancel_task` | write |
-| `delete_task` | write |
 
 ### run-quality-audit
 

@@ -85,7 +85,7 @@ export class AiSceneService {
   }
   /**
    * 发布版预检。requireInputs:false 供任务草稿使用：默认值、类型、选项、素材版本与文件照常校验，
-   * 只是不要求必填已填——草稿可以边填边存，必填在确认提交前才判（见 TaskService.confirm）。
+   * 只是不要求必填已填——草稿可以边填边存，必填在确认提交前才判。
    */
   async prepare(sceneId: string, versionId: string, supplied: Record<string, JsonValue>, options: InputValidationOptions = {}) {
     const selected = await this.get(sceneId, versionId);

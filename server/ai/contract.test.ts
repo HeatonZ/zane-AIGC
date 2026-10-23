@@ -163,7 +163,7 @@ test("AI工具说明预算：说明只写调用前事实，字段语义与长文
   const longest = aiOperations.map(operation => ({ name: operation.name, bytes: bytes(operation.description) })).reduce((a, b) => a.bytes >= b.bytes ? a : b);
   assert.ok(longest.bytes <= 900, `工具说明 ${longest.name} 为 ${longest.bytes} 字节超过 900 预算：把它拆到手册分节并在说明里引用节号`);
   // 瘦身不得删掉「调用前就得知道」的事实：写操作必须仍然说明先保存哪个 ID。
-  for (const name of ["submit_scene", "submit_own_scene", "resume_run", "rerun", "create_scene", "publish_scene", "create_task", "create_direct_llm_provider", "submit_run_critique"]) {
+  for (const name of ["submit_scene", "submit_own_scene", "resume_run", "rerun", "create_scene", "publish_scene", "create_direct_llm_provider", "submit_run_critique"]) {
     const description = aiOperations.find(operation => operation.name === name)!.description;
     assert.match(description, /保存/, name + " 的说明必须仍写明写前先保存 ID");
   }

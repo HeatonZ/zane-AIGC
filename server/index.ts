@@ -33,8 +33,6 @@ import { CdkLoginService } from "./services/cdkLoginService.js";
 import { createAiRouter } from "./api/aiRoutes.js";
 import { appendVary, createCompressionMiddleware } from "./api/compression.js";
 import { buildStaticAssetIndex, createStaticAssetMiddleware, isImmutableAsset } from "./api/staticAssets.js";
-import { createTaskRouter } from "./api/taskRoutes.js";
-import { TaskService } from "./services/taskService.js";
 import { AiSceneService } from "./services/aiSceneService.js";
 import { ClipSelectionService } from "./services/clipSelectionService.js";
 import { createClipSelectionRouter } from "./api/clipSelectionRoutes.js";
@@ -191,7 +189,6 @@ app.use(createQualityRouter(new RunQualityService(
 app.use(createAccessRouter(accessService, portalService, creditService, packageCatalogue));
 app.use(createPackageRouter(packageService, codeScenePackages));
 app.use(createAiRouter(aiScenes, runService, readSettings, userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; }));
-app.use(createTaskRouter(new TaskService(metadataStore, aiScenes, runService)));
 app.use(createRunRouter(runService, readSettings, userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; }));
 app.use(createRunMediaExportRouter(new RunMediaExportService(readSettings, (project, id) => runService.getRun(project, id))));
 app.use(createCapabilityRouter(executors, workspaceService));

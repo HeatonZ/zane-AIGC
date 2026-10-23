@@ -63,7 +63,7 @@ test("前端入口不再导入本地场景读写或在启动时应用/重放旧o
 
 test("低频页面按需加载，入口包不为未访问的页面付出体积", async () => {
   const app = await readFile(new URL("../App.tsx", import.meta.url), "utf8");
-  for (const page of ["Logs", "UserManagement", "CreditManagement", "Tasks", "WorkflowRuns", "Library", "PackageManagement", "Studio", "History", "Connections", "SystemFeedback", "FlowDesigner"]) {
+  for (const page of ["Logs", "UserManagement", "CreditManagement", "WorkflowRuns", "Library", "PackageManagement", "Studio", "History", "Connections", "SystemFeedback", "FlowDesigner"]) {
     assert.match(app, new RegExp(`const ${page} = lazy\\(\\(\\) => import\\("\\./features/${page}"\\)\\)`), `${page} 应改为 lazy 加载`);
     assert.doesNotMatch(app, new RegExp(`import ${page} from "\\./features/${page}"`), `${page} 不应再静态导入`);
   }

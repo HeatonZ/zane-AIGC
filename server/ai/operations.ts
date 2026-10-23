@@ -10,7 +10,6 @@ import { createSystemFeedback, systemFeedbackKey, systemFeedbackQuery, handleSys
 import { requestStepAgentFeedback } from "../domain/stepAgentFeedback.js";
 import { draftFavoriteRequest } from "./taskDraftSchemas.js";
 import { catalogueDetailQuery } from "./discovery.js";
-import { cancelTaskRequest, confirmTaskRequest, createTaskRequest, deleteTaskRequest, rerunTaskItemRequest, taskQuery, updateTaskRequest } from "../domain/taskContracts.js";
 import { sceneDiffQuery, sceneDiffValueQuery } from "./sceneDiffSchemas.js";
 export { ASSET_MEDIA_EXECUTION_CONTRACT } from "../domain/assetMediaReference.js";
 export { H3_PROMPT_SECTIONS_CONTRACT } from "../execution/longTextVideo.js";
@@ -33,7 +32,7 @@ export { NOTIFICATION_WEBHOOK_CONTRACT };
 export { LOCAL_MEDIA_CONTRACT } from "../domain/localMedia.js";
 export { RUN_QUALITY_CONTRACT };
 export { DIRECT_LLM_CONTRACT } from "../domain/directLlm.js";
-export const AI_CONTRACT_VERSION = "1.7.12";
+export const AI_CONTRACT_VERSION = "1.7.13";
 export interface AiOperation {
   name: string; path: string; method: "GET" | "POST" | "PATCH" | "DELETE"; description: string;
   schema: z.ZodObject; success: number; effect: "read" | "write" | "execute";
@@ -201,14 +200,6 @@ export const aiOperations: AiOperation[] = [
   operation("get_clip_candidates", "/api/v1/clip-selections/{id}/candidates", "GET", "查询同一修订家族且分镜内容一致的镜头候选及媒体地址。", z.object({ id }).strict()),
   operation("update_clip_selection", "/api/v1/clip-selections/{id}", "PATCH", "用当前 revision 修改名称、完整 shotOrder 或一个 shotId 的 source；source:null 清除该镜头。候选选择会固定媒体版本，不自动跟随新生成。", z.object({ id, revision, name: z.string().min(1).max(160).optional(), shotOrder: z.array(id).optional(), shotId: id.optional(), source: source.nullable().optional() }).strict(), "write"),
   operation("compose_clip_selection", "/api/v1/clip-selections/{id}/compose", "POST", "按完整选片清单创建仅本地自定义代码整理运行，按镜头顺序输出成片媒体序列与清单 JSON，不调用模型、不生成新媒体文件。需要最新 revision 与保存的新 runId。缺镜头拒绝整理；丢回执先查询 runId 与清单 lastRunId。", z.object({ id, revision, runId }).strict(), "execute", 202),
-  operation("list_tasks", "/api/v1/tasks", "GET", "分页读取任务目录。任务=批量执行容器：一个任务含多个任务项，每项固定自己的「已发布场景+versionId+输入」，用于连续出多张图而不必建多条运行记录。进度完全由各项运行状态投影，不是另一套状态机。列表省略 items 与 inputValues 并标记 itemsOmitted，用 get_task 读完整项。游标绑定任务目录快照，变化 409 ACCESS_PAGE_CHANGED 重读第一页。只读，不生成。", taskQuery, "read"),
-  operation("get_task", "/api/v1/tasks/{taskId}", "GET", "读取单个任务的完整任务项（每项 inputValues/state/runId/reviewId/attemptCount/lastError）与进度。status 为 draft 时任务项仍可编辑；confirmedAt 非空后输入冻结，只能 rerun_task_item。只读，不生成。", z.object({ taskId: id }).strict(), "read"),
-  operation("create_task", "/api/v1/tasks", "POST", "创建任务草稿（中间态）：一次最多200个任务项，每项独立指定 sceneId+versionId+inputValues，因此可跨场景、跨发布版。创建时逐项按发布快照校验输入类型/选项与固定素材版本，但不校验必填——草稿允许缺，确认前补齐即可；不发布、不生成、不提交运行，确认前可反复修改。任务项互相独立、不自动串联数据；需要「下一步依赖上一步」时在场景内用步骤 sourceRef 或 execution.carry 表达。调用前保存 taskId；丢回执用 get_task 读同一 ID 对账，不换 ID 重建。", createTaskRequest, "write", 201),
-  operation("update_task", "/api/v1/tasks/{taskId}", "PATCH", "用当前 revision 修改确认前任务草稿的名称/说明/任务项（items 为完整替换、不是局部 patch，按位置保留 itemId）。任务项同样逐项校验场景、发布版本与输入类型/选项/素材版本，但不校验必填（与 create_task 同一口径）。已确认（confirmedAt 非空）的任务拒绝编辑并返回 TASK_ALREADY_CONFIRMED，只能单项重跑。不提交运行、不生成；409 后重读同一任务，不盲重试。", updateTaskRequest, "write"),
-  operation("confirm_task", "/api/v1/tasks/{taskId}/confirm", "POST", "确认任务并按项全自动批量提交为互相独立的运行，可能调用付费 Hermes/ComfyUI。确认是单向冻结：先为每项预分配稳定 runId 落库再逐项提交，因此丢回执用同一批 runId 对账、重复调用不会重复提交或重复计费（alreadyConfirmed:true）。冻结前先整体判一次必填：缺项返回 400 TASK_ITEMS_INCOMPLETE（details.items 指出哪几项）且不冻结、不提交、不计费，补齐后用 update_task 保存再确认。单项提交失败不阻断整批，失败项在 failures 中返回并可单独重跑；并发上限、排队、审核与重启恢复复用现有运行队列。跨项依赖不要寄托在提交顺序上。开始前先 get_task 取当前 revision。", confirmTaskRequest, "execute", 202),
-  operation("rerun_task_item", "/api/v1/tasks/{taskId}/items/{itemId}/rerun", "POST", "重跑任务的单个任务项，可能计费。旧 runId 保留在 previousRunIds 中以便回溯，不覆盖历史结果。正在执行（TASK_ITEM_ACTIVE）或等待人工确认（REVIEW_REQUIRED）的项拒绝重跑，不能借重跑绕过审核。需确认后的任务与当前 revision。", rerunTaskItemRequest, "execute", 202),
-  operation("cancel_task", "/api/v1/tasks/{taskId}/cancel", "POST", "取消任务：标记取消，并尽力取消所有仍在排队/执行/待确认的任务项；已完成的项保留结果，单项取消失败由该项真实状态反映，不回滚也不删除运行记录。可重复调用（已取消时直接返回当前状态）。不删除历史运行、媒体或素材。", cancelTaskRequest, "write"),
-  operation("delete_task", "/api/v1/tasks/{taskId}", "DELETE", "用当前 revision 显式删除任务记录。不删除历史运行、媒体或素材。仍有排队/执行/等待确认的项时返回 409 TASK_ITEM_ACTIVE，需先取消任务。只在用户明确要求删除任务时使用。", deleteTaskRequest, "write"),
 ];
 
 export function operationRequest(operation: AiOperation, input: Record<string, unknown>) {
