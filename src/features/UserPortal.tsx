@@ -200,6 +200,10 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
     if (!activePackage) return;
     const inWorkspace = activePackage.presentation?.layout === "workspace";
     setBusy(true); setError(""); setNotice("");
+    // 提交与「提交后的刷新」必须分开：刷新失败不等于提交失败。
+    // 之前两者共用一个 try，刷新一抛错就走 catch 显示「提交失败」，
+    // 用户以为没提交上又点一次，服务端两次都受理，积分就被扣了两份。
+    let accepted = false;
     try {
       const prepared = await api<{ costPlan: { total: number }; credits?: typeof credits }>("/api/v1/self/packages/" + encodeURIComponent(activePackage.packageId) + "/prepare", jsonBody({ versionId: activePackage.versionId, inputValues: packageValues }));
       if (prepared.credits) setCredits(prepared.credits);
@@ -207,18 +211,27 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
       if (!(await confirm({ message: total > 0 ? "本次最多消耗 " + formatPoints(total) + " 积分，跑完按成功项结算并退还差额。确认提交？" : "确认提交这个服务？", confirmLabel: "确认提交" }))) return;
       const result = await api<{ packageRun: ServiceRunDetail }>("/api/v1/self/packages/" + encodeURIComponent(activePackage.packageId) + "/runs", jsonBody({ versionId: activePackage.versionId, inputValues: packageValues, packageRunId: crypto.randomUUID() }));
       setPackageRun(result.packageRun);
+      accepted = true;
       if (inWorkspace) {
         // 工作台：留在当前页，结果在右侧原地出现；输入不清空，方便改一句再生成。
         setStartedAt(new Date().toISOString());
-        await loadPackageRuns();
       } else {
         setActivePackage(undefined);
         setPage("results");
         setPageAction(undefined);
-        await loadPackageRuns();
       }
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+      return;
+    }
+    // 已受理之后的刷新都是尽力而为：失败只提示刷新，不冒充提交失败。
+    try {
+      await loadPackageRuns();
       await loadCredits();
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch {
+      setNotice(accepted ? "已提交成功，列表刷新失败，可稍后手动刷新查看进度。" : "");
+    } finally { setBusy(false); }
   }
   async function confirmPackageItem(itemId: string, action: "approve" | "redo" | "retry") {
     if (!packageRun) return;
