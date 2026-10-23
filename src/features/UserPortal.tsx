@@ -13,6 +13,8 @@ import PackageRunInputs from "../components/PackageRunInputs";
 import type { ReusableInputs } from "../lib/packageRunInputs";
 import { reusableInputs } from "../lib/packageRunInputs";
 import CopyableId from "../components/CopyableId";
+import { ServiceJsonField, type ServiceJsonFieldShape } from "../components/ServiceJsonField";
+import { stateSummaryNode } from "../components/ServiceStateSummary";
 import { RecentShot } from "../components/RecentShot";
 import { ServicePage, ServiceCard, ServiceQuickStarts, ServiceActionBar, serviceThemeStyle, useBlockAnchor, useScrolled, type ServicePresentation, type ServicePageAction } from "../components/ServicePage";
 import { ServiceWorkspace } from "../components/ServiceWorkspace";
@@ -46,7 +48,7 @@ type ServicePackage = {
 };
 type ActivePackage = ServicePackage & {
   description?: string;
-  fields: Array<{ key: string; label: string; type: string; required: boolean; hidden: boolean; options?: string[]; defaultValue?: unknown; minimum?: number; maximum?: number }>;
+  fields: Array<{ key: string; label: string; type: string; required: boolean; hidden: boolean; options?: string[]; defaultValue?: unknown; minimum?: number; maximum?: number; inputMode?: "object_array"; itemFields?: Array<{ key: string; label: string; type: "text" | "number" | "boolean" | "select"; required: boolean; minimum?: number; maximum?: number; placeholder?: string; options?: string[] }> }>;
   inputDefaults: Record<string, unknown>;
   steps: Array<{ itemId: string; name: string; confirmAfter?: boolean }>;
   presentation?: ServicePresentation;
@@ -88,6 +90,8 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
   const [run, setRun] = useState<OwnRun>();
   const [packages, setPackages] = useState<ServicePackage[]>([]);
   const [activePackage, setActivePackage] = useState<ActivePackage>();
+  /** 包的只读工程账（「这一集已出了哪几段」这类）——包自己写的，宿主原样投影。 */
+  const [packageState, setPackageState] = useState<{ key: string; value: unknown } | null>(null);
   const [packageValues, setPackageValues] = useState<Record<string, unknown>>({});
   const [estimatedCost, setEstimatedCost] = useState<number | null>(null);
   const [packageRuns, setPackageRuns] = useState<ServiceRunSummary[]>([]);
@@ -139,6 +143,13 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
     setEstimatedCost(null);
     setPage("services");
     setPageAction(undefined);
+    // 工程账：读不到就当没有（新包/没出过片），不阻断打开服务。
+    // 包声明了 stateKey 就按它取那条账；不传 key 服务端会回落「最近更新的一条」，可能与包声明的不一致。
+    setPackageState(null);
+    const stateKey = detail.presentation?.workspace?.stateSummary?.stateKey;
+    void api<{ key: string; value: unknown }>("/api/v1/self/packages/" + encodeURIComponent(packageId) + "/state" + (stateKey ? "?key=" + encodeURIComponent(stateKey) : ""))
+      .then(state => setPackageState({ key: state.key, value: state.value }))
+      .catch(() => setPackageState(null));
     if (carried) setNotice(carried.notice.notice);
     else setPrefill(undefined);
     // 预检只读、不计费：打开服务就先算一次上限价，用户填表时能看到「这次要花多少」。
@@ -479,6 +490,7 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
               onBack={() => { setActivePackage(undefined); setPageAction(undefined); }}
               form={serviceFields()}
               result={workspaceResult()}
+              stateSummary={workspaceStateSummary()}
               history={workspaceHistory()}
               resultActions={workspaceResultActions()}
             />
@@ -679,6 +691,16 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
     return resultGallery(latest.packageRunId, "这次已完成，但没有产出图片。换一组输入再试一次。");
   }
 
+  /**
+   * 结果区上方的工程账摘要：把包写在 framework.store 里的东西按 presentation 的
+   * stateSummary 配置渲染出来。短剧包用它在页面上回答「这一集已经出了哪几段」。
+   *
+   * 读不到、或包里根本没这条账时**整块不渲染**——不留一个空标题，也不假装有进度。
+   */
+  function workspaceStateSummary() {
+    return stateSummaryNode(activePackage?.presentation?.workspace?.stateSummary, packageState?.value);
+  }
+
   /** 工作台右侧：当前这次运行的实时状态与产出；没有在跑就显示最近一次完成的结果。 */
   function workspaceResult() {
     if (packageRun && packageRun.stage !== "completed") {
@@ -780,7 +802,13 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
           <option value="">请选择</option>{field.options?.map(option => <option key={option}>{option}</option>)}
         </select> : field.type === "boolean" ? <input type="checkbox" checked={packageValues[field.key] === true} onChange={event => updatePackageValue(field.key, event.target.checked)} />
           : field.type === "number" ? <input className="zclient-input" type="number" step="any" value={packageValues[field.key] === undefined ? "" : String(packageValues[field.key])} onChange={event => updatePackageValue(field.key, event.target.value)} />
-            : field.type === "textarea" || field.type === "json" ? <textarea className="zclient-input zclient-textarea" rows={5} placeholder={String((field as { placeholder?: string }).placeholder ?? "")} value={typeof packageValues[field.key] === "string" ? packageValues[field.key] as string : packageValues[field.key] === undefined ? "" : JSON.stringify(packageValues[field.key], null, 2)} onChange={event => updatePackageValue(field.key, event.target.value)} />
+            : field.type === "textarea" || field.type === "json"
+              ? <ServiceJsonField
+                  field={field as unknown as ServiceJsonFieldShape}
+                  value={packageValues[field.key]}
+                  disabled={busy}
+                  onChange={value => updatePackageValue(field.key, value)}
+                />
               : <input className="zclient-input" type="text" placeholder={String((field as { placeholder?: string }).placeholder ?? "")} value={typeof packageValues[field.key] === "string" ? packageValues[field.key] as string : packageValues[field.key] === undefined ? "" : String(packageValues[field.key])} onChange={event => updatePackageValue(field.key, event.target.value)} />}
       </label>)}
     </>;

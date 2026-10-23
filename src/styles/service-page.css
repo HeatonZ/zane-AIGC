@@ -348,6 +348,30 @@
 .sws-canvas-head h2 { margin: 0; font-size: 13px; font-weight: 620; color: #5b625b; letter-spacing: .02em; }
 .sws-result { flex: 1; display: grid; align-content: start; min-height: 0; }
 
+/* 工程账摘要：包自己记的进度（如「这一集出了哪几段」）。
+   读不到就整块不渲染，所以这里的样式只在真有内容时出现。 */
+.sws-state { min-width: 0; }
+.sws-state-body {
+  display: grid; gap: 9px;
+  padding: 12px 14px;
+  border: 1px solid #dfe3dc;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .72);
+}
+.sws-state-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.sws-state-head strong { font-size: 12.5px; font-weight: 620; color: #3f4740; }
+.sws-state-episode { color: #6e766e; font-size: 11.5px; }
+.sws-state-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.sws-state-list li {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px;
+  background: #eef2ea; color: #46503f; font-size: 11.5px; font-variant-numeric: tabular-nums;
+}
+.sws-state-dot { width: 5px; height: 5px; border-radius: 50%; background: #6f8a5f; }
+.sws-state-text { margin: 0; color: #6e766e; font-size: 11.5px; }
+.sws-state-meta { display: flex; flex-wrap: wrap; gap: 12px; color: #8b918a; font-size: 11px; }
+.sws-state-meta span:empty { display: none; }
+
 /* 工作台里的结果/空态：填满画布，不留大片空白 */
 .sws-result .zclient-gallery { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .sws-result .zclient-shot {

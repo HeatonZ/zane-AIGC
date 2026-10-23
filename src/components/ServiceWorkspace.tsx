@@ -9,7 +9,7 @@ import type { ServicePresentation } from "./ServicePage";
  * 但出图、改图这类高频工具每次都要滚过一大段介绍才到输入框，出完图还要往下滚才看得到结果。
  * 工作台把「调参数」和「看结果」放在同一屏，结果常驻不滚走。
  */
-export function ServiceWorkspace({ presentation, title, summary, form, result, history, resultActions, cost, busy, submitLabel, onSubmit, onBack }: {
+export function ServiceWorkspace({ presentation, title, summary, form, result, history, resultActions, stateSummary, cost, busy, submitLabel, onSubmit, onBack }: {
   presentation?: ServicePresentation;
   title: string;
   summary?: string;
@@ -17,6 +17,8 @@ export function ServiceWorkspace({ presentation, title, summary, form, result, h
   form: ReactNode;
   /** 右侧结果区：当前/最近一次产出。 */
   result: ReactNode;
+  /** 结果区上方的只读工程状态（「这一集已出了哪几段」这类包自己记的账）。省略=不渲染。 */
+  stateSummary?: ReactNode;
   /** 底部最近几次产出（可省略）。 */
   history?: ReactNode;
   /** 结果区右上角操作：例如「用这组参数」。 */
@@ -66,6 +68,7 @@ export function ServiceWorkspace({ presentation, title, summary, form, result, h
           <h2>{workspace.resultTitle ?? presentation?.resultLabels?.sectionTitle ?? "结果"}</h2>
           {resultActions && <div className="sws-canvas-actions">{resultActions}</div>}
         </div>
+        {stateSummary && <div className="sws-state">{stateSummary}</div>}
         <div className="sws-result">{result}</div>
       </section>
     </div>
