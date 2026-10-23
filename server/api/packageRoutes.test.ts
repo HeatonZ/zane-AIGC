@@ -113,6 +113,42 @@ test("管理端目录遇到同 ID 的代码包与配置型包时只返回代码�
   assert.equal(body.packages.filter((item) => item.source === "config").length, 0);
 });
 
+test("配置型包已下线：写入口返回 410，只读目录与历史草稿仍可查", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  // 历史草稿仍在库里（真实库：ai_image 既是代码包又是旧配置包），只读必须还能列出来。
+  const packages = {
+    listDrafts: async () => ({ packages: [{ id: "legacy-config", revision: 3, title: "旧配置包", inputs: [], items: [] }], nextAction: "get_package_draft" }),
+    getDraft: async (id: string) => ({ id, revision: 3, title: "旧配置包", inputs: [], items: [] }),
+    createDraft: async () => { throw new Error("配置型写入口不应被调用"); },
+    updateDraft: async () => { throw new Error("配置型写入口不应被调用"); },
+    publish: async () => { throw new Error("配置型写入口不应被调用"); },
+  } as unknown as PackageService;
+  const app = express();
+  app.use(express.json());
+  app.use((_request, response, next) => { response.locals.identity = { id: "admin", role: "admin" }; response.locals.authorizeAdmin = () => ({ id: "admin", role: "admin" }); next(); });
+  app.use(createPackageRouter(packages, h.service));
+  app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+    response.status(error instanceof HttpError ? error.status : 500).json({ error: (error as Error).message, code: error instanceof HttpError ? error.code : "INTERNAL_ERROR" });
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  t.after(() => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }));
+  const origin = "http://127.0.0.1:" + (server.address() as { port: number }).port;
+
+  // 只读：目录里还能看到历史配置型草稿，详情也读得到。
+  const listed = await (await fetch(origin + "/api/v1/packages", { headers: admin })).json() as { packages: Array<Record<string, unknown>> };
+  assert.equal(listed.packages.filter((item) => item.source === "config").length, 1);
+  assert.equal((await fetch(origin + "/api/v1/packages/legacy-config", { headers: admin })).status, 200);
+
+  // 写入口：新建 / 改草稿 / 发布全部 410，且不触达 PackageService 的写方法。
+  for (const [method, path] of [["POST", "/api/v1/packages"], ["PATCH", "/api/v1/packages/legacy-config"], ["POST", "/api/v1/packages/legacy-config/publish"]] as const) {
+    const response = await fetch(origin + path, { method, headers: admin, body: "{}" });
+    assert.equal(response.status, 410, method + " " + path + " 应返回 410");
+    assert.equal((await response.json() as { code: string }).code, "CONFIG_PACKAGE_RETIRED");
+  }
+});
+
 test("管理端目录同时给出代码包与配置型包，代码包带加载状态与代码路径", async (t) => {
   const h = await harness();
   t.after(() => h.close());

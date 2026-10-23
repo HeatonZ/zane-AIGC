@@ -5,11 +5,12 @@ import type { PackageService } from "../services/packageService.js";
 
 /**
  * 管理端场景包：
- * - 配置型（source: "config"）：草稿 CRUD 与发布，沿用 PackageService。
- * - 代码型（source: "code"）：磁盘代码子工程的加载状态与定制化配置，沿用 CodeScenePackageService。
+ * - 代码型（source: "code"）：磁盘代码子工程的加载状态与定制化配置，唯一可写来源。
+ * - 配置型（source: "config"）：已下线。只保留只读接口（历史草稿与历史运行可查），
+ *   新建/改草稿/发布全部拒绝——避免再产生只存在于库里、永远不会出现在用户面的僵尸包。
  *
- * 两个来源共用一个目录入口，前端靠 `source` 区分；代码型包不提供代码编辑器，
- * 只做执行场景、输入契约、服务页面与定价的覆盖配置（规格 §6）。
+ * 两个来源共用目录入口，前端靠 `source` 区分；代码型包不提供代码编辑器，
+ * 只做执行场景、输入契约与定价的覆盖配置（规格 §6）。
  */
 export function createPackageRouter(packages: PackageService, codePackages: CodeScenePackageService) {
   const router = Router();
@@ -36,19 +37,26 @@ export function createPackageRouter(packages: PackageService, codePackages: Code
     res.json(await packages.getDraft(String(req.params.packageId)));
   });
 
-  router.post("/api/v1/packages", async (req, res) => {
+  // 配置型包已下线：写入口一律 410，让调用方明确知道这条路不再产生任何东西。
+  // 注意必须走 next(error)：Express 4 不会捕获 async 处理函数里抛出的异常，
+  // 直接 throw 会让请求悬挂而不是返回 410。
+  const configPackageRetired = (next: (error?: unknown) => void) => {
+    next(new HttpError(410, "配置型场景包已下线：请改用磁盘上的代码子工程（scene-packages/<包ID>/）", "CONFIG_PACKAGE_RETIRED"));
+  };
+
+  router.post("/api/v1/packages", async (_req, res, next) => {
     res.locals.authorizeAdmin();
-    res.status(201).json(await packages.createDraft(req.body));
+    configPackageRetired(next);
   });
 
-  router.patch("/api/v1/packages/:packageId", async (req, res) => {
+  router.patch("/api/v1/packages/:packageId", async (_req, res, next) => {
     res.locals.authorizeAdmin();
-    res.json(await packages.updateDraft(String(req.params.packageId), req.body));
+    configPackageRetired(next);
   });
 
-  router.post("/api/v1/packages/:packageId/publish", async (req, res) => {
+  router.post("/api/v1/packages/:packageId/publish", async (_req, res, next) => {
     res.locals.authorizeAdmin();
-    res.status(201).json(await packages.publish(String(req.params.packageId), req.body));
+    configPackageRetired(next);
   });
 
   // ---- 代码子工程（场景包）----

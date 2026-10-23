@@ -2,13 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { accessApi, jsonBody } from "../lib/accessApi";
 import type { SceneModule } from "../types";
 import type { SceneVersionRecord } from "../types";
-import PackagePageEditor, { defaultServicePage } from "./PackagePageEditor";
 import type { PackagePresentation } from "../../server/domain/packageContracts.js";
 import { describeCodePackageStatus, inputContractRows, inputOverridePayload, mergePackageCatalog } from "../lib/packageCatalog";
 
-interface PackageItemDraft { id: string; name: string; sceneId: string; versionId: string; inputs: Array<{ key: string; valueSource: "input" | "literal" | "previous"; sourceRef?: string; literalValue?: string }>; confirmAfter?: boolean }
 interface PackagePricingDraft { version: 1; base: number; items: Record<string, { unit: "per_call" | "per_item"; credits: number }> }
-interface PackageDraft { id: string; revision: number; title: string; summary?: string; inputs: Array<Record<string, unknown>>; items: PackageItemDraft[]; pricing?: PackagePricingDraft; presentation?: PackagePresentation }
 
 interface CodePackageConfigDraft {
   revision: number;
@@ -33,7 +30,6 @@ interface CodePackageEntry {
   config?: CodePackageConfigDraft;
 }
 
-const emptyItem = (): PackageItemDraft => ({ id: "item-" + Math.random().toString(36).slice(2, 8), name: "新组件", sceneId: "", versionId: "", inputs: [] });
 
 /** 一条场景包运行记录（服务端 `codeScenePackageRuns`）。 */
 interface CodePackageRunDetail {
@@ -54,19 +50,15 @@ interface CodePackageRunDetail {
 }
 
 /**
- * 管理端场景包：两个来源共用这一页。
- * - 代码子工程（source: code）：磁盘上的代码包，这里只显示加载状态并做定制化配置，不提供代码编辑器。
- * - 配置型包（source: config）：有序组件 + 输入绑定 + 发布，沿用原有流程。
+ * 管理端场景包：磁盘代码子工程是唯一来源。
+ * 这里只显示加载状态并做定制化配置，不提供代码编辑器；配置型包已下线。
  */
 export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }: { scenes: SceneModule[]; sceneVersions: Record<string, SceneVersionRecord>; onOpenRuns?: (sceneId: string) => void }) {
-  const [packages, setPackages] = useState<PackageDraft[]>([]);
   const [codePackages, setCodePackages] = useState<CodePackageEntry[]>([]);
-  const [selected, setSelected] = useState<PackageDraft | null>(null);
   const [selectedCodeId, setSelectedCodeId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [packageId] = useState(() => "pkg-" + crypto.randomUUID().slice(0, 8));
   /** 正在提交运行的包（null = 未打开运行面板）。 */
   const [runPackageId, setRunPackageId] = useState<string | null>(null);
   const [runInputs, setRunInputs] = useState<Record<string, string>>({});
@@ -76,15 +68,14 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
 
   async function attempt(action: () => Promise<void>) { setError(""); try { await action(); } catch (e) { setError((e as Error).message); } }
   async function load() {
-    const data = await accessApi<{ packages: Array<PackageDraft & { source?: string }>; codePackages?: CodePackageEntry[] }>("/api/v1/packages");
-    setPackages(data.packages.filter(item => item.source !== "code"));
+    const data = await accessApi<{ codePackages?: CodePackageEntry[] }>("/api/v1/packages");
     setCodePackages(data.codePackages ?? []);
   }
   useEffect(() => { void attempt(load); }, []);
 
   const selectedCode = codePackages.find(item => item.packageId === selectedCodeId) ?? null;
   const catalog = mergePackageCatalog(
-    packages.map(item => ({ source: "config" as const, id: item.id, title: item.title, revision: item.revision })),
+    [],
     codePackages.map(item => ({
       source: "code" as const,
       packageId: item.packageId,
@@ -103,44 +94,6 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
     const record = sceneVersions[sceneId];
     return record?.publishedVersionId ?? "";
   };
-
-  async function create() {
-    setBusy(true); setError(""); setNotice("");
-    try {
-      const draft = {
-        id: packageId, title: "新场景包", summary: "", inputs: [],
-        items: [emptyItem()],
-        // 新包直接带一个可发布的默认页面：管理员不需要先理解 page 区块就能看到客户端效果。
-        presentation: { page: defaultServicePage("新场景包", "开始创作") },
-      };
-      const result = await accessApi<{ package: PackageDraft }>("/api/v1/packages", jsonBody(draft));
-      setSelected(result.package);
-      setNotice("已创建草稿，请填写组件与输入绑定，并在下方配置服务页面后发布");
-      await load();
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-  }
-  async function save() {
-    if (!selected) return;
-    setBusy(true); setError(""); setNotice("");
-    try {
-      const result = await accessApi<{ package: PackageDraft }>("/api/v1/packages/" + encodeURIComponent(selected.id), { method: "PATCH", body: JSON.stringify({ revision: selected.revision, title: selected.title, summary: selected.summary, inputs: selected.inputs, items: selected.items, ...(selected.pricing ? { pricing: selected.pricing } : {}), ...(selected.presentation ? { presentation: selected.presentation } : {}) }) });
-      setSelected(result.package);
-      setNotice("草稿已保存 · r" + result.package.revision);
-      await load();
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-  }
-  async function publish() {
-    if (!selected) return;
-    setBusy(true); setError(""); setNotice("");
-    try {
-      const result = await accessApi<{ version: { versionId: string; version: string }; created: boolean }>("/api/v1/packages/" + encodeURIComponent(selected.id) + "/publish", jsonBody({ revision: selected.revision, publicationId: crypto.randomUUID() }));
-      setNotice((result.created ? "已发布" : "该版本已存在") + " · " + result.version.version);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-  }
-  function patchItem(index: number, patch: Partial<PackageItemDraft>) {
-    if (!selected) return;
-    setSelected({ ...selected, items: selected.items.map((item, position) => position === index ? { ...item, ...patch } : item) });
-  }
 
   // ---- 代码子工程：配置写回服务端（revision 保护），保存后点「重新加载此包」生效 ----
   function patchCode(patch: Partial<CodePackageConfigDraft>) {
@@ -257,7 +210,7 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
   }
 
   return <div className="access-stack">
-    <header className="access-heading"><div><h1>场景包</h1><p>场景包有两个来源：磁盘上的代码子工程（工作台启动时加载，代码由用户或 agent 维护）与配置型包（把多个已发布场景按顺序串起来）。这一页只做配置，不写代码。</p></div><button className="button button-outline" onClick={() => void attempt(load)}>刷新</button></header>
+    <header className="access-heading"><div><h1>场景包</h1><p>场景包来自磁盘上的代码子工程：工作台启动时加载，代码由用户或 agent 维护。这一页只做配置，不写代码。</p></div><button className="button button-outline" onClick={() => void attempt(load)}>刷新</button></header>
     {error && <p role="alert" className="access-error">{error}</p>}
     {notice && <p role="status" className="access-success">{notice}</p>}
 
@@ -369,87 +322,5 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
       </div>}
     </section>}
 
-    <section className="access-card">
-      <h2>配置型场景包</h2>
-      <ul className="access-list">{packages.map(item => <li key={item.id}>
-        <button className="access-link" onClick={() => setSelected(item)}>{item.title}<small>{item.id} · {item.items.length} 项 · r{item.revision} · 配置型</small></button>
-      </li>)}</ul>
-      {!packages.length && <p>还没有配置型场景包。可以先用「从场景创建单组件包」的思路，把已发布场景包成一个包。</p>}
-      <div className="access-inline">
-        <button className="button button-dark" disabled={busy} onClick={() => void create()}>新建空包草稿</button>
-        <small>新包ID：{packageId}</small>
-      </div>
-    </section>
-
-    {selected && <section className="access-card">
-      <h2>编辑 · {selected.title}</h2>
-      <label>标题<input className="text-input" value={selected.title} onChange={e => setSelected({ ...selected, title: e.target.value })} /></label>
-      <label>一句话说明<input className="text-input" value={selected.summary ?? ""} onChange={e => setSelected({ ...selected, summary: e.target.value })} /></label>
-
-      <h3>组件顺序</h3>
-      <div className="package-items">{selected.items.map((item, index) => <div className="package-item" key={item.id}>
-        <div className="package-item-head">
-          <strong>{index + 1}. {item.name}</strong>
-          <button className="button button-outline" disabled={index === 0} onClick={() => setSelected({ ...selected, items: selected.items.map((candidate, position) => position === index ? selected.items[index - 1] : position === index - 1 ? item : candidate) })}>上移</button>
-          <button className="button button-outline" disabled={index === selected.items.length - 1} onClick={() => setSelected({ ...selected, items: selected.items.map((candidate, position) => position === index ? selected.items[index + 1] : position === index + 1 ? item : candidate) })}>下移</button>
-          <button className="button button-outline" disabled={selected.items.length <= 1} onClick={() => setSelected({ ...selected, items: selected.items.filter((_candidate, position) => position !== index) })}>删除</button>
-        </div>
-        <div className="package-item-grid">
-          <label>项ID<input className="text-input" value={item.id} onChange={e => patchItem(index, { id: e.target.value })} /></label>
-          <label>名称<input className="text-input" value={item.name} onChange={e => patchItem(index, { name: e.target.value })} /></label>
-          <label>组件场景<select className="text-input" value={item.sceneId} onChange={e => patchItem(index, { sceneId: e.target.value, versionId: publishedVersionOf(e.target.value) })}>
-            <option value="">请选择</option>
-            {scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.title}</option>)}
-          </select></label>
-          <label>发布版本<input className="text-input" value={item.versionId} onChange={e => patchItem(index, { versionId: e.target.value })} placeholder="选场景后自动填当前发布版" /></label>
-          <label className="package-confirm"><input type="checkbox" checked={Boolean(item.confirmAfter)} onChange={e => patchItem(index, { confirmAfter: e.target.checked })} />完成后停下等我确认</label>
-        </div>
-        <h4>输入绑定</h4>
-        <div className="package-bindings">{item.inputs.map((binding, bindingIndex) => <div className="package-binding" key={bindingIndex}>
-          <input className="text-input" value={binding.key} onChange={e => patchItem(index, { inputs: item.inputs.map((candidate, position) => position === bindingIndex ? { ...candidate, key: e.target.value } : candidate) })} placeholder="组件输入键" />
-          <select className="text-input" value={binding.valueSource} onChange={e => patchItem(index, { inputs: item.inputs.map((candidate, position) => position === bindingIndex ? { ...candidate, valueSource: e.target.value as typeof binding.valueSource } : candidate) })}>
-            <option value="input">来自包输入</option>
-            <option value="literal">固定值</option>
-            <option value="previous">来自前一项产出</option>
-          </select>
-          <input className="text-input" value={binding.sourceRef ?? ""} onChange={e => patchItem(index, { inputs: item.inputs.map((candidate, position) => position === bindingIndex ? { ...candidate, sourceRef: e.target.value } : candidate) })} placeholder={binding.valueSource === "previous" ? "项ID.输出键" : "input.键"} />
-          <input className="text-input" value={binding.literalValue ?? ""} onChange={e => patchItem(index, { inputs: item.inputs.map((candidate, position) => position === bindingIndex ? { ...candidate, literalValue: e.target.value } : candidate) })} placeholder="固定值（可选）" />
-          <button className="button button-outline" onClick={() => patchItem(index, { inputs: item.inputs.filter((_candidate, position) => position !== bindingIndex) })}>移除</button>
-        </div>)}
-          <button className="button button-outline" onClick={() => patchItem(index, { inputs: [...item.inputs, { key: "", valueSource: "input", sourceRef: "" }] })}>添加绑定</button>
-        </div>
-      </div>)}
-      </div>
-      <h3>定价</h3>
-      <p className="access-hint">价格属于这个服务，替换内部场景不会改价。留空表示不收费；未配置时回退组件场景定价。</p>
-      <div className="package-pricing">
-        <label>基础分（每次运行）<input className="text-input" type="number" min="0" step="0.01" value={selected.pricing?.base ?? ""} placeholder="0" onChange={e => {
-          const raw = e.target.value.trim();
-          const base = Number(raw);
-          const items = selected.pricing?.items ?? {};
-          const next = raw === "" || !Number.isFinite(base) ? items : { ...items };
-          setSelected({ ...selected, pricing: Object.keys(next).length || raw !== "" ? { version: 1, base: Number.isFinite(base) ? base : 0, items: next } : undefined });
-        }} /></label>
-        {selected.items.map(item => <label key={item.id}>{item.name || item.id}
-          <input className="text-input" type="number" min="0" step="0.01" placeholder="不收费"
-            value={selected.pricing?.items[item.id]?.credits ?? ""}
-            onChange={e => {
-              const raw = e.target.value.trim();
-              const credits = Number(raw);
-              const items = { ...(selected.pricing?.items ?? {}) };
-              if (raw === "" || !Number.isFinite(credits)) delete items[item.id];
-              else items[item.id] = { unit: selected.pricing?.items[item.id]?.unit ?? "per_call", credits };
-              setSelected({ ...selected, pricing: { version: 1, base: selected.pricing?.base ?? 0, items } });
-            }} />
-        </label>)}
-      </div>
-      <div className="access-inline">
-        <button className="button button-outline" onClick={() => setSelected({ ...selected, items: [...selected.items, emptyItem()] })}>添加组件</button>
-        <button className="button button-dark" disabled={busy} onClick={() => void save()}>保存草稿</button>
-        <button className="button button-dark" disabled={busy} onClick={() => void publish()}>发布</button>
-      </div>
-    </section>}
-
-    {selected && <PackagePageEditor presentation={selected.presentation} onChange={presentation => setSelected({ ...selected, presentation })} />}
   </div>;
 }
