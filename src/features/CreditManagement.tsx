@@ -6,6 +6,8 @@ import { formatPoints } from "../../server/domain/creditUnits.js";
 interface Batch { batchId: string; name: string; faceValue: number; codeCount: number; createdAt: string; unused: number; redeemed: number; voided: number; packageId?: string; expiresAt?: string; note?: string }
 interface RedeemCode { codeId: string; codeHint: string; status: "unused" | "redeemed" | "void"; faceValue: number; code?: string; recoverable: boolean; redeemedBy?: string; redeemedAt?: string; voidedAt?: string; voidedBy?: string; reclaimedFaceValue?: number; expiresAt?: string; createdAt: string }
 interface BatchDetail { batch: Batch; codes: RedeemCode[]; counts: { unused: number; redeemed: number; voided: number }; recoverable: boolean }
+/** 可绑定的服务（场景包）：id 是包 ID，title 是给人看的名字。 */
+interface ServiceOption { id: string; title: string }
 
 const statusLabels: Record<RedeemCode["status"], string> = { unused: "未使用", redeemed: "已兑换", void: "已作废" };
 
@@ -18,7 +20,8 @@ export default function CreditManagement() {
   const [count, setCount] = useState("10");
   const [expiresAt, setExpiresAt] = useState("");
   const [packageId, setPackageId] = useState("");
-  const [serviceOptions, setServiceOptions] = useState<Array<{ id: string; title: string }>>([]);
+  const [serviceOptions, setServiceOptions] = useState<ServiceOption[]>([]);
+  const [servicesLoaded, setServicesLoaded] = useState(false);
   const [batchId, setBatchId] = useState<string>(() => crypto.randomUUID());
   /** 未确认落库的批次ID：失败重试沿用它，成功后清空并轮换。 */
   const [pendingBatchId, setPendingBatchId] = useState<string | null>(null);
@@ -31,9 +34,31 @@ export default function CreditManagement() {
 
   async function attempt(action: () => Promise<void>) { setError(""); try { await action(); } catch (e) { setError((e as Error).message); } }
   async function loadBatches() { setBatches((await accessApi<{ batches: Batch[] }>("/api/v1/redeem-batches")).batches); }
+  /**
+   * 绑定服务下拉框的数据源。
+   * 管理端 `/api/v1/packages` 返回的是代码包注册项：ID 在 `packageId`、显示名在
+   * `manifest.title`。早先这里按 `id`/`title` 读，两个都是 undefined，下拉框只剩
+   * 一对空括号——不是没数据，是字段名读错了。
+   *
+   * 同时按状态过滤：加载失败（error）或已停用（disabled）的包不能绑——绑上去用户
+   * 登录即进入一个跑不起来的服务。失败也不再静默吞成空列表，要把原因放到界面上，
+   * 否则管理员只会看到空括号，无从判断是没包还是接口挂了。
+   */
   async function loadServices() {
-    const data = await accessApi<{ packages: Array<{ id: string; title: string }> }>("/api/v1/packages").catch(() => ({ packages: [] }));
-    setServiceOptions(data.packages.map(item => ({ id: item.id, title: item.title })));
+    const data = await accessApi<{ packages?: Array<Record<string, unknown>> }>("/api/v1/packages");
+    const options: ServiceOption[] = [];
+    for (const entry of data.packages ?? []) {
+      const id = typeof entry.packageId === "string" ? entry.packageId : "";
+      if (!id) continue;
+      const disabled = entry.enabled === false || entry.status === "disabled" || entry.status === "error";
+      if (disabled) continue;
+      const manifest = (entry.manifest ?? {}) as { title?: string };
+      const title = typeof manifest.title === "string" && manifest.title.trim() ? manifest.title.trim() : id;
+      options.push({ id, title });
+    }
+    options.sort((left, right) => left.title.localeCompare(right.title, "zh-Hans-CN") || left.id.localeCompare(right.id));
+    setServiceOptions(options);
+    setServicesLoaded(true);
   }
   useEffect(() => { void attempt(loadBatches); void attempt(loadServices); }, []);
   async function loadReconciliation() { setReconciliation(await accessApi<typeof reconciliation>("/api/v1/settings/credits/reconciliation")); }
@@ -142,7 +167,9 @@ export default function CreditManagement() {
         <label>绑定服务（用户登录后直接进入）<select className="text-input" value={packageId} onChange={e => setPackageId(e.target.value)}>
           <option value="">不绑定（登录后自己挑）</option>
           {serviceOptions.map(option => <option key={option.id} value={option.id}>{option.title}（{option.id}）</option>)}
-        </select></label>
+        </select>
+        {servicesLoaded && !serviceOptions.length && <small className="access-muted">当前没有可绑定的服务：场景包未加载成功或尚未部署。</small>}
+        </label>
       </div>
       <button className="button button-dark" disabled={busy || Number(faceValue) < 1 || Number(count) < 1 || Number(count) > 500} onClick={() => void createBatch()}>生成</button>
       <small>下一个批次ID：{batchId}{pendingBatchId ? "（上次提交未确认，重试会沿用这个ID，避免重复建批）" : ""}</small>
