@@ -9,7 +9,7 @@ import { AiSceneService } from "../../server/services/aiSceneService.js";
 import { createWorkspaceRouter } from "../../server/api/systemRoutes.js";
 import { HttpError } from "../../server/errors.js";
 import { normalizeWorkspaceSnapshot } from "./workspaceStorage.js";
-import { readAuthoritativeWorkspace, retainWorkspaceReferences } from "./workspaceSync.js";
+import { readAuthoritativeWorkspace, retainWorkspaceReferences, diffWorkspaceForMerge } from "./workspaceSync.js";
 import { RetainedSaveQueue } from "./retainedSaveQueue.js";
 import { sortWorkflowDrafts } from "./drafts.js";
 import { sceneDraftMatchesVersion } from "./sceneVersions.js";
@@ -49,15 +49,17 @@ async function client(t: test.TestContext, onServer: (base: string) => Promise<v
 
   let current = readAuthoritativeWorkspace(await workspace.get());
   let pendingCount = 0; let syncError = "";
+  /** 模拟一次网络失败：保存未确认时发布绝不能在本机留下服务端没有的版本号。 */
+  let failNextMerge = false;
   const queue = new RetainedSaveQueue<WorkspaceSnapshot>({
     send: async (previous, desired) => {
+      if (failNextMerge) { failNextMerge = false; throw new Error("Failed to fetch"); }
       const response = await fetch(base + "/api/workspace/merge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base: previous, workspace: desired }) });
       const body = await response.json() as { workspace?: WorkspaceSnapshot; error?: string; code?: string };
       if (!response.ok) throw new Error(body.error + " [" + body.code + "]");
       return readAuthoritativeWorkspace(body.workspace);
     },
-    persist: entries => { pendingCount = entries.length; },
-    saved: (value, remaining) => { if (!remaining) { apply(value); syncError = ""; } },
+    saved: (value, remaining) => { pendingCount = remaining; if (!remaining) { apply(value); syncError = ""; } },
     failed: error => { syncError = error.message; },
   });
   function apply(value: WorkspaceSnapshot) { current = retainWorkspaceReferences(current, { ...value, drafts: sortWorkflowDrafts(value.drafts) }); }
@@ -77,8 +79,26 @@ async function client(t: test.TestContext, onServer: (base: string) => Promise<v
     const hasUnpublishedChanges = !sceneDraftMatchesVersion(scene, flow, current.optionPresets, version);
     return { hasUnpublishedChanges, saveStatus, canPublish: hasUnpublishedChanges && saveStatus === "saved", syncError, bodyTemplate: JSON.stringify(flow.steps[0].capabilityConfig?.bodyTemplate) };
   };
+  /**
+   * 复刻 App.tsx 的发布链路：stageWorkspace 只入队不应用本机，回执才写本地版本。
+   * 返回 published 说明界面是否真的拿到了服务端确认的版本号。
+   */
+  async function publishLocal() {
+    const snapshot = current;
+    const record = snapshot.sceneVersions.third;
+    const value = { ...snapshot, revision: (snapshot.revision ?? 0) + 1 };
+    queue.enqueue(snapshot, normalizeWorkspaceSnapshot(value, snapshot));
+    await queue.waitForSaved();
+    return record;
+  }
   await onServer(base);
-  return { workspace, scenes, queue, current: () => current, edit, status, base };
+  return {
+    workspace, scenes, queue, current: () => current, edit, status, base,
+    failNextMerge: () => { failNextMerge = true; },
+    publishLocal,
+    /** 本机记录的发布版本号（不读服务端）。 */
+    localPublishedVersionId: () => current.sceneVersions.third?.publishedVersionId ?? null,
+  };
 }
 
 test("第三方请求JSON配置编辑不在同revision被回退：落库、立即产生差异并可发布", async t => {
@@ -90,7 +110,8 @@ test("第三方请求JSON配置编辑不在同revision被回退：落库、立�
   const committed = c.status();
   assert.deepEqual(JSON.parse(committed.bodyTemplate), { prompt: "{{prompt}}", size: "1024x1024" }, "本机应立即看到刚编辑的JSON配置");
   assert.equal(committed.hasUnpublishedChanges, true, "编辑后必须立刻出现未发布差异");
-  assert.equal(committed.saveStatus, "saving");
+  // 编辑会立即提交服务端；本地回环很快时这一步可能已经拿到回执，两种状态都算正常。
+  assert.ok(["saving", "saved"].includes(committed.saveStatus), committed.saveStatus);
 
   await c.queue.waitForSaved();
   const saved = c.status();
@@ -128,6 +149,27 @@ test("保存未确认时的连续编辑不回退也不误报冲突；不同字�
   assert.deepEqual(authoritative.workflows.third.steps[0].capabilityConfig.bodyTemplate, { prompt: "{{prompt}}", size: "1024x1024", quality: "high" });
 });
 
+test("保存未确认时发布会抛错，且本机不留下服务端没有的版本号", async t => {
+  // 真实故障：发布按钮用 aria-disabled，点击仍会进入 publish()；旧实现先 applyWorkspace
+  // 再等服务端，保存一失败界面就显示“已发布 v…”，而服务端根本没有那个版本。
+  const c = await client(t, async () => {});
+  c.edit({ prompt: "{{prompt}}", size: "1024x1024" });
+  await c.queue.waitForSaved();
+  const before = c.localPublishedVersionId();
+
+  c.failNextMerge();
+  // waitForSaved 会把底层网络错误收敛成“保存尚未确认”，这正是发布应上报的原因。
+  await assert.rejects(c.publishLocal(), /保存尚未确认|Failed to fetch/, "保存失败必须抛错，不能宣布发布成功");
+  assert.equal(c.status().saveStatus, "failed");
+  assert.equal(c.localPublishedVersionId(), before, "本机发布版本号必须保持不变");
+
+  // 重试成功后，版本号才允许变化，并且服务端确实记录了它。
+  await c.queue.retry();
+  assert.equal(c.status().saveStatus, "saved");
+  const authoritative = await c.workspace.get() as { sceneVersions: Record<string, { publishedVersionId: string | null }> };
+  assert.ok(authoritative.sceneVersions.third, "服务端必须存在该场景的版本记录");
+});
+
 test("同revision的无关服务端快照仍按节点保留identity，不重置无关表单", () => {
   const base = { format: "zane-studio.workspace/v1", revision: 4, scenes: [], workflows: { a: { sceneId: "a", name: "流程", inputs: [], steps: [], outputs: [] } }, optionPresets: [], drafts: [], sceneVersions: {} } as unknown as WorkspaceSnapshot;
   const incoming = structuredClone(base);
@@ -137,4 +179,78 @@ test("同revision的无关服务端快照仍按节点保留identity，不重置�
   const changed = structuredClone(base);
   changed.workflows.a.name = "改名";
   assert.equal(retainWorkspaceReferences(base, changed).workflows.a.name, "改名");
+});
+
+test("增量上传与服务端全量合并结果等价：编辑/新增/删除都成立", async t => {
+  const h = await productionHarness(t);
+  const workspace = new WorkspaceService(h.store, path.join(h.root, "workspace.json"));
+  t.after(() => workspace.shutdown());
+  const scene = (id: string, title: string) => ({ id, title, shortTitle: title, summary: "", description: "", cover: "", accent: "green" as const, stages: [] });
+  const draft = (id: string, summary: string) => ({ id, sceneId: "one", title: id, summary, inputValues: {}, createdAt: "2026-01-01T00:00:00.000Z", status: "draft" as const });
+  const flow = (name: string) => ({ sceneId: "one", name, inputs: [{ key: "prompt", label: "提示词", type: "text" as const, required: true }], steps: [], outputs: [] });
+  await workspace.initialize({
+    format: "zane-studio.workspace/v1",
+    scenes: [scene("one", "一"), scene("two", "二")],
+    workflows: { one: flow("流程一"), two: flow("流程二") },
+    optionPresets: [],
+    drafts: [draft("d1", "原样"), draft("d2", "原样")],
+    sceneVersions: {},
+  });
+  const base = readAuthoritativeWorkspace(await workspace.get());
+
+  // 三种改动：改一个草稿、删一个草稿、改一个场景标题（另有一个场景完全没动）
+  const desired: WorkspaceSnapshot = {
+    ...base,
+    scenes: base.scenes.map(item => item.id === "one" ? { ...item, title: "改名后" } : item),
+    drafts: base.drafts.filter(item => item.id !== "d2").map(item => item.id === "d1" ? { ...item, summary: "改过了" } : item),
+    workflows: { ...base.workflows, one: flow("流程一改名") },
+  };
+
+  const patch = diffWorkspaceForMerge(base, desired);
+  // 未改动的内容不应出现在上传体里
+  assert.equal(patch.workspace.scenes.length, 1, "只有改名的场景需要上传");
+  assert.equal(patch.workspace.drafts.length, 1, "只有改过的草稿需要上传");
+  assert.deepEqual(Object.keys(patch.workspace.workflows), ["one"]);
+  // 删除项必须让服务端看见"从有到无"
+  assert.equal(patch.base.drafts.length, 2, "base 侧要带上被删草稿");
+  assert.ok(patch.base.drafts.some(item => item.id === "d2"));
+  const raw = JSON.stringify({ base, workspace: desired }).length;
+  const slim = JSON.stringify(patch).length;
+  // 这个小样本的固定开销（format/revision 等）占比很高，只断言"没有变大"。
+  assert.ok(slim <= raw, `增量上传不应比全量更大：${slim} vs ${raw}`);
+
+  const merged = readAuthoritativeWorkspace(await workspace.merge(patch.base, patch.workspace));
+  assert.deepEqual(merged.scenes.map(item => item.title), ["改名后", "二"]);
+  assert.deepEqual(merged.drafts.map(item => item.id), ["d1"]);
+  assert.equal(merged.drafts[0].summary, "改过了");
+  assert.equal(merged.workflows.one.name, "流程一改名");
+  assert.equal(merged.workflows.two.name, "流程二", "未上传的流程必须保持原值");
+
+  // 与全量合并的结果一致：换一个干净的工作区，避免上一步的合并污染基线。
+  const h2 = await productionHarness(t);
+  const workspace2 = new WorkspaceService(h2.store, path.join(h2.root, "workspace.json"));
+  t.after(() => workspace2.shutdown());
+  await workspace2.initialize(JSON.parse(JSON.stringify({ ...base, revision: undefined })));
+  const base2 = readAuthoritativeWorkspace(await workspace2.get());
+  const full = readAuthoritativeWorkspace(await workspace2.merge(base2, { ...desired, revision: undefined }));
+  assert.deepEqual(
+    { scenes: full.scenes.map(item => item.title), drafts: full.drafts.map(item => [item.id, item.summary]), workflows: Object.fromEntries(Object.entries(full.workflows).map(([id, w]) => [id, w.name])) },
+    { scenes: merged.scenes.map(item => item.title), drafts: merged.drafts.map(item => [item.id, item.summary]), workflows: Object.fromEntries(Object.entries(merged.workflows).map(([id, w]) => [id, w.name])) },
+  );
+});
+
+test("接近真实体量时增量上传把请求体从 MB 级降到 KB 级", () => {
+  const filler = "剧情与画面描述。".repeat(400);
+  const scenes = Array.from({ length: 16 }, (_, i) => ({ id: "s" + i, title: "场景" + i, shortTitle: "s", summary: filler, description: filler, cover: "", accent: "green" as const, stages: [] }));
+  const drafts = Array.from({ length: 54 }, (_, i) => ({ id: "d" + i, sceneId: "s0", title: "草稿" + i, summary: filler, inputValues: { text: filler }, createdAt: "2026-01-01T00:00:00.000Z", status: "draft" as const }));
+  const base = { format: "zane-studio.workspace/v1" as const, revision: 10, scenes, workflows: {}, optionPresets: [], drafts, sceneVersions: {} } as unknown as WorkspaceSnapshot;
+  const desired = { ...base, drafts: base.drafts.map((item, i) => i === 0 ? { ...item, summary: "只改了第一份" } : item) } as WorkspaceSnapshot;
+
+  const full = JSON.stringify({ base, workspace: desired }).length;
+  const patch = diffWorkspaceForMerge(base, desired);
+  const slim = JSON.stringify(patch).length;
+  assert.ok(full > 500_000, "样本要接近真实工作区体量：" + full);
+  assert.ok(slim < full / 20, `增量应至少小 20 倍：${slim} vs ${full}`);
+  assert.equal(patch.workspace.drafts.length, 1, "只上传改过的那一份草稿");
+  assert.equal(patch.workspace.scenes.length, 0, "未改动的场景不上传");
 });

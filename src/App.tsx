@@ -1,33 +1,40 @@
 import { sortWorkflowDrafts } from "./lib/drafts";
 import { getTaskDraft, setTaskDraftFavorite } from "./lib/taskDraftApi";
 import { DraftFavoriteUnconfirmedError, writeDraftFavorite } from "./lib/draftFavoriteWrite";
-import LegacyConfigRecovery from "./components/LegacyConfigRecovery";
 import { useConfirmDialog } from "./components/ConfirmDialog";
-import SystemFeedback from "./features/SystemFeedback";
-import UserManagement from "./features/UserManagement";
-import { RetainedSaveQueue, type PendingSave } from "./lib/retainedSaveQueue";
+import { RetainedSaveQueue } from "./lib/retainedSaveQueue";
+import { saveWaitTimeoutMs, workspaceSaveStallTimeoutMs, type SaveStatus } from "./lib/saveGate";
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, Command, Database, LoaderCircle, RotateCw, Rocket } from "lucide-react";
 import Sidebar from "./components/Sidebar";
-import Connections from "./features/Connections";
 import Dashboard from "./features/Dashboard";
-import History from "./features/History";
-import Tasks from "./features/Tasks";
-import WorkflowRuns from "./features/WorkflowRuns";
-import Library from "./features/Library";
-import Studio from "./features/Studio";
 import { getScene } from "./data/scenes";
 import { createSceneWorkflow } from "./data/workflows";
 import { cancelWorkflowRun as requestWorkflowRunCancellation, checkConnections, initializeWorkspace, loadWorkspace, loadWorkspaceStatus, mergeWorkspace, runWorkflow, submitWorkflowRerun, waitForWorkflowRun } from "./lib/api";
 import { createScene, moveScene } from "./lib/sceneStorage";
 import { createEmptyWorkspaceSnapshot, normalizeWorkspaceSnapshot } from "./lib/workspaceStorage";
-import { readAuthoritativeWorkspace, loadAuthoritativeWorkspace, parseRetainedWorkspaceEdits, retainWorkspaceReferences, replaceWorkspaceFromAuthority, WorkspaceSynchronizer } from "./lib/workspaceSync";
+import { readAuthoritativeWorkspace, loadAuthoritativeWorkspace, diffWorkspaceForMerge, retainWorkspaceReferences, replaceWorkspaceFromAuthority, WorkspaceSynchronizer } from "./lib/workspaceSync";
 import { createId } from "./lib/ids";
 import { downloadScenePackage, parseScenePackage, prepareImportedScene } from "./lib/sceneTransfer";
 import { publishedSceneVersion, publishSceneVersion, restoreSceneVersionDraft } from "./lib/sceneVersions";
+// Every page except the landing dashboard is loaded on first visit. Each one is
+// a self-contained screen (some pull in large tables and log rendering), and an
+// operator only opens a couple of them per session, so shipping them all in the
+// entry chunk made every cold start pay for screens it never showed.
 const FlowDesigner = lazy(() => import("./features/FlowDesigner"));
+const Studio = lazy(() => import("./features/Studio"));
+const History = lazy(() => import("./features/History"));
+const Tasks = lazy(() => import("./features/Tasks"));
+const WorkflowRuns = lazy(() => import("./features/WorkflowRuns"));
+const Library = lazy(() => import("./features/Library"));
+const PackageManagement = lazy(() => import("./features/PackageManagement"));
+const UserManagement = lazy(() => import("./features/UserManagement"));
+const CreditManagement = lazy(() => import("./features/CreditManagement"));
+const SystemFeedback = lazy(() => import("./features/SystemFeedback"));
 const Logs = lazy(() => import("./features/Logs"));
-import SceneOrderDialog from "./features/SceneOrderDialog";
+const Connections = lazy(() => import("./features/Connections"));
+const SceneOrderDialog = lazy(() => import("./features/SceneOrderDialog"));
+const pageLoading = (label: string) => <div className="page-loading">{label}</div>;
 import type { ConnectorState, JsonValue, PageId, SceneDetails, SceneId, SceneModule, SceneVersion, SceneVersionRecord, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset, WorkflowRunRecord, WorkspaceSnapshot } from "./types";
 
 import type { RerunRequest } from "../server/domain/rerunContracts.js";
@@ -35,15 +42,17 @@ import type { RerunRequest } from "../server/domain/rerunContracts.js";
 const navLabels: Record<PageId, string> = {
   home: "管理概览",
   users: "用户管理",
+  credits: "积分与卡密",
   feedback: "系统反馈",
+  logs: "运行日志",
   history: "任务草稿",
   tasks: "任务",
   runs: "运行记录",
   assets: "素材库",
+  packages: "场景包",
   connections: "集成连接",
   studio: "创作场景",
   flows: "流程配置",
-  logs: "运行日志",
 };
 
 
@@ -54,7 +63,14 @@ const initialConnectors: ConnectorState[] = [
 ];
 
 export default function App({ userId, displayName, onLogout, onOpenUserView }: { userId: string; displayName: string; onLogout: () => void; onOpenUserView: () => void }) {
-  const outboxStorageKey = "zane-studio:config-outbox:v2:" + userId;
+  // 浏览器不再保存待提交副本；旧版本留下的 outbox 只是占着配额，启动时清掉。
+  useEffect(() => {
+    try {
+      for (const key of Object.keys(window.localStorage)) {
+        if (key === "zane-studio:config-outbox:v1" || key.startsWith("zane-studio:config-outbox:v2:")) window.localStorage.removeItem(key);
+      }
+    } catch { /* 存储不可用时无需处理：本来也不依赖它 */ }
+  }, []);
   const bootstrapWorkspaceRef = useRef<WorkspaceSnapshot | null>(null);
   const initialWorkspace = bootstrapWorkspaceRef.current ?? createEmptyWorkspaceSnapshot();
   bootstrapWorkspaceRef.current = initialWorkspace;
@@ -98,13 +114,16 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
   const [sceneVersions, setSceneVersions] = useState<Record<SceneId, SceneVersionRecord>>(initialWorkspace.sceneVersions);
   const workspaceRef = useRef<WorkspaceSnapshot>(initialWorkspace);
   const workspaceSaveQueueRef = useRef<RetainedSaveQueue<WorkspaceSnapshot> | null>(null);
-  const restoredWorkspaceEditsRef = useRef(false);
-  const outboxReadErrorRef = useRef("");
+  const workspaceAbortInFlightRef = useRef<() => void>(() => {});
+  /** 最近一次 commitWorkspace 被拒绝的原因，供保存草稿等调用方原样上报。 */
+  const commitBlockedReasonRef = useRef("");
   const [workspaceSyncError, setWorkspaceSyncError] = useState("");
   const [workspaceReadError, setWorkspaceReadError] = useState("");
   const [workspaceRevision, setWorkspaceRevision] = useState(initialWorkspace.revision);
   const [workspaceRemoteRevision, setWorkspaceRemoteRevision] = useState<number | null>(null);
   const [workspacePendingCount, setWorkspacePendingCount] = useState(0);
+  /** 待提交编辑停留超过上限仍未拿到回执：不再假装「保存中」，改为需要用户对账。 */
+  const [workspaceSaveStalled, setWorkspaceSaveStalled] = useState(false);
   const [workspaceLegacyRead, setWorkspaceLegacyRead] = useState(false);
   const workspaceSynchronizerRef = useRef<WorkspaceSynchronizer | null>(null);
   const [workspaceStatus, setWorkspaceStatus] = useState<"loading" | "missing" | "ready">("loading");
@@ -113,6 +132,8 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
   const [connectors, setConnectors] = useState<ConnectorState[]>(initialConnectors);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  // 运行记录的场景筛选：从场景包的「查看运行记录」跳过来时带上该包的执行场景。
+  const [runsSceneFilter, setRunsSceneFilter] = useState("");
   const [activeRunIds, setActiveRunIds] = useState<string[]>([]);
   const [pendingSubmissionIds, setPendingSubmissionIds] = useState<string[]>([]);
   const [runStartErrors, setRunStartErrors] = useState<Record<string, string>>({});
@@ -132,43 +153,75 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
   }
 
   if (!workspaceSaveQueueRef.current) {
-    let pending: PendingSave<WorkspaceSnapshot>[] = [];
-    try {
-      pending = parseRetainedWorkspaceEdits(window.localStorage.getItem(outboxStorageKey));
-      restoredWorkspaceEditsRef.current = pending.length > 0;
-    } catch (error) {
-      // Preserve unreadable storage verbatim; only an explicit discard may remove it.
-      restoredWorkspaceEditsRef.current = true;
-      outboxReadErrorRef.current = error instanceof Error ? error.message : "待提交编辑读取失败，原始数据已保留";
-    }
+    // 在途请求的 AbortController：看门狗和「重试」都靠它真正掐断一个卡死的上传，
+    // 否则 retry() 只会返回同一个永不完成的 Promise，按钮看起来点了却毫无反应。
+    let inFlightController: AbortController | undefined;
     workspaceSaveQueueRef.current = new RetainedSaveQueue({
-      initial: pending,
-      send: async (base, desired) => readAuthoritativeWorkspace((await mergeWorkspace(base, desired, userId)).workspace),
-      persist: (entries) => {
-        if (entries.length) window.localStorage.setItem(outboxStorageKey, JSON.stringify(entries));
-        else window.localStorage.removeItem(outboxStorageKey);
-        if (!entries.length) { restoredWorkspaceEditsRef.current = false; outboxReadErrorRef.current = ""; }
-        setWorkspacePendingCount(entries.length);
+      send: async (base, desired) => {
+        inFlightController = new AbortController();
+        try {
+          // 只上传改动：公网上行约 38 KB/s，整份工作区 6MB 要 160 秒并撞 524。
+          const patch = diffWorkspaceForMerge(base, desired);
+          return readAuthoritativeWorkspace((await mergeWorkspace(patch.base, patch.workspace, userId, inFlightController.signal)).workspace);
+        } finally { inFlightController = undefined; }
       },
+      stallTimeoutMs: workspaceSaveStallTimeoutMs,
+      abortInFlight: () => inFlightController?.abort(),
       saved: (workspace, remaining) => {
+        setWorkspacePendingCount(remaining);
         if (!remaining) { applyWorkspace(workspace); setWorkspaceRemoteRevision(workspace.revision ?? null); setWorkspaceSyncError(""); }
       },
       failed: (error) => setWorkspaceSyncError(error.message),
     });
+    workspaceAbortInFlightRef.current = () => inFlightController?.abort();
+  }
+  /** 本机写入被暂停的原因；空串表示可以提交。 */
+  function workspaceCommitBlocked() {
+    if (draftFavoriteBusyRef.current) return "收藏正在确认，请稍后再保存配置";
+    return "";
   }
 
   function commitWorkspace(value: WorkspaceSnapshot) {
-    if (draftFavoriteBusyRef.current) { setWorkspaceSyncError("收藏正在确认，请稍后再保存配置"); return false; }
-    if (restoredWorkspaceEditsRef.current) {
-      setWorkspaceSyncError(outboxReadErrorRef.current || "上次未确认编辑已保留。当前显示服务端场景，请先恢复提交或读取服务端配置，再继续修改");
+    commitBlockedReasonRef.current = workspaceCommitBlocked();
+    if (commitBlockedReasonRef.current) {
+      setWorkspaceSyncError(commitBlockedReasonRef.current);
       return false;
     }
     const base = workspaceRef.current;
     const next = normalizeWorkspaceSnapshot(value, workspaceRef.current);
     applyWorkspace(next);
-    workspaceSaveQueueRef.current!.enqueue(base, next);
+    const queue = workspaceSaveQueueRef.current!;
+    queue.enqueue(base, next);
+    setWorkspacePendingCount(queue.pendingCount);
     return true;
   }
+
+  /**
+   * 只提交、不先应用到本机：等服务端回执（saved）才写入本地状态。
+   * 发布版本必须走这条路径——commitWorkspace 会先 apply，保存失败时界面就会
+   * 宣布一个服务端从未收到的版本号（真实故障：按钮 aria-disabled 仍可点击，
+   * 提示 1.8 秒后消失，标题栏却留着那个版本）。
+   */
+  function stageWorkspace(value: WorkspaceSnapshot) {
+    commitBlockedReasonRef.current = workspaceCommitBlocked();
+    if (commitBlockedReasonRef.current) {
+      setWorkspaceSyncError(commitBlockedReasonRef.current);
+      return false;
+    }
+    const queue = workspaceSaveQueueRef.current!;
+    queue.enqueue(workspaceRef.current, normalizeWorkspaceSnapshot(value, workspaceRef.current));
+    setWorkspacePendingCount(queue.pendingCount);
+    return true;
+  }
+
+  // 「待提交编辑」停留超过上限仍未拿到回执（请求丢失、排队、服务端忙）时，
+  // 旧界面会一直显示「编辑待同步」且没有任何按钮：既没有错误可重试，也无法确认。
+  // 这里把它升级成需要用户对账的状态，顶栏与差异弹窗都据此给出出口。
+  useEffect(() => {
+    if (!workspacePendingCount) { setWorkspaceSaveStalled(false); return; }
+    const timer = window.setTimeout(() => setWorkspaceSaveStalled(true), saveWaitTimeoutMs);
+    return () => window.clearTimeout(timer);
+  }, [workspacePendingCount]);
 
   useEffect(() => {
     let disposed = false;
@@ -180,15 +233,12 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
           setWorkspaceStatus("missing");
           return;
         }
-        // Always display the server snapshot. Restored outbox is retained intent,
-        // not a second catalog and not an automatic write during startup.
+        // Always display the server snapshot; there is no browser-owned workspace copy.
         applyWorkspace(workspace);
         setWorkspacePendingCount(workspaceSaveQueueRef.current!.pendingCount);
         setWorkspaceRemoteRevision(workspace.revision ?? null);
         setWorkspaceStatus("ready");
-        setWorkspaceSyncError(restoredWorkspaceEditsRef.current
-          ? outboxReadErrorRef.current || "上次未确认编辑已保留；当前只显示服务端场景。核对后可恢复提交，或明确放弃并读取服务端配置"
-          : "");
+        setWorkspaceSyncError("");
       } catch (error) {
         if (!disposed) setWorkspaceSyncError(error instanceof Error ? error.message : "服务端管理配置同步失败");
       }
@@ -244,7 +294,7 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
       applyWorkspace(workspace);
       setWorkspaceRemoteRevision(workspace.revision ?? null);
       setWorkspacePendingCount(workspaceSaveQueueRef.current!.pendingCount);
-      setWorkspaceSyncError(restoredWorkspaceEditsRef.current ? outboxReadErrorRef.current || "上次未确认编辑已保留，未导入服务端；请核对后恢复或明确放弃" : "");
+      setWorkspaceSyncError("");
       setWorkspaceStatus("ready");
     } catch (error) {
       setWorkspaceSyncError(error instanceof Error ? error.message : "无法初始化服务端场景目录");
@@ -307,7 +357,7 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
       setWorkspaceSyncError("本机还有未同步配置，请先重试，或选择“读取正式配置”");
       return;
     }
-    if (discardPending && (outbox.pendingCount || restoredWorkspaceEditsRef.current) && !(await confirm({ message: "未确认的编辑尚未成为服务端配置。确定放弃这些待提交内容，并读取服务端权威配置吗？", confirmLabel: "放弃并读取", tone: "danger" }))) return;
+    if (discardPending && outbox.pendingCount && !(await confirm({ message: "未确认的编辑尚未成为服务端配置。确定放弃这些待提交内容，并读取服务端权威配置吗？", confirmLabel: "放弃并读取", tone: "danger" }))) return;
     if (pageRef.current === "studio" && !(await confirm({ message: "刷新可能切换创作的发布版本，并重载表单。请先保存当前任务草稿；确定继续吗？" }))) return;
     const editorEpoch = workspaceEditorEpochRef.current;
     const sourcePage = pageRef.current;
@@ -325,7 +375,7 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
           applyWorkspace(workspace);
           setWorkspaceRemoteRevision(workspace.revision ?? null);
           setWorkspaceStatus("ready");
-          setWorkspaceSyncError(restoredWorkspaceEditsRef.current ? outboxReadErrorRef.current || "上次未确认编辑仍保留，当前显示服务端场景；请明确恢复或放弃" : "");
+          setWorkspaceSyncError("");
           setWorkspaceReadError("");
         },
       });
@@ -335,32 +385,22 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
   }
 
   async function retryPendingWorkspace() {
-    if (outboxReadErrorRef.current) { setWorkspaceSyncError(outboxReadErrorRef.current); return; }
-    if (restoredWorkspaceEditsRef.current) {
-      if (!(await confirm({ message: "当前显示的是服务端场景。恢复提交上次未确认的编辑吗？将保留原 ID 和基线，由服务端校验冲突，不会覆盖冲突配置。" }))) return;
-      try {
-        const workspace = await loadAuthoritativeWorkspace(loadWorkspace);
-        if (!workspace) throw new Error("管理配置尚未初始化，不能恢复旧编辑");
-        // Read before retrying lost receipts; do not display a browser-owned snapshot.
-        setWorkspaceRemoteRevision(workspace.revision ?? null);
-      } catch (error) {
-        setWorkspaceSyncError(error instanceof Error ? error.message : "服务端对账失败，未恢复提交");
-        return;
-      }
-    }
+    // 先掐断可能卡死的在途上传：否则 retry() 只会复用那个永不完成的 Promise，
+    // 用户点了「重试」却看不到任何变化（真实故障）。
+    workspaceAbortInFlightRef.current();
     await workspaceSaveQueueRef.current!.retry();
   }
 
   async function saveDraft(draft: WorkflowDraft) {
     const existing = draftsRef.current.find(item => item.id === draft.id);
     const next = sortWorkflowDrafts([{ ...draft, isFavorite: existing?.isFavorite ?? draft.isFavorite ?? false }, ...draftsRef.current.filter((item) => item.id !== draft.id)]);
-    if (!commitWorkspace({ ...workspaceRef.current, drafts: next })) throw new Error("草稿未提交，请处理待确认编辑");
+    if (!commitWorkspace({ ...workspaceRef.current, drafts: next })) throw new Error(commitBlockedReasonRef.current || "草稿未能提交，请稍后重试");
     await workspaceSaveQueueRef.current!.waitForSaved();
   }
 
   async function reconcileDraftFavorites() {
     const base = workspaceRef.current;
-    if (workspaceSaveQueueRef.current!.pendingCount || restoredWorkspaceEditsRef.current) throw new Error("请先处理未确认的配置编辑，再读取收藏状态");
+    if (workspaceSaveQueueRef.current!.pendingCount) throw new Error("请先处理未确认的配置编辑，再读取收藏状态");
     const snapshot = await loadAuthoritativeWorkspace(loadWorkspace);
     if (!snapshot) throw new Error("服务端工作区尚未初始化");
     if (workspaceRef.current !== base || workspaceSaveQueueRef.current!.pendingCount) throw new Error("读取期间有新编辑，未替换本机内容，请重新对账");
@@ -369,7 +409,7 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
 
   async function changeDraftFavorite(id: string, isFavorite: boolean) {
     if (draftFavoriteBusyRef.current || draftFavoriteUnknown) throw new Error("请先等候或读取服务端收藏状态对账");
-    if (workspaceSaveQueueRef.current!.pendingCount || restoredWorkspaceEditsRef.current) throw new Error("请先处理未确认的配置编辑，再收藏草稿");
+    if (workspaceSaveQueueRef.current!.pendingCount) throw new Error("请先处理未确认的配置编辑，再收藏草稿");
     const base = workspaceRef.current;
     if (!base.revision || !base.drafts.some(draft => draft.id === id)) throw new Error("请先读取服务端任务草稿");
     draftFavoriteBusyRef.current = true; setDraftFavoriteBusy(true);
@@ -492,10 +532,11 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
     if (!scene || !workflow) return undefined;
     const result = publishSceneVersion(snapshot.sceneVersions[sceneIdToPublish], scene, workflow, snapshot.optionPresets);
     if (result.created) {
-      if (!commitWorkspace({
+      // 发布版本不能在回执前写进本机：保存失败时界面会显示一个服务端没有的版本号。
+      if (!stageWorkspace({
         ...snapshot,
         sceneVersions: { ...snapshot.sceneVersions, [sceneIdToPublish]: result.record },
-      })) return undefined;
+      })) throw new Error(commitBlockedReasonRef.current || "发布未提交：请先处理未同步的配置");
     }
     await workspaceSaveQueueRef.current!.waitForSaved();
     return result.version;
@@ -584,6 +625,8 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
   const activeDraft = activeDraftId ? drafts.find((draft) => draft.id === activeDraftId) : undefined;
   const title = page === "studio" ? currentScene.title : navLabels[page];
   const dateLabel = new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
+  // 停滞的「保存中」按未确认处理：否则发布与差异都会无限等待一个不会到达的回执。
+  const workspaceSaveStatus: SaveStatus = workspaceSyncError || workspaceSaveStalled ? "failed" : workspacePendingCount ? "saving" : "saved";
 
   if (workspaceStatus !== "ready") {
     return <main className="workspace-bootstrap">
@@ -614,14 +657,24 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
             <span className="topbar-date">{dateLabel}</span>
             <button className="button button-outline" onClick={onOpenUserView}>用户端预览</button>
             <button className="button button-outline" disabled={workspacePendingCount > 0} onClick={onLogout}>退出 {displayName}</button>
-            <span className="workspace-authority-status" title={`来源：${window.location.origin} · SQLite 权威配置。目录/流程配置为草稿，创作为发布快照。${workspaceLegacyRead ? "旧后台兼容读取共享快照；新增AI操作需升级到匹配契约的后台后生效。" : "轻量revision同步。"}${workspacePendingCount ? "本机修改尚未取得保存回执。" : ""}`}>
-              {workspacePendingCount ? `${restoredWorkspaceEditsRef.current ? "旧编辑待确认" : "编辑待同步"} · 服务端 r${workspaceRevision ?? "—"}` : `共享配置 r${workspaceRevision ?? "—"}`}
+            <span className="workspace-authority-status" title={`来源：${window.location.origin} · SQLite 权威配置。目录/流程配置为草稿，创作为发布快照。${workspaceLegacyRead ? "旧后台兼容读取共享快照；新增AI操作需升级到匹配契约的后台后生效。" : "轻量revision同步。"}${workspacePendingCount ? "修改尚未取得服务端保存回执。" : ""}`}>
+              {workspacePendingCount ? `编辑待同步 · 服务端 r${workspaceRevision ?? "—"}` : `共享配置 r${workspaceRevision ?? "—"}`}
             </span>
             {workspaceRemoteRevision !== null && workspaceRemoteRevision !== workspaceRevision && <span className="workspace-update-notice" role="status">配置有更新 · 待同步 r{workspaceRemoteRevision}</span>}
             {studioPublicationChanged && <span className="workspace-update-notice" role="status">发布版有更新 · 当前创作保留原版</span>}
             {workspaceReadError && <span className="workspace-update-notice" role="status" title={workspaceReadError}>同步读取失败 · 请刷新</span>}
             {workspaceSyncError && <>
-              <button className="button button-outline workspace-sync-status" title={workspaceSyncError} onClick={() => void retryPendingWorkspace()} disabled={Boolean(outboxReadErrorRef.current)}>{restoredWorkspaceEditsRef.current ? "恢复待提交编辑" : "配置未同步 · 重试"}</button>
+              <button className="button button-outline workspace-sync-status" title={workspaceSyncError} onClick={() => void retryPendingWorkspace()}>配置未同步 · 重试</button>
+              <button className="button button-outline workspace-sync-status" title="放弃未同步配置，读取服务端正式配置" onClick={() => void loadLatestWorkspace(true)}>读取正式配置</button>
+            </>}
+            {!workspaceSyncError && workspaceSaveStalled && <>
+              <button className="button button-outline workspace-sync-status" title="本机编辑已等待超过 30 秒仍未取得保存回执；重新提交，不会跳过原基线" onClick={() => void retryPendingWorkspace()}>保存未确认 · 重试</button>
+              <button className="button button-outline workspace-sync-status" title="放弃本机未同步配置，读取正式配置" onClick={() => void loadLatestWorkspace(true)}>读取正式配置</button>
+            </>}
+            {/* 有待提交编辑但没有错误时，旧界面只有一个不可点的状态文字：请求丢失或排队时
+                用户没有任何出口，只能刷新页面。这里补上重试与对账入口。 */}
+            {!workspaceSyncError && !workspaceSaveStalled && workspacePendingCount > 0 && <>
+              <button className="button button-outline workspace-sync-status" title="重新提交本机待确认的配置编辑" onClick={() => void retryPendingWorkspace()}>配置待同步 · 重试</button>
               <button className="button button-outline workspace-sync-status" title="放弃本机未同步配置，读取正式配置" onClick={() => void loadLatestWorkspace(true)}>读取正式配置</button>
             </>}
             <button className="button button-outline workspace-refresh-button" title="从当前后台读取权威配置；有未同步编辑时不会自动覆盖" onClick={() => void loadLatestWorkspace(false)}>刷新配置</button>
@@ -632,27 +685,30 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
             <span className="profile-badge" title="管理员">Z</span>
           </div>
         </header>
-        <LegacyConfigRecovery />
 
         <div className="page-scroll">
           <div className="page-content" key={page === "studio" ? `${page}-${sceneId}` : page}>
+            <Suspense fallback={pageLoading("正在加载页面…")}>
             {page === "home" && <Dashboard drafts={drafts} scenes={scenes} workflows={workflows} optionPresets={optionPresets} sceneVersions={sceneVersions} connectors={connectors} onNavigate={setPage} onOpenScene={openScene} onCreateScene={createWorkspaceScene} onUpdateScene={updateScene} onDeleteScene={deleteScene} onExportScene={exportWorkspaceScene} onImportScene={importWorkspaceScene} onSortScenes={() => setShowSceneOrder(true)} />}
             {page === "studio" && activeStudioPublication && <Studio sceneId={sceneId} scene={activeStudioPublication.scene} workflow={activeStudioPublication.workflow} publication={activeStudioPublication} draft={activeDraft} onNavigate={setPage} onBack={() => setPage("home")} onSaveDraft={saveDraft} onStartRun={startWorkflowRun} onCancelRun={cancelWorkflowRun} onRerunRun={rerunWorkflowRun} />}
             {page === "studio" && !activeStudioPublication && <section className="scene-unpublished"><span className="scene-unpublished-icon"><Rocket size={17} /></span><div><h2>这个场景还没有发布版本</h2><p>暂存配置不会用于创作。完成流程配置并发布后，场景才可使用。</p></div><button className="button button-dark" onClick={() => setPage("flows")}>前往流程配置</button></section>}
             {page === "history" && <History drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} onSetFavorite={changeDraftFavorite} favoriteBusy={draftFavoriteBusy} favoriteUnknown={draftFavoriteUnknown} onReconcileFavorites={reconcileDraftFavorites} />}
             {page === "tasks" && <Tasks onOpenRun={runId => { selectRun(runId); setPage("runs"); }} />}
-            {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} selectedRunId={selectedRunId} onSelectRun={selectRun} onCancelRun={cancelWorkflowRun} onResumeRun={resumeWorkflowRun} onRerunRun={rerunWorkflowRun} activeRunId={selectedRunId !== null && activeRunIds.includes(selectedRunId) ? selectedRunId : null} submissionPending={selectedRunId !== null && pendingSubmissionIds.includes(selectedRunId)} runStartError={selectedRunId ? runStartErrors[selectedRunId] : undefined} />}
+            {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} initialSceneFilter={runsSceneFilter} onSceneFilterChange={setRunsSceneFilter} selectedRunId={selectedRunId} onSelectRun={selectRun} onCancelRun={cancelWorkflowRun} onResumeRun={resumeWorkflowRun} onRerunRun={rerunWorkflowRun} activeRunId={selectedRunId !== null && activeRunIds.includes(selectedRunId) ? selectedRunId : null} submissionPending={selectedRunId !== null && pendingSubmissionIds.includes(selectedRunId)} runStartError={selectedRunId ? runStartErrors[selectedRunId] : undefined} />}
+            {page === "packages" && <PackageManagement scenes={scenes} sceneVersions={sceneVersions} onOpenRuns={sceneId => { setRunsSceneFilter(sceneId); selectRun(null); setPage("runs"); }} />}
             {page === "assets" && <Library drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} onOpenRun={runId => { selectRun(runId); setPage("runs"); }} />}
-            {page === "logs" && <Suspense fallback={<div className="page-loading">正在加载运行日志…</div>}><Logs /></Suspense>}
-            {page === "users" && <UserManagement scenes={scenes} />}
+            {page === "users" && <UserManagement />}
+            {page === "credits" && <CreditManagement />}
             {page === "feedback" && <SystemFeedback key={userId} userId={userId} admin />}
+            {page === "logs" && <Logs />}
             {page === "connections" && <Connections connectors={connectors} onRefresh={refreshConnections} />}
-            {page === "flows" && selectedScene && selectedWorkflow && <Suspense fallback={<div className="page-loading">正在加载流程配置…</div>}><FlowDesigner saveStatus={workspaceSyncError ? "failed" : workspacePendingCount ? "saving" : "saved"} sceneId={sceneId} scenes={scenes} scene={selectedScene} workflow={selectedWorkflow} optionPresets={optionPresets} versionRecord={selectedVersionRecord} onSceneChange={setSceneId} onSortScenes={() => setShowSceneOrder(true)} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onPublish={() => publishWorkspaceScene(sceneId)} onApplyVersion={(version: SceneVersion) => applyWorkspaceSceneVersion(sceneId, version.id)} onOpenConnections={() => setPage("connections")} /></Suspense>}
+            {page === "flows" && selectedScene && selectedWorkflow && <FlowDesigner saveStatus={workspaceSaveStatus} sceneId={sceneId} scenes={scenes} scene={selectedScene} workflow={selectedWorkflow} optionPresets={optionPresets} versionRecord={selectedVersionRecord} onSceneChange={setSceneId} onSortScenes={() => setShowSceneOrder(true)} onChange={updateWorkflow} onOptionPresetsChange={updateOptionPresets} onPublish={() => publishWorkspaceScene(sceneId)} onApplyVersion={(version: SceneVersion) => applyWorkspaceSceneVersion(sceneId, version.id)} onOpenConnections={() => setPage("connections")} />}
+            </Suspense>
           </div>
           <footer className="app-footer"><span>在本地专注创作</span><span><Command size={12} /> ZANE STUDIO</span></footer>
         </div>
       </main>
-      {showSceneOrder && <SceneOrderDialog scenes={scenes} onMoveScene={moveWorkspaceScene} onClose={() => setShowSceneOrder(false)} />}
+      {showSceneOrder && <Suspense fallback={null}><SceneOrderDialog scenes={scenes} onMoveScene={moveWorkspaceScene} onClose={() => setShowSceneOrder(false)} /></Suspense>}
       {confirmDialog}
     </div>
   );

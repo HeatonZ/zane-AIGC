@@ -22,13 +22,13 @@ export function managementListenerKind(host = configuredHost): "loopback" | "lan
 
 const scrypt = promisify(scryptCallback);
 const SYSTEM = "@zane-system";
-export interface UserAccount { id: string; revision: number; username: string; displayName: string; role: "admin" | "user"; enabled: boolean; sceneIds: string[]; createdAt: string; updatedAt: string }
+export interface UserAccount { id: string; revision: number; username: string; displayName: string; role: "admin" | "user"; enabled: boolean; sceneIds: string[]; /** 场景包授权：用户面以包为单位；组件场景不需要单独授权。旧账号可能没有该字段。 */ packageIds?: string[]; createdAt: string; updatedAt: string }
 interface StoredUser extends UserAccount { passwordHash: string; authVersion: number }
 export interface Identity extends UserAccount { authVersion?: number; credentialId?: string }
 interface Credential { id: string; revision: number; userId: string; authVersion: number; hash: string; name: string; kind: "session" | "api"; revoked: boolean; createdAt: string; expiresAt: string }
 export function publicUser(user: StoredUser | Identity): UserAccount {
-  const { id, revision, username, displayName, role, enabled, sceneIds, createdAt, updatedAt } = user;
-  return { id, revision, username, displayName, role, enabled, sceneIds, createdAt, updatedAt };
+  const { id, revision, username, displayName, role, enabled, sceneIds, packageIds, createdAt, updatedAt } = user;
+  return { id, revision, username, displayName, role, enabled, sceneIds, packageIds: packageIds ?? [], createdAt, updatedAt };
 }
 export function runSubmitter(user: Pick<UserAccount, "id" | "username" | "displayName">): RunSubmitter {
   return { userId: user.id, username: user.username, displayName: user.displayName };
@@ -103,6 +103,15 @@ export class AccessService {
     });
     return { user: publicUser(saved), nextAction: "set_user_scene_access" };
   }
+  /** 自助注册：始终建普通用户、空场景授权；积分由调用方按配置发放，不在这里写账本。
+   *  限流与防批量注册复用登录窗口（独立 signup 作用域）。 */
+  async register(input: { userId: string; username: string; displayName: string; password: string }, context: { clientAddress?: string } = {}) {
+    const release = this.loginLimiter.enter(input.username, context.clientAddress, "signup");
+    try {
+      const result = await this.create({ ...input, role: "user" });
+      return result.user;
+    } finally { release(); }
+  }
   private replace(id: string, revision: number, transform: (current: StoredUser) => StoredUser) {
     try {
       const current = this.raw(id); const next = transform(current);
@@ -114,6 +123,44 @@ export class AccessService {
   update(input: { userId: string; revision: number; displayName?: string; role?: "admin" | "user"; enabled?: boolean }, actorId?: string) {
     const result = { user: this.replace(input.userId, input.revision, current => ({ ...current, ...(input.displayName === undefined ? {} : { displayName: input.displayName }), ...(input.role === undefined ? {} : { role: input.role }), ...(input.enabled === undefined ? {} : { enabled: input.enabled }), authVersion: current.authVersion + ((input.role !== undefined && input.role !== current.role) || (input.enabled !== undefined && input.enabled !== current.enabled) ? 1 : 0), updatedAt: new Date().toISOString() })), nextAction: "get_user" };
     this.audit("user.update", actorId, input.userId, { ...(input.role !== undefined ? { role: input.role } : {}), ...(input.enabled !== undefined ? { enabled: input.enabled } : {}), ...(input.displayName !== undefined ? { rename: true } : {}) });
+    return result;
+  }
+  /**
+   * 卡密作废后的身份收敛：卡即身份，用户最后一枚有效卡作废后不再有登录依据。
+   *
+   * - 只处理普通用户；管理员不受卡约束（仍由 update_user 管理）。
+   * - 仅在「没有任何未作废的已兑换卡」时停用，避免多卡用户被一张卡的退款误伤。
+   * - 停用通过 authVersion+1 让所有既有会话与 AI 凭证立即失效，不需要等 24 小时过期。
+   * - 用户之后再兑换一张新卡即可恢复（redeemCode 会重新启用），不删除任何历史与数据。
+   */
+  suspendWithoutActiveCard(userId: string, actorId?: string) {
+    const user = this.store.getDocument<StoredUser>(SYSTEM, "users", userId);
+    if (!user || user.role !== "user" || !user.enabled) return { suspended: false as const };
+    if (this.store.activeRedeemCodeForUser(userId)) return { suspended: false as const };
+    try {
+      this.replace(userId, user.revision, current => ({ ...current, enabled: false, authVersion: current.authVersion + 1, updatedAt: new Date().toISOString() }));
+      this.audit("user.suspend_no_active_card", actorId, userId);
+      return { suspended: true as const };
+    } catch (error) {
+      // 并发下用户被改动（例如刚兑换了新卡）：本次不停用，交给下一次作废或人工处理。
+      log("warn", "access.suspend_no_active_card_failed", { userId, error: String(error) });
+      return { suspended: false as const };
+    }
+  }
+  /** 兑换成功后恢复因卡作废而停用的账户；管理员停用（authVersion 变化）不受影响，需人工启用。 */
+  reactivateForCard(userId: string) {
+    const user = this.store.getDocument<StoredUser>(SYSTEM, "users", userId);
+    if (!user || user.enabled || user.role !== "user") return { reactivated: false as const };
+    this.replace(userId, user.revision, current => ({ ...current, enabled: true, authVersion: current.authVersion + 1, updatedAt: new Date().toISOString() }));
+    this.audit("user.reactivate_with_card", "@cdk", userId);
+    return { reactivated: true as const };
+  }
+  /** 包授权：完整替换；空数组表示不能使用任何包。组件场景不必逐个授权。 */
+  async setPackages(input: { userId: string; revision: number; packageIds: string[] }, knownPackageIds: ReadonlySet<string>, authorize?: () => void, actorId?: string) {
+    if (new Set(input.packageIds).size !== input.packageIds.length || input.packageIds.some(id => !knownPackageIds.has(id))) throw new HttpError(400, "授权包重复或不存在", "INVALID_PACKAGE_ACCESS");
+    authorize?.();
+    const result = { user: this.replace(input.userId, input.revision, current => ({ ...current, packageIds: [...input.packageIds], updatedAt: new Date().toISOString() })), nextAction: "get_user" };
+    this.audit("user.package_access", actorId, input.userId, { packageCount: input.packageIds.length });
     return result;
   }
   async setScenes(input: { userId: string; revision: number; sceneIds: string[] }, authorize?: () => void, actorId?: string) {
@@ -144,6 +191,12 @@ export class AccessService {
       if (context.userOnly && current.role !== "user") throw new HttpError(403, "此入口仅供普通用户登录，请使用私有管理入口", "PUBLIC_USER_ONLY");
       return this.issue(current, "session", randomBytes(16).toString("hex"), "浏览器会话");
     } finally { release(); }
+  }
+  /** CDK 登录：按 userId 签发与密码登录完全相同的 24h 会话凭证。 */
+  issueSession(userId: string) {
+    const user = this.raw(userId);
+    if (!user.enabled) throw new HttpError(401, "账户已停用", "ACCOUNT_DISABLED");
+    return this.issue(user, "session", randomBytes(16).toString("hex"), "浏览器会话");
   }
   private issue(user: StoredUser, kind: Credential["kind"], id: string, name: string) {
     const token = randomBytes(32).toString("base64url"); const now = new Date();
@@ -188,6 +241,20 @@ export class AccessService {
   }
   refresh(identity: Identity): Identity { return identity.id === "@operator" ? identity : { ...this.current(identity), credentialId: identity.credentialId }; }
   authorizeScene(identity: Identity, sceneId: string) { const current = this.refresh(identity); if (current.role !== "admin" && !current.sceneIds.includes(sceneId)) throw new HttpError(403, "没有此场景的使用权限", "SCENE_ACCESS_DENIED"); return current; }
+  /**
+   * 该运行是否属于此人自己的某个服务（包）运行。服务授权以 packageIds 为单位，
+   * 用户没有内部场景的 sceneIds；存量服务运行没有 packageRunId 标记，只能按引用反查。
+   */
+  ownedByPackageRun(run: { runId: string }, ownerUserId: string) {
+    const runs = this.store.listDocumentsAcrossProjects<{ ownerUserId?: string; items?: Array<{ runId?: string }> }>("packageRuns");
+    return runs.some(record => record.ownerUserId === ownerUserId && (record.items ?? []).some(item => item.runId === run.runId));
+  }
+  /** 包授权是用户面的唯一单元：管理员不受限；普通用户只看 packageIds。 */
+  authorizePackage(identity: Identity, packageId: string) {
+    const current = this.refresh(identity);
+    if (current.role !== "admin" && !(current.packageIds ?? []).includes(packageId)) throw new HttpError(403, "没有此场景包的使用权限", "PACKAGE_ACCESS_DENIED");
+    return current;
+  }
   authenticate(token: string): Identity {
     if (!token || token.length > 512) throw new HttpError(401, "请登录或配置AI凭证", "AUTH_REQUIRED");
     if (this.operatorToken && timingSafeEqual(Buffer.from(hash(token)), Buffer.from(hash(this.operatorToken)))) return { id: "@operator", username: "operator", displayName: "运维管理员", role: "admin", enabled: true, revision: 1, sceneIds: [], createdAt: "", updatedAt: "" };
@@ -216,7 +283,16 @@ export class AccessService {
           const current = this.refresh(identity);
           if (current.role === "admin") return;
           if (run.ownerUserId !== current.id) throw new HttpError(404, "运行不存在", "OBJECT_NOT_FOUND");
-          this.authorizeScene(current, run.sceneId ?? "");
+          // 服务（包）运行会为已授权的包创建子运行，此时用户没有、也不需要内部场景的 sceneIds
+          // 授权；再叠加场景授权会让用户看得到自己的运行、却打不开它的产出。
+          // 直接跑场景的运行仍要求场景授权：撤权后媒体必须立刻不可读。
+          if (run.packageRunId) return;
+          try { this.authorizeScene(current, run.sceneId ?? ""); return; }
+          catch (error) {
+            // 旧服务运行没有 packageRunId 标记：按「本人某个包运行引用了它」反查，避免历史产出全部失效。
+            if (this.ownedByPackageRun(run, current.id)) return;
+            throw error;
+          }
         };
         res.locals.authorizeAdmin = () => { const current = this.refresh(identity); if (current.role !== "admin") throw new HttpError(403,"需要管理员权限","ADMIN_REQUIRED"); };
         res.locals.authorizeAssetMedia = (project: string, id: string) => {

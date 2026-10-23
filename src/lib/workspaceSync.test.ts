@@ -134,9 +134,12 @@ test("UI与AI按相同canonical内容比较草稿发布差异，字段键顺序�
 });
 
 
-test("手动读取响应丢失/失败不丢弃outbox，读取成功前有新编辑也保留；只有确认的成功读取可以替换", async () => {
-  let current = snapshot(); let persisted: unknown; let applied = 0;
-  const queue = new RetainedSaveQueue<WorkspaceSnapshot>({ initial: [{ base: current, desired: { ...current, scenes: [scene("one", "本机编辑")] } }], send: async () => { throw new Error("不应发送"); }, persist: entries => { persisted = structuredClone(entries); }, saved: () => {}, failed: () => {} });
+test("手动读取响应丢失/失败不丢弃待提交编辑，读取成功前有新编辑也保留；只有确认的成功读取可以替换", async () => {
+  let current = snapshot(); let applied = 0;
+  // 发送挂起：编辑始终处于「待提交」，用于验证替换被拒绝时不会清空它。
+  const stuck = deferred<WorkspaceSnapshot>();
+  const queue = new RetainedSaveQueue<WorkspaceSnapshot>({ send: () => stuck.promise, saved: () => {}, failed: () => {} });
+  queue.enqueue(current, { ...current, scenes: [scene("one", "待提交编辑")] });
   const options = { current: () => current, queue, discardPending: true, apply: (value: WorkspaceSnapshot) => { current = value; applied++; } };
   await assert.rejects(replaceWorkspaceFromAuthority({ ...options, readWorkspace: async () => { throw new Error("响应丢失"); } }), /响应丢失/);
   assert.equal(queue.pendingCount, 1); assert.equal(applied, 0);
@@ -144,27 +147,35 @@ test("手动读取响应丢失/失败不丢弃outbox，读取成功前有新编�
   const request = replaceWorkspaceFromAuthority({ ...options, readWorkspace: () => delayed.promise });
   current = { ...current, scenes: [scene("one", "读取中产生的新编辑")] }; delayed.resolve({ workspace: snapshot(2) });
   await assert.rejects(request, /新编辑/); assert.equal(queue.pendingCount, 1); assert.equal(applied, 0);
+  // 在途请求结束后才能放弃并替换
+  stuck.resolve(current);
+  await queue.waitForSaved();
+  assert.equal(queue.pendingCount, 0);
   await replaceWorkspaceFromAuthority({ ...options, readWorkspace: async () => ({ workspace: snapshot(3) }) });
-  assert.equal(queue.pendingCount, 0); assert.deepEqual(persisted, []); assert.equal(applied, 1); assert.equal(current.revision, 3);
+  assert.equal(applied, 1); assert.equal(current.revision, 3);
 });
 
-test("手动替换不能越过在途写入，本地存储清除失败也保留队列和原内容", async () => {
-  const before = snapshot(); const desired = snapshot(2); const inFlight = deferred<WorkspaceSnapshot>(); let failStorage = false;
-  const queue = new RetainedSaveQueue<WorkspaceSnapshot>({ send: () => inFlight.promise, persist: () => { if (failStorage) throw new Error("存储失败"); }, saved: () => {}, failed: () => {} });
+test("手动替换不能越过在途写入；在途请求存在时放弃会被拒绝", async () => {
+  const before = snapshot(); const desired = snapshot(2); const inFlight = deferred<WorkspaceSnapshot>();
+  const queue = new RetainedSaveQueue<WorkspaceSnapshot>({ send: () => inFlight.promise, saved: () => {}, failed: () => {} });
   queue.enqueue(before, desired);
   let applied = false;
   await assert.rejects(replaceWorkspaceFromAuthority({ current: () => desired, queue, discardPending: true, readWorkspace: async () => ({ workspace: snapshot(3) }), apply: () => { applied = true; } }), /配置请求在提交/);
   assert.equal(applied, false); assert.equal(queue.pendingCount, 1);
-  inFlight.resolve(desired); await queue.retry(); assert.equal(queue.pendingCount, 0);
-  const retained = new RetainedSaveQueue<WorkspaceSnapshot>({ initial: [{ base: before, desired }], send: async () => desired, persist: () => { throw new Error("存储失败"); }, saved: () => {}, failed: () => {} });
-  assert.equal(retained.discard(), false); assert.equal(retained.pendingCount, 1); assert.equal(retained.latest, desired);
+  inFlight.resolve(desired); await queue.waitForSaved(); assert.equal(queue.pendingCount, 0);
 });
 
 
-test("手动刷新读取期间产生未入outbox的表单输入或切换页面，不能丢弃队列和重置表单", async () => {
-  const value = snapshot(); const queue = new RetainedSaveQueue<WorkspaceSnapshot>({ initial: [{ base: value, desired: snapshot(2) }], send: async () => value, persist: () => {}, saved: () => {}, failed: () => {} });
+test("手动刷新读取期间产生表单输入或切换页面，不能丢弃队列和重置表单", async () => {
+  const value = snapshot();
+  const stuck = deferred<WorkspaceSnapshot>();
+  const queue = new RetainedSaveQueue<WorkspaceSnapshot>({ send: () => stuck.promise, saved: () => {}, failed: () => {} });
+  queue.enqueue(value, snapshot(2));
   const response = deferred<{ workspace: WorkspaceSnapshot | null }>(); let canApply = true; let applied = false;
   const request = replaceWorkspaceFromAuthority({ current: () => value, queue, discardPending: true, canApply: () => canApply, readWorkspace: () => response.promise, apply: () => { applied = true; } });
   canApply = false; response.resolve({ workspace: snapshot(3) });
-  await assert.rejects(request, /新编辑/); assert.equal(applied, false); assert.equal(queue.pendingCount, 1);
+  await assert.rejects(request, /新编辑/); assert.equal(applied, false);
+  assert.equal(queue.pendingCount, 1, "被拒绝的替换不得清空待提交编辑");
+  stuck.resolve(snapshot(2));
+  await queue.waitForSaved();
 });

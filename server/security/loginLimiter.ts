@@ -42,7 +42,7 @@ export class LoginLimiter {
     const retryAfterSeconds = Math.max(1, Math.ceil((expiresAt - now) / 1000));
     throw new HttpError(429, "登录尝试过于频繁，请稍后重试", "LOGIN_RATE_LIMITED", { retryAfterSeconds });
   }
-  enter(username: string, clientAddress?: string, scope: "private" | "public-user" = "private"): () => void {
+  enter(username: string, clientAddress?: string, scope: "private" | "public-user" | "signup" = "private"): () => void {
     const now = this.now();
     if (now - this.lastPruned >= Math.min(60_000, this.windowMs)) {
       for (const [key, bucket] of this.buckets) if (bucket.expiresAt <= now) this.buckets.delete(key);

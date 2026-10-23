@@ -3,6 +3,7 @@ import test from "node:test";
 import { taskHarness } from "../testing/taskSupport.js";
 import { taskStatusOf } from "../domain/taskContracts.js";
 import { until } from "../testing/testSupport.js";
+import type { WorkflowInputField } from "../../src/types.js";
 
 /** 建一个确认前草稿，返回 taskId 与详情。 */
 async function draft(h: Awaited<ReturnType<typeof taskHarness>>, name: string, items: unknown[]) {
@@ -172,6 +173,59 @@ test("任务：在途项存在时拒绝删除任务", async (t) => {
   const result = await h.tasks.confirm(taskId, { taskId, revision: created.task.revision }, h.actor);
   await assert.rejects(() => h.tasks.remove(taskId, { taskId, revision: result.task.revision }, h.actor), (error: Error & { code?: string }) => error.code === "TASK_ITEM_ACTIVE");
   await until(() => result.task.runIds.every(id => h.store.getRun(h.settings.projectDirectory, id)?.status === "completed"));
+});
+
+test("任务：草稿允许缺必填，确认前必须补齐且缺必填不冻结任务", async (t) => {
+  const h = await taskHarness(t);
+  // 显式 null 就是「还没填」：草稿允许先存进度，服务端的必填判定与服务端空值语义一致。
+  const { taskId, created } = await draft(h, "缺必填草稿", [{ label: "第 1 张", sceneId: "demo", versionId: "version-a", inputValues: { flag: null } }, h.item("第 2 张")]);
+  assert.equal(created.task.status, "draft");
+  assert.equal(created.task.itemCount, 2);
+  // 存草稿不补齐、不伪造必填值：表里填了什么就是什么（style 仍按发布版默认值合并）。
+  assert.equal(created.task.items?.[0].inputValues?.flag, null);
+  assert.equal(created.task.items?.[0].inputValues?.style, "已发布值");
+  assert.deepEqual(h.store.listRuns(h.settings.projectDirectory).runs, []);
+
+  // 确认前整体判一次必填：直接拒绝并指出哪一项，而不是先冻结再让这些项在 failures 里失败——
+  // 冻结后输入不能再改、只能重跑，缺必填的项会永远提交不上去。
+  await assert.rejects(
+    () => h.tasks.confirm(taskId, { taskId, revision: created.task.revision }, h.actor),
+    (error: Error & { code?: string }) => error.code === "TASK_ITEMS_INCOMPLETE" && /第 1 张/.test(error.message) && /必填字段：flag/.test(error.message),
+  );
+  const after = await h.tasks.detail(taskId);
+  assert.equal(after.task.status, "draft");
+  assert.equal(after.task.revision, created.task.revision, "缺必填时确认被拒绝，任务不能被冻结");
+  assert.deepEqual(h.store.listRuns(h.settings.projectDirectory).runs, [], "缺必填时不能提交任何运行");
+
+  // 补齐后先保存再确认：正常批量提交，两项都跑起来。
+  const filled = await h.tasks.update(taskId, { taskId, revision: after.task.revision, items: [h.item("第 1 张"), h.item("第 2 张")] }, h.actor);
+  const result = await h.tasks.confirm(taskId, { taskId, revision: filled.task.revision }, h.actor);
+  assert.equal(result.submitted.length, 2);
+  assert.equal(result.failures.length, 0);
+  await until(() => result.task.runIds.every(id => h.store.getRun(h.settings.projectDirectory, id)?.status === "completed"));
+});
+
+test("任务：必填媒体没挑也能存草稿，确认时才拦（真实录入顺序：先占行、后补素材）", async (t) => {
+  const h = await taskHarness(t);
+  // 真实场景的商品主图就是必填、没有默认值的媒体输入：必须先挑素材才能执行。
+  await h.workspace.mutateScoped(current => {
+    const versions = current.sceneVersions as Record<string, { versions: Array<Record<string, unknown>> }>;
+    const workflow = versions.demo.versions[0].workflow as { inputs: WorkflowInputField[] };
+    workflow.inputs = [...workflow.inputs, { key: "product_images", type: "image_list", required: true, label: "商品主图" } as WorkflowInputField];
+    return { workspace: current, result: {}, changed: true };
+  });
+  const { taskId, created } = await draft(h, "先占行后补图", [h.item("第 1 张")]);
+  assert.equal(created.task.status, "draft");
+
+  // 草稿可保存，但确认必须补齐素材：缺的是媒体时同样按项指出（必填错误按字段 key 说明，
+  // 与服务端既有 REQUIRED_INPUT_MISSING 口径一致；任务页显示的是字段标签）。
+  await assert.rejects(
+    () => h.tasks.confirm(taskId, { taskId, revision: created.task.revision }, h.actor),
+    (error: Error & { code?: string }) => error.code === "TASK_ITEMS_INCOMPLETE" && /product_images/.test(error.message),
+  );
+  assert.deepEqual(h.store.listRuns(h.settings.projectDirectory).runs, []);
+  // 只判必填：填错的值（类型/选项/素材版本）在存草稿时就已经逐项拒绝，不会等到确认。
+  await assert.rejects(() => h.tasks.update(taskId, { taskId, revision: created.task.revision, items: [h.item("第 1 张", { flag: "不是布尔" })] }, h.actor), /第 1 项/);
 });
 
 test("任务：无效参数被明确拒绝并指出第几项", async (t) => {

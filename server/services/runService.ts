@@ -27,12 +27,24 @@ interface ServiceOptions {
   loadSettings(): Promise<SavedSettings>;
   maxActiveRuns?: number;
   getMaxActiveRuns?(): number;
+  /** 单账户在跑上限；0 或省略表示只受全局并发限制。 */
+  getMaxActiveRunsPerUser?(): number;
   /** 可选：core.code 本地导出的受控根目录；返回空串表示关闭。运行开始时读取一次。 */
   getLocalExportRoot?(): string;
   resolveAssets?: import("./runPreparation.js").PreparationDependencies["resolveAssets"];
   execute?(prepared: PreparedRun, context: ExecutionContext): Promise<ExecutionResult>;
   /** 可选：记录终态样本供只读指标展示；不参与执行语义。 */
   metricsTracker?: import("./runMetricsTracker.js").RunMetricsTracker;
+  /** 可选：积分闸门。只有调用方显式传入 pricing 的运行才会预扣（用户自助路径）。 */
+  credits?: RunCreditHooks;
+  /** 可选：运行事件旁路（通知 Webhook 等）。必须同步、无 I/O，抛错也不影响运行。 */
+  observeEvents?(run: RunRecord, events: RunEvent[]): void;
+}
+/** 预扣、退还与结算的窄接口；由 CreditService 实现，避免执行层依赖账本细节。 */
+export interface RunCreditHooks {
+  reserve(userId: string, runId: string, plan: import("../domain/scenePricing.js").RunCreditPlan): unknown;
+  release(userId: string, runId: string, reason: string): unknown;
+  settle(run: RunRecord): import("../domain/scenePricing.js").RunCreditSettlement | undefined;
 }
 interface ActiveJob { prepared: PreparedRun; controller: AbortController; done: Promise<void>; shutdown: boolean }
 function key(projectDirectory: string, runId: string) { return `${projectDirectory}\n${runId}`; }
@@ -106,7 +118,7 @@ export class RunService {
     if (this.closed) throw new HttpError(503, "运行服务已关闭");
   }
 
-  async submit(body: unknown, access?: { ownerUserId: string; submitter?: RunSubmitter; authorize(): void }): Promise<RunRecord> {
+  async submit(body: unknown, access?: { ownerUserId: string; submitter?: RunSubmitter; authorize(): void; credit?: { userId: string; plan: import("../domain/scenePricing.js").RunCreditPlan; pricing?: import("../domain/scenePricing.js").ScenePricing } }): Promise<RunRecord> {
     if (!this.accepting) throw new HttpError(503, "服务正在关闭，暂不接受新运行");
     const value = body && typeof body === "object" ? body as Record<string, unknown> : {};
     const runId = value.runId === undefined ? randomUUID() : value.runId;
@@ -118,6 +130,12 @@ export class RunService {
     const runKey = key(settings.projectDirectory, runId);
     const sourceKey = typeof source === "string" ? key(settings.projectDirectory, source) : undefined;
     if (this.preparing.has(runKey) || this.store.getRun(settings.projectDirectory, runId)) throw new HttpError(409, "运行记录编号已存在", "RUN_ALREADY_EXISTS");
+    // 租户公平配额：单个账户不得占满全局队列（含排队、执行与等待审核）。
+    const perUserLimit = this.options.getMaxActiveRunsPerUser?.() ?? 0;
+    if (access?.ownerUserId && perUserLimit > 0) {
+      const active = this.store.activeRunsForOwner(settings.projectDirectory, access.ownerUserId);
+      if (active >= perUserLimit) throw new HttpError(429, `同时进行的任务已达上限（${perUserLimit} 个），请等待已有任务结束后再提交`, "USER_RUN_LIMIT_REACHED", { active, limit: perUserLimit, nextAction: "wait_for_existing_runs" });
+    }
     if (sourceKey && (this.preparing.has(sourceKey) || [...this.active.values()].some((job) => (job.prepared.resumedFromRunId ?? job.prepared.rerunFromRunId) === source && job.prepared.settings.projectDirectory === settings.projectDirectory) || this.queue.some((job) => (job.resumedFromRunId ?? job.rerunFromRunId) === source && job.settings.projectDirectory === settings.projectDirectory))) throw new HttpError(409, "这条运行记录已有续跑任务");
     this.preparing.add(runKey);
     if (access) this.preparingOwners.set(runKey,access.ownerUserId);
@@ -129,8 +147,15 @@ export class RunService {
       if (!this.accepting) throw new HttpError(503, "服务正在关闭；本次提交未进入队列");
       const workflow = prepared.executionWorkflow;
       access?.authorize();
+      // 积分闸门：预扣上限价。任何后续失败都在 catch 里全额归还，不留下悬空预扣。
+      let credit: import("../domain/scenePricing.js").RunCreditRecord | undefined;
+      if (access?.credit && this.options.credits && access.credit.plan.total > 0) {
+        this.options.credits.reserve(access.credit.userId, runId, access.credit.plan);
+        credit = { plan: access.credit.plan, ...(access.credit.pricing ? { pricing: access.credit.pricing } : {}) };
+      }
       const record: RunRecord = {
         ...(access ? { ownerUserId: access.ownerUserId, ...(access.submitter ? { submitter: access.submitter } : {}) } : {}),
+        ...(credit ? { credit } : {}),
         runId, sceneId: workflow.sceneId ?? "comic", workflowName: workflow.name ?? "未命名工作流", status: "queued",
         createdAt: prepared.createdAt, startedAt: prepared.createdAt, steps: [], outputs: [],
         inputValues: externalizeRuntimeValue(prepared.inputValues) as RunRecord["inputValues"], workflow,
@@ -149,6 +174,7 @@ export class RunService {
     } catch (error) {
       // Only remove the directory owned by this uncommitted preparation, never an accepted run.
       if (prepared && !accepted) await discardRunArtifacts(settings.projectDirectory, runId).catch(failure => log("warn", "run.preparation_cleanup_failed", { runId, error: String(failure) }));
+      if (access?.credit && this.options.credits && !accepted) this.options.credits.release(access.credit.userId, runId, error instanceof Error ? error.message : String(error));
       throw error;
     } finally { this.preparing.delete(runKey); this.preparingOwners.delete(runKey); if (sourceKey) this.preparing.delete(sourceKey); }
   }
@@ -173,7 +199,20 @@ export class RunService {
       const position = workflow.steps.findIndex(step => step.id === run.pendingReview!.stepId);
       const definition = workflow.steps[position];
       const result = run.steps.find(step => step.stepId === definition?.id);
-      if (!definition || !result || !["completed", "completed_with_errors"].includes(result.status)) throw new HttpError(409, "待确认步骤结果不可用");
+      // A "batch_items" checkpoint suspends the for_each step mid-batch, so its record is still
+      // running: require the settled prefix it promises instead of a finished step. A failed item in
+      // that prefix still counts as processed — the operator must be able to approve the visible
+      // result or redo the segment instead of being locked out of the run.
+      const checkpointAfterItems = run.pendingReview.scope === "batch_items"
+        && typeof run.pendingReview.afterItems === "number" && Number.isSafeInteger(run.pendingReview.afterItems) && run.pendingReview.afterItems >= 1
+        ? run.pendingReview.afterItems
+        : undefined;
+      const settledPrefix = checkpointAfterItems === undefined ? false
+        : (result?.items ?? []).filter(item => Number.isSafeInteger(item.index) && item.index >= 0 && item.index < checkpointAfterItems && item.status !== "running").length >= checkpointAfterItems;
+      const stepResultAvailable = checkpointAfterItems !== undefined
+        ? result?.status === "running" && settledPrefix
+        : Boolean(result && ["completed", "completed_with_errors"].includes(result.status));
+      if (!definition || !result || !stepResultAvailable) throw new HttpError(409, "待确认步骤结果不可用");
       const originalOutputs = structuredClone(result.outputs ?? {});
       if (body.feedback !== undefined && body.action !== "redo") throw new HttpError(400, "反馈意见仅用于退回重做", "INVALID_FEEDBACK");
       const feedback = body.feedback === undefined ? undefined : captureStepFeedback(run, validateStepFeedback(run, { stepId: definition.id, message: body.feedback }), new Date().toISOString());
@@ -398,6 +437,15 @@ export class RunService {
             if (old?.status !== step.status) {
               changed.push({ type: `step.${step.status === "running" ? "started" : step.status}`, stepId: step.stepId });
               touch();
+              // 步骤生命周期同时写进进程内日志：管理员按 runId 过滤时能直接看到每一步的开始、
+              // 结束与耗时，而不是只有 run.queued / run.completed 两条。纯观察面，不参与状态机。
+              log(step.status === "failed" ? "error" : step.status === "completed_with_errors" ? "warn" : "info", `step.${step.status === "running" ? "started" : step.status}`, {
+                runId: prepared.runId, stepId: step.stepId, stepName: step.name,
+                ...(step.capabilityId ? { capabilityId: step.capabilityId } : {}),
+                ...(step.message ? { message: step.message } : {}),
+                ...(step.durationMs !== undefined ? { durationMs: step.durationMs } : {}),
+                ...(step.warnings?.length ? { warningCount: step.warnings.length } : {}),
+              });
             } else if (old?.agentPrompt !== step.agentPrompt || old?.agentResponse !== step.agentResponse || (old?.warnings?.length ?? 0) !== (step.warnings?.length ?? 0)) touch();
             if (step.items?.length || old?.items?.length) {
               const previousItems = old?.items?.length ? new Map(old.items.map((item) => [item.index, item])) : undefined;
@@ -406,6 +454,11 @@ export class RunService {
                 if (oldItem?.status !== item.status) {
                   changed.push({ type: `step.item.${item.status === "running" ? "started" : item.status}`, stepId: step.stepId, payload: { index: item.index } });
                   touch();
+                  log(item.status === "failed" ? "error" : "info", `step.item.${item.status === "running" ? "started" : item.status}`, {
+                    runId: prepared.runId, stepId: step.stepId, stepName: step.name, itemIndex: item.index,
+                    ...(item.error ? { error: item.error } : {}),
+                    ...(item.durationMs !== undefined ? { durationMs: item.durationMs } : {}),
+                  });
                 } else if (oldItem?.agentPrompt !== item.agentPrompt || oldItem?.agentResponse !== item.agentResponse || (oldItem?.warnings?.length ?? 0) !== (item.warnings?.length ?? 0)) touch();
               }
             }
@@ -440,7 +493,13 @@ export class RunService {
   }
 
   private persist(projectDirectory: string, run: RunRecord, changes: Array<{ type: string; stepId?: string; payload?: Record<string, unknown> }>, submission?: PreparedRun, changedStepIds?: ReadonlySet<string>) {
-    const snapshot = structuredClone(run);
+    // 终态即结算：金额与运行终态在同一次写入里落定；账本幂等键保证进程重启后不会重复结算。
+    let settled = run;
+    if (this.options.credits && run.credit?.plan && !run.credit.settlement && !isActiveRunStatus(run.status) && run.status !== "waiting") {
+      const settlement = this.options.credits.settle(run);
+      if (settlement) settled = { ...run, credit: { ...run.credit, settlement } };
+    }
+    const snapshot = structuredClone(settled);
     const events = submission
       ? this.store.saveRunSubmission(projectDirectory, snapshot, submission, changes)
       : this.store.saveRun(projectDirectory, snapshot, changes, changedStepIds ? { changedStepIds } : undefined);
@@ -475,6 +534,11 @@ export class RunService {
     return done;
   }
   private publish(project: string, run: RunRecord, events: RunEvent[]) {
+    // 通知旁路先于订阅者：它只做内存入队，且自身异常绝不影响运行或 SSE 订阅者。
+    if (this.options.observeEvents && events.length) {
+      try { this.options.observeEvents(run, events); }
+      catch (error) { log("warn", "run.event_observer_failed", { runId: run.runId, error: String(error) }); }
+    }
     for (const event of events) for (const listener of this.events.listeners(key(project, run.runId))) {
       try { listener(structuredClone(run), event); }
       catch (error) { log("warn", "run.listener_failed", { runId: run.runId, error: String(error) }); }

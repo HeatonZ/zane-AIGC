@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { createEmptyWorkspaceSnapshot, normalizeWorkspaceSnapshot } from "./workspaceStorage";
-import { loadAuthoritativeWorkspace, parseRetainedWorkspaceEdits } from "./workspaceSync";
+import { loadAuthoritativeWorkspace } from "./workspaceSync";
 import { RetainedSaveQueue } from "./retainedSaveQueue";
 import { getScene } from "../data/scenes";
 import { sortWorkflowDrafts } from "./drafts";
@@ -21,15 +21,13 @@ test("启动占位及空初始化不读取浏览器场景或默认模板，查�
   assert.deepEqual(normalizeWorkspaceSnapshot({ ...workspace(), sceneVersions: undefined }, first).sceneVersions, {});
 });
 
-test("重载仅显示服务端场景，旧outbox不作为目录也不自动提交", async () => {
+test("重载只显示服务端场景：浏览器不再保存待提交副本，也不会复活旧场景", async () => {
   const authority = workspace(7);
-  const desired = { ...workspace(6), scenes: [{ ...authority.scenes[0], id: "browser-only", title: "不应复活的旧场景" }] };
-  const retained = parseRetainedWorkspaceEdits(JSON.stringify([{ base: workspace(6), desired }]));
-  let writes = 0;
-  const queue = new RetainedSaveQueue<WorkspaceSnapshot>({ initial: retained, send: async () => { writes++; return desired; }, persist: () => {}, saved: () => {}, failed: () => {} });
   const loaded = await loadAuthoritativeWorkspace(async () => ({ workspace: authority }));
   assert.deepEqual(loaded?.scenes.map(scene => scene.id), ["server-only"]);
-  assert.equal(writes, 0); assert.equal(queue.pendingCount, 1); assert.deepEqual(queue.latest, desired);
+  let writes = 0;
+  const queue = new RetainedSaveQueue<WorkspaceSnapshot>({ send: async (_base, desired) => { writes++; return desired; }, saved: () => {}, failed: () => {} });
+  assert.equal(queue.pendingCount, 0, "新建队列没有任何待提交内容");
   const missing = await loadAuthoritativeWorkspace(async () => ({ workspace: null }));
   assert.equal(missing, null); assert.equal(writes, 0);
 });
@@ -39,13 +37,12 @@ test("服务端不可用或快照不兼容时启动失败，不回退旧缓存�
   await assert.rejects(loadAuthoritativeWorkspace(async () => ({ workspace: { scenes: workspace().scenes } as WorkspaceSnapshot })), /权威工作区格式不兼容/);
 });
 
-test("outbox 是严格的待提交意图：坏JSON或坏条目不被静默过滤或转换为场景库", () => {
-  assert.deepEqual(parseRetainedWorkspaceEdits(null), []);
-  assert.throws(() => parseRetainedWorkspaceEdits("not-json"), /原始数据已保留/);
-  assert.throws(() => parseRetainedWorkspaceEdits("{}"), /格式不兼容/);
-  assert.throws(() => parseRetainedWorkspaceEdits(JSON.stringify([{ base: workspace(), desired: workspace() }, { base: null, desired: workspace() }])), /权威工作区格式不兼容/);
-  const raw = JSON.stringify([{ base: workspace(), desired: workspace(2) }]);
-  assert.equal(JSON.stringify(parseRetainedWorkspaceEdits(raw)), raw);
+test("前端不再读写任何本地配置副本", async () => {
+  const app = await readFile(new URL("../App.tsx", import.meta.url), "utf8");
+  // 只允许启动时清理旧版本残留键；不得再有 setItem 或恢复/重放逻辑。
+  assert.doesNotMatch(app, /localStorage\.setItem/);
+  assert.doesNotMatch(app, /parseRetainedWorkspaceEdits|restoredWorkspaceEditsRef|outboxReadErrorRef|LegacyConfigRecovery/);
+  assert.match(app, /config-outbox:v2:/, "旧版本残留键仍应被清理");
 });
 
 test("任务草稿是服务端数据的纯排序，不维护第二个浏览器数据库", () => {
@@ -62,4 +59,16 @@ test("前端入口不再导入本地场景读写或在启动时应用/重放旧o
   for (const path of ["sceneStorage.ts", "workflowStorage.ts", "workspaceStorage.ts", "drafts.ts"]) {
     assert.doesNotMatch(await readFile(new URL(path, import.meta.url), "utf8"), /localStorage|readScenes|writeScenes|readLocalWorkspace|writeLocalWorkspace/);
   }
+});
+
+test("低频页面按需加载，入口包不为未访问的页面付出体积", async () => {
+  const app = await readFile(new URL("../App.tsx", import.meta.url), "utf8");
+  for (const page of ["Logs", "UserManagement", "CreditManagement", "Tasks", "WorkflowRuns", "Library", "PackageManagement", "Studio", "History", "Connections", "SystemFeedback", "FlowDesigner"]) {
+    assert.match(app, new RegExp(`const ${page} = lazy\\(\\(\\) => import\\("\\./features/${page}"\\)\\)`), `${page} 应改为 lazy 加载`);
+    assert.doesNotMatch(app, new RegExp(`import ${page} from "\\./features/${page}"`), `${page} 不应再静态导入`);
+  }
+  // 懒加载组件必须有 Suspense 兜底，否则切换页面会抛错而不是显示加载态。
+  assert.match(app, /<Suspense fallback=\{pageLoading\("正在加载页面…"\)\}>/);
+  // 落地页仍是同步导入：它是首屏本身，拆包只会多一次往返。
+  assert.match(app, /import Dashboard from "\.\/features\/Dashboard"/);
 });

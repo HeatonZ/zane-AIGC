@@ -8,6 +8,7 @@ import ClipSelectionDialog from "./ClipSelectionDialog";
 import ReviewPanel from "./ReviewPanel";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../types";
 import SaveAssetButton from "./SaveAssetButton";
+import MediaDownloadButton from "./MediaDownloadButton";
 import RunValueView from "./RunValueView";
 import { isProtectedMediaUrl, ProtectedMediaPreview, type UserMediaKind } from "./UserMediaInput";
 import type { AssetSource } from "../../server/domain/productionContracts";
@@ -20,7 +21,10 @@ function StepValue({ value, type, source }: { value: JsonValue; type?: string; s
   const media = runOutputMediaItems(value, type, source);
   if (media.length) return <div className="workflow-run-step-media">{media.map((item, index) => <div className="production-media-item" key={item.url + index}>
     {isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(item.isVideo ? "video" : item.isAudio ? "audio" : "image") as UserMediaKind} label={item.filename} /> : item.isVideo ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : item.isAudio ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}
-    {source && <SaveAssetButton kind={item.isVideo ? "video" : item.isAudio ? "audio" : "image"} source={{ ...source, mediaIndex: item.mediaIndex }} />}
+    <div className="production-media-actions">
+      <MediaDownloadButton url={item.url} filename={item.filename} kind={item.isVideo ? "video" : item.isAudio ? "audio" : "image"} fallback={source?.outputKey ?? "媒体"} index={index} className="text-button production-save-asset" />
+      {source && <SaveAssetButton kind={item.isVideo ? "video" : item.isAudio ? "audio" : "image"} source={{ ...source, mediaIndex: item.mediaIndex }} />}
+    </div>
   </div>)}</div>;
   return <RunValueView value={value} type={type} source={source} />;
 }
@@ -56,9 +60,33 @@ function RunOutput({ output, runId, className = "workflow-run-output", renderer 
   const media = renderType === "image" || renderType === "image_list" || isVideoOutput || isAudioOutput ? runOutputMediaItems(output.value, renderType, runId ? {runId, outputKey: output.key} : undefined) : [];
   return <article className={className}>
     <div className="workflow-run-output-heading"><strong>{output.label}</strong><small>{output.type}</small></div>
-    {media.length ? <div className="workflow-run-media">{media.map((item,index) => <div className="production-media-item" key={item.url + index}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(isVideoOutput ? "video" : isAudioOutput ? "audio" : "image") as UserMediaKind} label={item.filename} /> : isVideoOutput ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : isAudioOutput ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}{runId && <SaveAssetButton kind={isVideoOutput ? "video" : isAudioOutput ? "audio" : "image"} source={{ runId, outputKey: output.key, mediaIndex: item.mediaIndex }} />}</div>)}</div>
+    {media.length ? <div className="workflow-run-media">{media.map((item,index) => <div className="production-media-item" key={item.url + index}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(isVideoOutput ? "video" : isAudioOutput ? "audio" : "image") as UserMediaKind} label={item.filename} /> : isVideoOutput ? <video src={item.url} controls preload="metadata" aria-label={item.filename} /> : isAudioOutput ? <audio src={item.url} controls preload="metadata" aria-label={item.filename} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename} loading="lazy" /></a>}
+      <div className="production-media-actions">
+        <MediaDownloadButton url={item.url} filename={item.filename} kind={isVideoOutput ? "video" : isAudioOutput ? "audio" : "image"} fallback={output.label || output.key} index={index} className="text-button production-save-asset" />
+        {runId && <SaveAssetButton kind={isVideoOutput ? "video" : isAudioOutput ? "audio" : "image"} source={{ runId, outputKey: output.key, mediaIndex: item.mediaIndex }} />}
+      </div></div>)}</div>
       : <RunValueView value={output.value} type={renderType} source={runId ? { runId, outputKey: output.key } : undefined} />}
   </article>;
+}
+
+/** 运行输入快照：按发布快照声明的字段逐项渲染，而不是整份 JSON 一把梭。
+ *
+ *  媒体字段必须带上声明类型。运行记录里的固定素材引用长成
+ *  `{assetId, assetVersion, assetName}`，展示名通常没有扩展名（如「猫主角米酒_四视图_V4」），
+ *  只按值推断既判不出图片也判不出音频，媒体字段就会整块空白——这正是「查看本次输入」看不到图的原因。
+ *  用户面投影会剥掉 path/previewUrl，所以声明类型是唯一可靠的判据。
+ *  发布快照没声明的额外输入（允许透传）仍按 JSON 渲染，不隐藏。 */
+function RunInputSnapshot({ inputValues, workflow }: { inputValues: Record<string, JsonValue>; workflow?: WorkflowDefinition }) {
+  const fields = (workflow?.inputs ?? []).filter(field => Object.prototype.hasOwnProperty.call(inputValues, field.key));
+  const declaredKeys = new Set(fields.map(field => field.key));
+  const extraKeys = Object.keys(inputValues).filter(key => !declaredKeys.has(key));
+  return <details className="run-input-snapshot">
+    <summary>查看本次输入（{fields.length + extraKeys.length}）</summary>
+    {fields.length || extraKeys.length ? <dl className="run-value-object">
+      {fields.map(field => <div key={field.key}><dt>{field.label}<small>{field.key} · {field.type}</small></dt><dd><RunValueView value={inputValues[field.key]} type={field.type} /></dd></div>)}
+      {extraKeys.map(key => <div key={key}><dt>{key}<small>未在发布快照声明</small></dt><dd><RunValueView value={inputValues[key]} type="json" /></dd></div>)}
+    </dl> : <span className="run-value-empty">暂无字段</span>}
+  </details>;
 }
 
 export default function WorkflowRunPanel({
@@ -138,7 +166,7 @@ export default function WorkflowRunPanel({
       {cancelled && <div className="workflow-run-cancellation-reason" role="status"><strong>取消原因</strong><span>{result.cancellationReason ?? (result.error && result.error !== "运行已取消" ? result.error : "这条历史记录没有保存具体取消原因")}</span></div>}
       {result.error && !cancelled && <div className="workflow-run-error" role="alert">{result.error}</div>}
       {result.archiveWarnings?.length ? <div className="workflow-run-warning" role="status">部分生成媒体没有复制到项目目录：{result.archiveWarnings.join("；")}</div> : null}
-      {inputValues && <details className="run-input-snapshot"><summary>查看本次输入</summary><RunValueView value={inputValues} type="json" /></details>}
+      {inputValues && <RunInputSnapshot inputValues={inputValues} workflow={snapshotWorkflow} />}
       {result.items?.length ? <div className="workflow-run-items">
         {result.items.map((item) => <article className="workflow-run-item" key={`workflow-run-item-${item.index}`}>
           <div className="workflow-run-item-heading"><strong>第 {item.index + 1} 项</strong><small className={item.status}>{itemStatusLabel(item.status)}</small></div>

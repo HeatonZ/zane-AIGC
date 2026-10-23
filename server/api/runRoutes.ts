@@ -28,19 +28,24 @@ export function createRunRouter(service: RunService, loadSettings: () => Promise
     const { projectDirectory } = await loadSettings();
     if (!projectDirectory) { response.json({ projectDirectory: "", runs: [] }); return; }
     let before: { createdAt: string; runId: string } | undefined;
+    const status = typeof request.query.status === "string" ? request.query.status as RunStatus : undefined;
+    if (status && !["waiting", "queued", "running", "cancelling", "completed", "failed", "cancelled", "stale"].includes(status)) throw new HttpError(400, "运行状态筛选无效");
+    const sceneId = typeof request.query.sceneId === "string" && request.query.sceneId ? request.query.sceneId : undefined;
+    const q = typeof request.query.q === "string" ? request.query.q.trim() : "";
+    if (q.length > 200) throw new HttpError(400, "搜索关键字最长 200 个字符");
     if (typeof request.query.cursor === "string") {
       try {
         const cursor = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8"));
         if (typeof cursor.createdAt !== "string" || typeof cursor.runId !== "string") throw new Error();
-        before = cursor;
-      } catch { throw new HttpError(400, "运行列表分页游标无效"); }
+        // 游标绑定筛选条件：换条件后沿用旧游标会静默漏读或重读，这里直接要求从第一页重来。
+        if ((cursor.q ?? "") !== q || (cursor.status ?? "") !== (status ?? "") || (cursor.sceneId ?? "") !== (sceneId ?? "")) throw new Error();
+        before = { createdAt: cursor.createdAt, runId: cursor.runId };
+      } catch { throw new HttpError(400, "运行列表分页游标无效", "INVALID_RUN_CURSOR"); }
     }
-    const status = typeof request.query.status === "string" ? request.query.status as RunStatus : undefined;
-    if (status && !["waiting", "queued", "running", "cancelling", "completed", "failed", "cancelled", "stale"].includes(status)) throw new HttpError(400, "运行状态筛选无效");
     const limit = request.query.limit === undefined ? 200 : Number(request.query.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new HttpError(400, "分页条数需要是 1–200 的整数");
-    const page = await service.listRunSummaries(projectDirectory, { before, limit, status, sceneId: typeof request.query.sceneId === "string" ? request.query.sceneId : undefined });
-    response.json({ projectDirectory, runs: page.runs.map((run: RunSummaryRow) => runSummary(run, resolveSubmitter)), ...(page.nextCursor ? { nextCursor: Buffer.from(JSON.stringify(page.nextCursor)).toString("base64url") } : {}) });
+    const page = await service.listRunSummaries(projectDirectory, { before, limit, status, sceneId, ...(q ? { q } : {}) });
+    response.json({ projectDirectory, runs: page.runs.map((run: RunSummaryRow) => runSummary(run, resolveSubmitter)), ...(page.nextCursor ? { nextCursor: Buffer.from(JSON.stringify({ ...page.nextCursor, ...(q ? { q } : {}), ...(status ? { status } : {}), ...(sceneId ? { sceneId } : {}) })).toString("base64url") } : {}) });
   };
   router.get(["/api/v1/runs", "/api/workflows/runs"], list);
   router.post("/api/v1/runs", async (request, response) => {

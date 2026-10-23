@@ -4,6 +4,7 @@ import { validateWorkflowInputs } from "../domain/inputValidation.js";
 import { planRerun, type PlannedRerun } from "./rerunPlanner.js";
 import type { CapabilityDefinition } from "../capabilities/contracts.js";
 import { validateWorkflowShape, validateCarryReferences, validateStartConditionReferences } from "../domain/workflowValidation.js";
+import { resolveIterationConcurrency } from "../domain/iterationConcurrency.js";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { captureStepFeedback } from "../domain/stepFeedback.js";
@@ -68,8 +69,6 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
   }
   if (input?.runTitle !== undefined && (typeof input.runTitle !== "string" || input.runTitle.length > 120)) throw new HttpError(400, "运行标题无效，最多可填写 120 个字符");
   let runTitle = typeof input?.runTitle === "string" ? input.runTitle.trim() : "";
-  // 代码场景包提交的子运行带上包运行号：运行记录靠它回指到包，按场景筛出来也能看出属于哪个包。
-  const packageRunId = typeof input?.packageRunId === "string" && input.packageRunId ? input.packageRunId : undefined;
   let resumeSource: RunRecord | undefined;
   let workflowValue = value;
   let inputValues = structuredClone(rawInputs) as Record<string, JsonValue>;
@@ -124,10 +123,14 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
   if (dependencies.prepareStep) executionWorkflow = { ...executionWorkflow, steps: executionWorkflow.steps.map(dependencies.prepareStep) };
   if (dependencies.resolveAssets) inputValues = await dependencies.resolveAssets(settings.projectDirectory, executionWorkflow, inputValues);
   validateWorkflowInputs(executionWorkflow, inputValues);
+  // Resolve a referenced for_each concurrency before queueing: an out-of-range value must fail as a
+  // request error instead of surfacing as an item failure after paid work started.
+  for (const step of executionWorkflow.steps) if (step.execution?.mode === "for_each") resolveIterationConcurrency(step, inputValues);
   if (rerun) {
     for (const item of rerun.itemStepOverrides) {
       validateWorkflowShape({ ...workflowValue, steps: [item.step] });
       if (dependencies.prepareStep) item.step = dependencies.prepareStep(item.step);
+      if (item.step.execution?.mode === "for_each") resolveIterationConcurrency(item.step, inputValues);
     }
   }
   const legacyExecution = executionWorkflow.execution;
@@ -153,5 +156,6 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
     await discardRunArtifacts(settings.projectDirectory, runId).catch(failure => log("warn", "run.preparation_cleanup_failed", { runId, error: String(failure) }));
     throw error;
   }
+  const packageRunId = typeof input?.packageRunId === "string" && input.packageRunId ? input.packageRunId : undefined;
   return { runId, executionWorkflow, inputValues, settings, artifacts, createdAt, ...(feedbackHistory.length ? { feedbackHistory, feedbackSourceAliases } : {}), ...(runTitle ? { runTitle } : {}), ...(packageRunId ? { packageRunId } : {}), ...(resumedFromRunId ? { resumedFromRunId, resumeSource } : {}), ...(rerunFromRunId ? { rerunFromRunId, rerun } : {}) };
 }

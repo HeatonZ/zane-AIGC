@@ -3,6 +3,7 @@ import type { AssetSource } from "../../server/domain/productionContracts";
 import type { JsonValue } from "../types";
 import { isRunMediaRecord, runOutputMediaItems } from "../lib/runMedia";
 import { isProtectedMediaUrl, ProtectedMediaPreview, type UserMediaKind } from "./UserMediaInput";
+import MediaDownloadButton from "./MediaDownloadButton";
 
 const keyLabels: Record<string, string> = {
   assetId: "素材 ID", assetVersion: "素材版本", assetName: "素材名称", filename: "文件名", file: "文件",
@@ -34,7 +35,7 @@ function MediaValue({ value, type, source, mediaUserId }: { value: unknown; type
   return <div className="run-value-media">{media.map((item, index) => <figure key={`${item.url}:${item.mediaIndex}:${index}`}>
     {isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind={(item.isVideo ? "video" : item.isAudio ? "audio" : "image") as UserMediaKind} userId={mediaUserId} label={item.filename || `${item.isVideo ? "视频" : item.isAudio ? "音频" : "图片"} ${index + 1}`} />
       : item.isVideo ? <video src={item.url} controls preload="metadata" aria-label={item.filename || `视频 ${index + 1}`} /> : item.isAudio ? <audio src={item.url} controls preload="metadata" aria-label={item.filename || `音频 ${index + 1}`} /> : <a href={item.url} target="_blank" rel="noreferrer"><img src={item.url} alt={item.filename || `图片 ${index + 1}`} loading="lazy" /></a>}
-    {item.filename && <figcaption>{item.filename}</figcaption>}
+    <figcaption>{item.filename && <span>{item.filename}</span>}<MediaDownloadButton url={item.url} filename={item.filename} kind={item.isVideo ? "video" : item.isAudio ? "audio" : "image"} fallback={source?.outputKey ?? "媒体"} index={index} /></figcaption>
   </figure>)}</div>;
 }
 
@@ -48,7 +49,10 @@ function scalar(value: unknown): ReactNode {
 }
 
 function ValueNode({ value, depth = 0, source, mediaUserId }: { value: unknown; depth?: number; source?: Omit<AssetSource, "mediaIndex">; mediaUserId?: string }): ReactNode {
-  if (isRunMediaRecord(value as JsonValue) || (typeof value === "string" && runOutputMediaItems(value, undefined, source).length > 0)) {
+  // 可预览媒体优先；但「判断得出是媒体叶子」与「渲染得出图」是两件事。认成媒体却拿不到任何
+  // 可预览地址时（例如只剩展示名的固定素材引用）继续往下按原始字段渲染，而不是整块空白。
+  const isMediaLeaf = isRunMediaRecord(value as JsonValue) || (typeof value === "string" && runOutputMediaItems(value, undefined, source).length > 0);
+  if (isMediaLeaf && runOutputMediaItems(value as JsonValue, undefined, source).length) {
     return <MediaValue value={value as JsonValue} source={source} mediaUserId={mediaUserId} />;
   }
   if (Array.isArray(value)) {

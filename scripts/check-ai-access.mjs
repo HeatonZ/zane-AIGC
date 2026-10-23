@@ -49,10 +49,13 @@ try {
   }
   if (scenes.total !== scenes.scenes.length || status.workspaceRevision !== scenes.workspaceRevision) throw new Error("权威工作区在诊断期间变化，请重新运行只读诊断");
   const capabilities = await read("list_capabilities");
-  const resources = await client.listResources(); await client.readResource({ uri: "zane://guide" });
+  // 伞式目录：只读诊断先确认默认资源只是目录，并按节读取一篇正文（不生成、不写场景）。
+  const resources = await client.listResources(); const guideIndex = await client.readResource({ uri: "zane://guide" }); const guideSection = await client.readResource({ uri: "zane://guide/9" });
+  const guideIndexBytes = Buffer.byteLength(String(guideIndex.contents[0].text), "utf8"); const guideSectionBytes = Buffer.byteLength(String(guideSection.contents[0].text), "utf8");
+  if (!String(guideIndex.contents[0].text).includes("伞式目录")) throw new Error("zane://guide 未返回伞式目录：后台需要升级到 1.5.43 或更新");
   const published = scenes.scenes.filter(scene => scene.publishedVersionId);
   const ready = workbench.worker?.ready && workbench.worker?.accepting && workbench.projectConfigured && published.length > 0;
-  console.log(JSON.stringify({ ready: Boolean(ready), baseUrl: base, contractVersion: workbench.contractVersion, workspaceRevision: scenes.workspaceRevision, authority: status.authority, worker: workbench.worker, projectConfigured: workbench.projectConfigured, projectDirectory: workbench.projectDirectory, toolCount: tools.tools.length, resourceCount: resources.resources.length, sceneCount: scenes.scenes.length, publishedSceneCount: published.length, capabilityCount: capabilities.capabilities.length, generationExecuted: false, next: ready ? "读取目标场景、预检，再在用户授权范围内执行。" : "后台必须就绪、配置项目目录并至少发布一个场景。" }, null, 2));
+  console.log(JSON.stringify({ ready: Boolean(ready), baseUrl: base, contractVersion: workbench.contractVersion, workspaceRevision: scenes.workspaceRevision, authority: status.authority, worker: workbench.worker, projectConfigured: workbench.projectConfigured, projectDirectory: workbench.projectDirectory, toolCount: tools.tools.length, resourceCount: resources.resources.length, guideIndexBytes, guideSectionBytes, sceneCount: scenes.scenes.length, publishedSceneCount: published.length, capabilityCount: capabilities.capabilities.length, generationExecuted: false, next: ready ? "读取目标场景、预检，再在用户授权范围内执行。" : "后台必须就绪、配置项目目录并至少发布一个场景。" }, null, 2));
   if (!ready) process.exitCode = 1;
   }
 } catch (error) { console.error("AI access check failed: " + (error instanceof Error ? error.message : String(error))); if (logs) console.error(logs.slice(-4000)); process.exitCode = 1; }

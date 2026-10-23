@@ -112,7 +112,10 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .button-small:hover { background: #ebf0e3; }
 .button-danger { color: #fff; background: #a45245; border: 1px solid #a45245; }
 .button-danger:hover { background: #8d4438; border-color: #8d4438; }
+/* 弹框卡片本体：没有这层白底/圆角/阴影，内容会直接浮在遮罩上，后面的页面文字透上来与标题叠在一起。 */
+.modal-card { max-height: min(86vh, 640px); overflow-y: auto; padding: 20px 22px 18px; background: #fff; border: 1px solid #e2e7de; border-radius: 8px; box-shadow: 0 20px 65px rgba(26,34,25,.22); }
 .confirm-dialog { width: min(460px, 100%); }
+.confirm-dialog h2 { color: #30372e; font-size: 15px; font-weight: 600; }
 .lazy-video { display: contents; }
 .lazy-video-placeholder { width: 100%; min-height: 140px; border-radius: 6px; background: linear-gradient(110deg, #f2f4ef 8%, #e9ece4 18%, #f2f4ef 33%); background-size: 200% 100%; animation: lazy-video-shimmer 1.4s linear infinite; }
 @keyframes lazy-video-shimmer { to { background-position-x: -200%; } }
@@ -208,6 +211,8 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .scene-empty > svg { color: #718967; }
 .scene-empty .text-button { margin-left: auto; }
 .text-button { display: inline-flex; align-items: center; gap: 6px; padding: 0; color: #536d48; font-size: 10px; font-weight: 600; background: transparent; border: 0; cursor: pointer; }
+/* 同一个类也用在下载链接上（<a>），链接默认下划线会让它看起来不像按钮。 */
+a.text-button { text-decoration: none; }
 .text-button:hover { color: #293e27; }
 .scene-card-bottom .text-button { margin-top: 0; }
 .scene-coral .scene-card-bottom .text-button { color: #b65f4d; }
@@ -505,6 +510,10 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .connection-form-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 58px; border-top: 1px solid #eef0eb; }
 .connection-form-footer > span { display: inline-flex; align-items: center; gap: 6px; color: #a0a69d; font-size: 9px; }
 .connection-form-footer > span svg { color: #9a9f96; }
+.footer-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.checkbox-row { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; color: #596254; font-size: 10px; }
+.checkbox-row input { accent-color: #536d48; }
+.profile-choice-name small { display: block; margin-top: 2px; color: #9aa094; font-family: "DM Sans", Consolas, monospace; font-size: 8px; }
 .notice { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; padding: 9px 10px; font-size: 10px; border-radius: 4px; }
 .success-notice { color: #4e744b; background: #eff5eb; }
 .error-notice { color: #a45245; background: #faefec; }
@@ -591,6 +600,16 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .runs-list-heading { display: flex; align-items: center; justify-content: space-between; min-height: 43px; padding: 0 13px; border-bottom: 1px solid #edf0ea; }
 .runs-list-heading strong { color: #50594c; font-size: 10px; font-weight: 600; }
 .runs-list-heading span { display: grid; place-items: center; min-width: 20px; height: 19px; padding: 0 5px; color: #788274; font-size: 9px; background: #f0f2ed; border-radius: 10px; }
+.runs-search { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #edf0ea; }
+.runs-search > svg { flex: 0 0 auto; color: #8d9689; }
+.runs-search input { min-width: 0; flex: 1; padding: 5px 7px; color: #3f473c; font: inherit; font-size: 11px; background: #fafbf9; border: 1px solid #e3e7dd; border-radius: 4px; }
+.runs-search input:focus { outline: none; background: #fff; border-color: #a8b89c; }
+.runs-search-clear { display: grid; place-items: center; padding: 3px; color: #7d8678; background: transparent; border: 0; border-radius: 3px; cursor: pointer; }
+.runs-search-clear:hover { color: #4a5346; background: #eef1ea; }
+.runs-search-submit { flex: 0 0 auto; padding: 5px 9px; color: #48543f; font: inherit; font-size: 10px; background: #eff4e8; border: 1px solid #d9e3cd; border-radius: 4px; cursor: pointer; }
+.runs-search-submit:hover:not(:disabled) { background: #e6eeda; }
+.runs-search-submit:disabled { opacity: .55; cursor: default; }
+.runs-search-active { padding: 5px 13px; color: #6f7a69; font-size: 9px; background: #f7f9f3; border-bottom: 1px solid #edf0ea; }
 /* 这里不能写 overscroll-behavior: contain：运行记录左栏是页面里嵌套的独立滚动区，
    contain 会切断滚动链，滚轮在列表滚到底后不再传给外层 .page-scroll，
    于是右栏详情（在首屏下方）永远滚不出来。改回默认 auto，让滚轮在列表到底后继续滚页面。 */
@@ -881,6 +900,12 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .hermes-model-subsection .step-profile-row { flex-wrap: wrap; padding-top: 8px; }
 .hermes-model-subsection .designer-field-explainer { flex-wrap: wrap; margin-bottom: 0; }
 .hermes-model-current { padding: 7px 10px; margin: 8px 0 0; color: #506747; font-size: 9px; background: #f3f6ee; border-radius: 4px; }
+.direct-llm-subsection { padding-top: 4px; }
+.direct-llm-subsection .step-profile-row { flex-wrap: wrap; padding-top: 8px; }
+.direct-llm-subsection .designer-field-explainer { flex-wrap: wrap; margin-bottom: 0; }
+.direct-llm-provider-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 6px; }
+.direct-llm-models { min-height: 96px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.danger-text { color: #b4232a; }
 .designer-subsection { padding: 17px 0 3px; margin-top: 16px; border-top: 1px solid #edf0ea; }
 .designer-subsection-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 9px; margin-bottom: 10px; }
 .designer-subsection-heading h3 { color: #4a5346; font-size: 10px; font-weight: 600; }
@@ -1062,8 +1087,12 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .rerun-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 24px; border-bottom: 1px solid #e8ebe5; }
 .rerun-dialog h2 { margin: 0 0 8px; font-size: 20px; }
 .rerun-dialog header p, .rerun-note { margin: 0; color: #788171; font-size: 12px; line-height: 1.7; }
-.rerun-dialog-body { overflow-y: auto; padding: 20px 24px; }
-.rerun-dialog-body > .field-group { margin: 16px 0; }
+/* 正文滚动区必须是 div，不能是 fieldset：Chromium 不会滚动 fieldset 的内容盒，
+   scrollHeight 正常增长（1000+px）但 scrollTop 恒为 0，正文超长时底部内容永远够不到。
+   禁用态改由内层 fieldset.rerun-dialog-fields 承担（fieldset[disabled] 同样禁用后代控件）。
+   min-height: 0 让 flex 子项能被压到可视高度以内，否则内容会把对话框撑破而不是内部滚动。 */
+.rerun-dialog-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 24px; }
+.rerun-dialog-body > .field-group, .rerun-dialog-fields > .field-group { margin: 16px 0; }
 .rerun-dialog > footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; padding: 16px 24px; border-top: 1px solid #e8ebe5; }
 .rerun-selectors { display: flex; gap: 12px; margin-bottom: 18px; }
 .rerun-selectors .field-group { flex: 1; min-width: 0; }
@@ -1082,7 +1111,8 @@ h1 { color: #232820; font-size: 27px; font-weight: 600; line-height: 1.3; }
 .run-comparison-columns h3 { margin: 0 0 10px; font-size: 14px; }
 @media (max-width: 700px) { .modal-backdrop { padding: 8px; }.rerun-selectors { flex-direction: column; }.rerun-dialog-body { padding: 16px; }.run-comparison-columns { grid-template-columns: 1fr; } }
 
-fieldset.rerun-dialog-body { border: 0; margin: 0; min-width: 0; }
+/* 内层 fieldset 只用于承载 disabled 语义，不引入默认边框/内外边距。 */
+fieldset.rerun-dialog-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
 .rerun-input-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .rerun-input-row strong { min-width: 90px; font-size: 12px; }
 .rerun-input-row select { width: 110px; }
@@ -1158,22 +1188,6 @@ fieldset.rerun-dialog-body { border: 0; margin: 0; min-width: 0; }
 .user-media-clear { padding: 3px 0; border: 0; color: #a15f53; background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
 .user-media-clear:disabled { opacity: .5; cursor: not-allowed; }
 .user-media-picker-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
-.user-asset-picker-modal { width: min(1000px,100%); }
-.user-asset-picker-modal > .production-toolbar > div { flex: 1; min-width: 0; }
-.user-asset-picker-modal > .production-toolbar p { margin: 5px 0 0; color: var(--text-muted,#737b70); font-size: 12px; }
-.user-asset-picker-search { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; padding: 0 12px; border: 1px solid var(--border,#dfe2e7); border-radius: 9px; background: var(--surface,#fff); color: var(--text-muted,#6c7382); }
-.user-asset-picker-search .text-input { flex: 1; min-width: 0; border: 0; outline: 0; }
-.user-asset-picker-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(235px,1fr)); gap: 14px; }
-.user-asset-picker-card { min-width: 0; overflow: hidden; border: 1px solid var(--border,#e4e7ed); border-radius: 12px; background: var(--surface,#fff); }
-.user-asset-picker-preview { display: grid; height: 155px; place-items: center; overflow: hidden; background: #f1f4ee; }
-.user-asset-picker-preview > a,.user-asset-picker-preview > video,.user-asset-picker-preview > audio { display: block; width: 100%; height: 100%; }
-.user-asset-picker-preview img,.user-asset-picker-preview video { width: 100%; height: 100%; object-fit: contain; }
-.user-asset-picker-preview audio { align-self: center; padding: 12px; }
-.user-asset-picker-details { display: grid; gap: 7px; padding: 11px; }
-.user-asset-picker-details > strong { overflow: hidden; color: #3b493d; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.user-asset-picker-details > small { color: #84907f; font-size: 11px; }
-.user-asset-picker-details > p { display: -webkit-box; overflow: hidden; margin: 0; color: #687467; font-size: 11px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-.user-asset-picker-details > .button { justify-self: start; margin-top: 3px; }
 @media (max-width: 520px) {
   .user-media-picker-row { align-items: flex-start; flex-direction: column; }
   .user-media-picker-actions { width: 100%; }
@@ -1308,7 +1322,10 @@ fieldset.rerun-dialog-body { border: 0; margin: 0; min-width: 0; }
 .run-value-media img { display: block; max-width: 100%; max-height: 420px; object-fit: contain; background: #f6f8f1; }
 .run-value-media video { display: block; width: min(100%, 560px); max-height: 420px; background: #171a16; border-radius: 5px; }
 .run-value-media audio { display: block; width: min(100%, 560px); }
-.run-value-media figcaption { margin-top: 4px; color: #98a18f; font-size: 9px; overflow-wrap: anywhere; }
+.run-value-media figcaption { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; color: #98a18f; font-size: 9px; overflow-wrap: anywhere; }
+.run-value-media figcaption .run-icon-button { flex: 0 0 auto; font-size: 9px; }
+/* 单文件下载与「存入素材库」并排，避免每张图下方堆两个纵向按钮。 */
+.production-media-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .run-input-snapshot .run-value-view { margin-top: 8px; padding: 10px; background: #fafbf9; border: 1px solid #edf0eb; border-radius: 4px; }
 .run-input-snapshot .run-value-object > div { border-bottom-color: #edf0eb; }
 .run-input-snapshot .run-value-array > ol > li { background: #f3f6f0; }
@@ -1704,3 +1721,49 @@ fieldset.rerun-dialog-body { border: 0; margin: 0; min-width: 0; }
   .logs-summary{white-space:normal}
   .logs-field{grid-template-columns:minmax(80px,120px) minmax(0,1fr) auto}
 }
+/* 积分：用户端余额卡与管理端发码/调账共用。数值优先，单位与说明降级。 */
+.credit-balance{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:8px 0 18px}
+.credit-balance>div{display:grid;gap:4px;padding:18px 20px;border:1px solid #e3e9df;border-radius:12px;background:#fbfcfa}
+.credit-balance strong{font-size:26px;line-height:1.1;color:#26332c;font-variant-numeric:tabular-nums}
+.credit-balance small{color:#738071;font-size:12px}
+.credit-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:8px 0 16px}
+.credit-form label{margin:0}
+.credit-issued{margin-top:18px;padding:16px;border:1px solid #dfe6dd;border-radius:12px;background:#f7f9f4}
+.credit-issued textarea{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.7}
+/* 卡密明文：等宽字体便于逐字符核对，user-select 允许直接拖选复制。 */
+.redeem-code-plain{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;letter-spacing:.04em;user-select:all;color:#243024}
+.credit-positive{color:#3b652f}
+.credit-negative{color:#943f2c}
+
+/* 场景包：管理端建包用；组件项纵向铺开，绑定行可增删。 */
+.package-items{display:grid;gap:16px;margin:14px 0}
+.package-item{padding:16px;border:1px solid #e0e7dc;border-radius:12px;background:#fbfcfa}
+.package-item-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.package-item-head strong{flex:1 1 200px}
+.package-item-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.package-item-grid label{margin:0}
+.package-confirm{display:flex;align-items:center;gap:8px;font-weight:600}
+.package-bindings{display:grid;gap:8px;margin:10px 0}
+.package-binding{display:grid;grid-template-columns:1.1fr .9fr 1.2fr 1.2fr auto;gap:8px;align-items:center}
+@media(max-width:900px){.package-binding{grid-template-columns:1fr 1fr}}
+.package-pricing{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:10px 0 16px}
+.package-pricing label{margin:0}
+.access-hint{margin:0 0 6px;color:#6b756b;font-size:13px}
+
+/* 用户端包任务：步骤列表按顺序读，确认点操作紧贴该项。 */
+.package-steps{margin:10px 0 18px;padding-left:22px;color:#3d4b3d;line-height:1.9}
+.package-steps li::marker{color:#7d8979}
+
+/* ── 场景包 · 服务页面编辑 ── */
+.package-page-editor{margin-top:16px}
+.package-page-theme{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:12px 0 16px}
+.package-page-theme label{margin:0}
+.package-page-blocks{display:grid;gap:12px;margin:12px 0 16px}
+.package-page-block{padding:14px 16px;border:1px solid #e0e7dc;border-radius:12px;background:#fbfcfa}
+.package-page-block > small{display:block;margin-bottom:10px}
+.package-page-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.package-page-fields label{margin:0}
+.package-page-row{display:grid;grid-template-columns:1fr 1.4fr auto;gap:8px;align-items:center;grid-column:1 / -1}
+@media(max-width:900px){.package-page-row{grid-template-columns:1fr}}
+.package-page-json{display:grid;gap:10px;margin-top:12px}
+.package-page-json textarea{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.6}

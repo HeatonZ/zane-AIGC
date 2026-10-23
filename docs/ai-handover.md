@@ -26,7 +26,7 @@
 3. 用 GET /api/v1/ai 确认正式后台实际返回 contractVersion:1.1.0，worker.ready/accepting:true，projectConfigured:true；核对 projectDirectory 是目标项目。
 4. npm run ai:doctor 只读验收真实 stdio、工具/资源/场景/能力目录；不创建任务或调用生成。未发布场景或旧版后台会明确失败。
 5. 将 examples/mcp/stdio.json、examples/mcp/codex.toml 或 examples/mcp/hermes.yaml 的启动路径、后台地址调整后合并进所用客户端配置。不要覆盖已有整份配置。
-6. 客户端重载后先读 zane://guide，运行 get_workbench/list_scenes/get_scene。不要一接入就调用 submit_scene。
+6. 客户端重载后先读 zane://guide 的伞式目录（正文按 zane://guide/<节号> 按需读取，整本用 HTTP detail=full），运行 get_workbench/list_scenes/get_scene。不要一接入就调用 submit_scene。
 7. 用明确授权的小任务验证一条真实生产链；保留 runId、版本、事件游标和审核记录。外部生成费用、凭据和客户端授权由用户确认。
 
 基础接口交付阶段不自动修改客户端全局配置、不自动重启正式服务、不自动执行付费验收。之后用户指定的 Hermes comfyui-dev profile 已定向接入，见下节；其他客户端/profile 保持不动。不同后台环境和项目不能混用 runId 对账。

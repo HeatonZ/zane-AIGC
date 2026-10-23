@@ -75,6 +75,26 @@ function normalizeMaxConcurrency(value: unknown, label: string) {
   return value;
 }
 
+function normalizeMaxConcurrencyRef(value: unknown, label: string) {
+  if (typeof value !== "string" || !/^input\.[a-zA-Z0-9_]+$/.test(value.trim())) throw new Error(`场景包中的${label}无效`);
+  return value.trim();
+}
+
+function normalizeReviewAfterItems(value: unknown, label: string) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 1000) throw new Error(`场景包中的${label}无效`);
+  return value;
+}
+
+function normalizeItemRetries(value: unknown, label: string) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 3) throw new Error(`场景包中的${label}无效`);
+  return value;
+}
+
+function normalizeItemRetryDelaySeconds(value: unknown, label: string) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 60) throw new Error(`场景包中的${label}无效`);
+  return value;
+}
+
 function normalizeMediaSelection(value: unknown, label: string): WorkflowMediaSelection | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error(`场景包中的${label}媒体选择无效`);
@@ -287,11 +307,25 @@ function normalizeWorkflowStep(value: unknown, index: number): WorkflowStepDefin
   if (kind === "capability" && !step.capabilityId) throw new Error("能力步骤缺少能力包 ID");
   const rawExecution = isRecord(value.execution) ? value.execution : undefined;
   if (rawExecution) {
+    const mode = enumValue(rawExecution.mode, [...workflowExecutionModes], `第 ${index + 1} 个步骤执行方式`);
+    const maxConcurrency = rawExecution.maxConcurrency === undefined ? undefined : normalizeMaxConcurrency(rawExecution.maxConcurrency, `第 ${index + 1} 个步骤最大并行数`);
+    const maxConcurrencyRef = rawExecution.maxConcurrencyRef === undefined ? undefined : normalizeMaxConcurrencyRef(rawExecution.maxConcurrencyRef, `第 ${index + 1} 个步骤并发引用`);
+    const reviewAfterItems = rawExecution.reviewAfterItems === undefined ? undefined : normalizeReviewAfterItems(rawExecution.reviewAfterItems, `第 ${index + 1} 个步骤循环内审核点`);
+    const itemRetries = rawExecution.itemRetries === undefined ? undefined : normalizeItemRetries(rawExecution.itemRetries, `第 ${index + 1} 个步骤逐项重试次数`);
+    const itemRetryDelaySeconds = rawExecution.itemRetryDelaySeconds === undefined ? undefined : normalizeItemRetryDelaySeconds(rawExecution.itemRetryDelaySeconds, `第 ${index + 1} 个步骤逐项重试等待秒数`);
+    if (mode !== "for_each" && (maxConcurrencyRef !== undefined || reviewAfterItems !== undefined)) throw new Error(`场景包中的第 ${index + 1} 个步骤的并发引用与循环内审核点仅支持 for_each`);
+    if (mode !== "for_each" && (itemRetries !== undefined || itemRetryDelaySeconds !== undefined)) throw new Error(`场景包中的第 ${index + 1} 个步骤的逐项重试仅支持 for_each`);
+    if (maxConcurrencyRef !== undefined && maxConcurrency !== undefined) throw new Error(`场景包中的第 ${index + 1} 个步骤不能同时配置最大并行数与并发引用`);
+    if (maxConcurrencyRef !== undefined && rawExecution.carry !== undefined) throw new Error(`场景包中的第 ${index + 1} 个步骤的状态传递必须串行，不能同时配置并发引用`);
     step.execution = {
-      mode: enumValue(rawExecution.mode, [...workflowExecutionModes], `第 ${index + 1} 个步骤执行方式`),
+      mode,
       ...(typeof rawExecution.sourceRef === "string" && rawExecution.sourceRef.trim() ? { sourceRef: rawExecution.sourceRef.trim() } : {}),
       ...(rawExecution.onError === undefined ? {} : { onError: enumValue(rawExecution.onError, [...workflowIterationErrorPolicies], `第 ${index + 1} 个步骤逐项失败策略`) }),
-      ...(rawExecution.maxConcurrency === undefined ? {} : { maxConcurrency: normalizeMaxConcurrency(rawExecution.maxConcurrency, `第 ${index + 1} 个步骤最大并行数`) }),
+      ...(maxConcurrency === undefined ? {} : { maxConcurrency }),
+      ...(maxConcurrencyRef === undefined ? {} : { maxConcurrencyRef }),
+      ...(reviewAfterItems === undefined ? {} : { reviewAfterItems }),
+      ...(itemRetries === undefined ? {} : { itemRetries }),
+      ...(itemRetryDelaySeconds === undefined ? {} : { itemRetryDelaySeconds }),
       ...(rawExecution.carry === undefined ? {} : { carry: normalizeCarry(rawExecution.carry) }),
     };
   }

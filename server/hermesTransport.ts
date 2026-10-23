@@ -85,7 +85,10 @@ export function hermesTransportError(profile: string, connection: HermesApiConne
   const detail = [details.code, details.causeMessage, details.message]
     .filter((item, index, items): item is string => Boolean(item) && items.indexOf(item) === index)
     .join(" / ");
-  return new Error(`Hermes 网络连接失败（${connection.baseUrl}）：${detail || "未知网络错误"}`);
+  const message = `Hermes 网络连接失败（${connection.baseUrl}）：${detail || "未知网络错误"}`;
+  // A dropped keep-alive socket / connect timeout is upstream-side and may clear on its own, so
+  // the executor can retry it when the step opts in. The wording stays identical either way.
+  return isRetryableHermesNetworkError(error) ? new HermesTransientError(message) : new Error(message);
 }
 
 export function isRetryableHermesResponse(response: Response) {
@@ -159,6 +162,29 @@ export class HermesHttpError extends Error {
     this.status = status;
     this.body = body;
   }
+}
+
+/**
+ * A Hermes failure the caller may safely retry when the step explicitly opts in
+ * (`execution.itemRetries`): HTTP 408/429/5xx, a dropped socket, or a request timeout.
+ *
+ * The message is byte-identical to the corresponding plain `Error` used before this class
+ * existed; only the type is new, so the executor can classify it without matching text and
+ * every existing wording contract stays intact.
+ */
+export class HermesTransientError extends Error {
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "HermesTransientError";
+    this.status = status;
+  }
+}
+
+/** 408, 429 and 5xx are upstream-side, retryable conditions; everything else is not. */
+export function isTransientHermesStatus(status: number) {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
 }
 
 export class HermesRunEndpointUnavailableError extends HermesHttpError {

@@ -206,9 +206,10 @@ function validateCodeOutputs(step: RunStep, value: unknown, media: Map<string, R
     if (!Object.prototype.hasOwnProperty.call(record, output.key)) throw new HttpError(400, "自定义代码缺少输出：" + output.key, "INVALID_CODE_OUTPUT");
     const kind = mediaPortKind(output.type);
     if (kind) {
-      const mediaError = mediaOutputError(output.type, record[output.key], media);
+      const requested = record[output.key];
+      const mediaError = mediaOutputError(output.type, requested, media);
       if (mediaError) throw new HttpError(400, "输出 " + output.key + mediaError + "（声明为 " + output.type + "）", "INVALID_CODE_OUTPUT");
-      const items = (record[output.key] as unknown[]).map((item) => media.get(referencedMediaFilename(item)!)!);
+      const items = (requested as unknown[]).map((item) => media.get(referencedMediaFilename(item)!)!);
       result[output.key] = createRuntimeMediaValue(kind, items);
       continue;
     }

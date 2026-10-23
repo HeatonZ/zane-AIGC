@@ -38,10 +38,20 @@ export class ApiError extends Error {
 /** 普通请求超时；SSE/长轮询走各自的 AbortSignal，不受此值约束。 */
 const requestTimeoutMs = 30_000;
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * 工作区写入的超时。
+ *
+ * 整份工作区约 3MB，一条待提交记录同时带 base 与 desired，请求体约 6MB。
+ * 30 秒对普通接口够用，但对这个体量的上传不够：慢网或本机忙（ComfyUI 在跑）时
+ * 请求会被客户端自己中断，服务端只看到 "request aborted"，界面永远停在待同步。
+ * 写入是幂等的（同一 base 重放等价），所以宁可等久一点，也不要中途掐断。
+ */
+const workspaceWriteTimeoutMs = 180_000;
+
+async function request<T>(path: string, init?: RequestInit, timeoutMs = requestTimeoutMs): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const bodyless = method === "GET" || method === "HEAD";
-  const signal = init?.signal ?? (typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(requestTimeoutMs) : undefined);
+  const signal = init?.signal ?? (typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(timeoutMs) : undefined);
   let response: Response;
   try {
     response = await fetch(path, {
@@ -52,7 +62,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch (error) {
     if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError") && !init?.signal) {
-      throw new ApiError(`请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）；服务可能仍在处理，请刷新后核对再重试`, 0, "REQUEST_TIMEOUT");
+      throw new ApiError(`请求超时（${Math.round(timeoutMs / 1000)} 秒）；服务可能仍在处理，请刷新后核对再重试`, 0, "REQUEST_TIMEOUT");
     }
     throw error;
   }
@@ -388,12 +398,35 @@ export function initializeWorkspace(workspace: WorkspaceSnapshot) {
   });
 }
 
-export function mergeWorkspace(base: WorkspaceSnapshot, workspace: WorkspaceSnapshot, actorId?: string) {
+/**
+ * 大请求体压缩上传。
+ *
+ * 工作区写入的请求体约 6MB（base + desired 各约 3MB），压缩后约 1MB。上传窗口越短，
+ * 被中间设备或超时掐断的机会越小；服务端 express.json 默认支持 Content-Encoding: gzip。
+ * 浏览器不支持 CompressionStream 或压缩失败时回退为原始 JSON，行为不变。
+ */
+const compressBodyThreshold = 256 * 1024;
+
+export async function encodeLargeJsonBody(json: string): Promise<{ body: BodyInit; headers: Record<string, string> }> {
+  if (json.length < compressBodyThreshold || typeof CompressionStream === "undefined") return { body: json, headers: {} };
+  try {
+    const source = new Response(json).body;
+    if (!source) return { body: json, headers: {} };
+    const compressed = await new Response(source.pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+    return { body: new Uint8Array(compressed), headers: { "Content-Encoding": "gzip" } };
+  } catch {
+    return { body: json, headers: {} };
+  }
+}
+
+export async function mergeWorkspace(base: WorkspaceSnapshot, workspace: WorkspaceSnapshot, actorId?: string, signal?: AbortSignal) {
+  const encoded = await encodeLargeJsonBody(JSON.stringify({ base, workspace }));
   return request<{ workspace: WorkspaceSnapshot }>("/api/workspace/merge", {
     method: "POST",
-    body: JSON.stringify({ base, workspace }),
-    ...(actorId ? { headers: { "X-Zane-Actor": actorId } } : {}),
-  });
+    body: encoded.body,
+    headers: { ...encoded.headers, ...(actorId ? { "X-Zane-Actor": actorId } : {}) },
+    ...(signal ? { signal } : {}),
+  }, workspaceWriteTimeoutMs);
 }
 
 export async function uploadComfyUIImage(file: File): Promise<ComfyImageAttachment> {
@@ -461,6 +494,50 @@ export function loadLocalExport() {
 export function saveLocalExport(input: { revision: number; root: string }) {
   // Never retry a configuration write. A lost receipt must be reconciled with GET first.
   return request<import("../types").LocalExportSettings>("/api/v1/settings/local-export", { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function loadNotificationWebhook() {
+  return request<import("../types").NotificationWebhookSettings>("/api/v1/settings/notification-webhook");
+}
+export function saveNotificationWebhook(input: { revision: number; enabled?: boolean; url?: string; webhookFormat?: "discord" | "slack" | "feishu" | "generic"; events?: string[]; aggregateSeconds?: number; relayEnabled?: boolean; relayToken?: string }) {
+  // url 与 relayToken 都是三态：省略=保持、空串=清除、非空=替换。绝不在失败后重试。
+  return request<import("../types").NotificationWebhookSettings>("/api/v1/settings/notification-webhook", { method: "PATCH", body: JSON.stringify(input) });
+}
+export function testNotificationWebhook() {
+  // 真实出网一次；失败以 sent:false 返回，调用方不自动重试。
+  return request<import("../types").NotificationWebhookTestResult>("/api/v1/settings/notification-webhook/test", { method: "POST" });
+}
+/** 管理员转发一条自定义内容：目标与平台只来自服务端配置，请求体无法指定目标。 */
+export function relayNotification(input: { text: string; title?: string; source?: string }) {
+  return request<import("../types").NotificationRelayReceipt>("/api/v1/settings/notification-webhook/relay", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Direct model-provider registry. apiKey is the plaintext key typed on the page (stored plaintext in
+ *  本机 SQLite，用户明确选择)；读接口只回掩码，明文从不回显。apiKey 三态：省略=保持、空串=清除、非空=替换。 */
+export function loadDirectLlmProviders(query: { limit?: number; cursor?: string; q?: string } = {}) {
+  const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => [key, String(value)]));
+  const suffix = params.size ? "?" + params : "";
+  return request<import("../types").DirectLlmProviderList>("/api/v1/settings/direct-llm/providers" + suffix);
+}
+export function createDirectLlmProvider(input: { providerId: string; name: string; protocol: "openai-chat" | "anthropic"; baseUrl: string; apiKey?: string; apiKeyEnv?: string; models?: string[]; enabled?: boolean }) {
+  // Never retry a configuration write. A lost receipt must be reconciled with GET first.
+  return request<import("../types").DirectLlmProvider>("/api/v1/settings/direct-llm/providers", { method: "POST", body: JSON.stringify(omitUndefined(input)) });
+}
+export function updateDirectLlmProvider(providerId: string, input: import("../types").DirectLlmProviderInput) {
+  // apiKey/apiKeyEnv 省略即「保持原值」：不要在这里补空串，否则会把已保存的密钥清空。
+  return request<import("../types").DirectLlmProvider>("/api/v1/settings/direct-llm/providers/" + encodeURIComponent(providerId), { method: "PATCH", body: JSON.stringify(omitUndefined(input)) });
+}
+export function deleteDirectLlmProvider(providerId: string, revision: number) {
+  return request<import("../types").DirectLlmProviderDeletion>("/api/v1/settings/direct-llm/providers/" + encodeURIComponent(providerId), { method: "DELETE", body: JSON.stringify({ revision }) });
+}
+/** 向上游查询可用模型并缓存到该提供商；真实访问上游一次 GET，但不调用模型、不计生成费用。 */
+export function queryDirectLlmModels(providerId: string) {
+  return request<import("../types").DirectLlmModelQuery>("/api/v1/settings/direct-llm/providers/" + encodeURIComponent(providerId) + "/models", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** 省略 undefined 字段而不是序列化成 null：服务端用「字段缺失」表达「保持原值」。 */
+function omitUndefined<T extends object>(input: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
 /** Read-only log window / ops-log tail. Read operations never retry a lost receipt blindly:

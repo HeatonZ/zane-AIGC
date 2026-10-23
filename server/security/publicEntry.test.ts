@@ -83,6 +83,27 @@ test("用户入口：公开错误脱敏、解析错误不回显；冲突字段�
   h.setFault(new HttpError(409,"版本冲突 token=SECRET","DRAFT_REVISION_CONFLICT",{currentRevision:4,path:"E:\\secret\\key",password:"SECRET"})); const conflict=await h.api("/api/v1/self/account",user.token); assert.equal(conflict.data.code,"DRAFT_REVISION_CONFLICT"); assert.equal(conflict.data.details.currentRevision,4); assert.doesNotMatch(JSON.stringify(conflict.data),/SECRET|secret\\/);
   const malformed=await fetch(h.publicBase+"/api/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},body:'{"password":"SECRET",INVALID'}); assert.equal(malformed.status,400); assert.doesNotMatch(await malformed.text(),/SECRET|INVALID\}/);
 });
+test("错误上报带请求方法与路径：日志能回答「哪个请求失败了」且不带查询串",async()=>{
+  // 管理员在日志页只看到 HTTP 401 时无法判断是哪个接口；report 必须带上方法与路径。
+  const reports: Array<{ status: number; context: { requestId?: string; method?: string; path?: string; code: string } }> = [];
+  const app = express();
+  app.use((_req,res,next) => { res.set("X-Request-ID","request-id-for-log"); next(); });
+  app.get("/api/v1/things", (_req,_res,next) => next(new HttpError(403,"没有权限","FORBIDDEN")));
+  app.use(createErrorHandler(false, (_error, status, context) => reports.push({ status, context })));
+  const server = app.listen(0,"127.0.0.1");
+  await new Promise<void>(resolve => server.once("listening", resolve));
+  try {
+    const response = await fetch("http://127.0.0.1:" + (server.address() as { port: number }).port + "/api/v1/things?token=leak");
+    assert.equal(response.status, 403);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0]!.status, 403);
+    assert.equal(reports[0]!.context.method, "GET");
+    // req.path never carries the query string, so signed parameters cannot leak into logs.
+    assert.equal(reports[0]!.context.path, "/api/v1/things");
+    assert.equal(reports[0]!.context.code, "FORBIDDEN");
+    assert.equal(reports[0]!.context.requestId, "request-id-for-log");
+  } finally { await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); }
+});
 test("用户入口真实stdio MCP：私有建号授权→公网发现/草稿分页/旧revision/丢回执对账/上传媒体隔离",async t=>{
   const h=await harness(t,{accountAttempts:3,sourceAttempts:17,windowMs:4000,maxConcurrent:2}),admin=await h.create("mcppublicadmin","admin"),management=await mcp(t,h.privateBase,admin.token,h.root); const userId=randomUUID();
   assert.equal((await management.call("create_user",{userId,username:"publicmcpuser",displayName:"public",password})).ok,true); assert.equal((await management.call("set_user_scene_access",{userId,revision:1,sceneIds:["demo"]})).ok,true);
@@ -109,6 +130,8 @@ test("用户入口真实stdio MCP：私有建号授权→公网发现/草稿分�
   const spec=await h.api("/api/v1/ai/openapi.json",token); assert.ok(spec.data.paths["/api/v1/self/scenes"]); assert.ok(!spec.data.paths["/api/v1/users"]);
   const resourceSpec=await user.client.readResource({uri:"zane://openapi"}); const publicDoc=JSON.parse((resourceSpec.contents[0] as {text:string}).text); assert.equal(publicDoc["x-entry-mode"],"user-only"); assert.ok(!publicDoc.paths["/api/v1/users"]);
   const guide=await user.client.readResource({uri:"zane://guide"}); assert.match((guide.contents[0] as {text:string}).text,/用户入口操作手册/);
+  // 管理员手册的分节资源对普通用户入口同样只返回用户手册：不能靠猜节号读到管理员契约。
+  const section=await user.client.readResource({uri:"zane://guide/9"}); assert.match((section.contents[0] as {text:string}).text,/用户入口操作手册/);
   const publicAdmin=await mcp(t,h.publicBase,admin.token,h.root); assert.equal((await publicAdmin.call("get_workbench")).error?.code,"PUBLIC_USER_ONLY"); assert.equal((await publicAdmin.call("create_user",{userId:randomUUID(),username:"blockednew",displayName:"bad",password})).error?.code,"PUBLIC_ENDPOINT_UNAVAILABLE");
   h.setFault(new Error("MCP_SECRET E:\\private\\token")); const failure=await user.call("get_current_user"); assert.equal(failure.error?.code,"INTERNAL_ERROR"); assert.ok(failure.requestId); assert.doesNotMatch(JSON.stringify(failure),/MCP_SECRET|private/);
 });

@@ -73,6 +73,18 @@ test("单行提交拦截：没选场景先拦，缺必填列出字段名，齐�
   assert.match(rowBlockReason({ sceneId: "demo", versionId: "" }, [])!, /请先选择场景/);
 });
 
+test("保存草稿不拦必填，但结构性缺项仍拦：缺的场景/发布版不会被存进去", () => {
+  const ok = { sceneId: "demo", versionId: "version-a" };
+  // requireInputs:false 是保存草稿：先占行、后补素材是常态，缺必填不该拦住存进度。
+  assert.equal(rowBlockReason(ok, ["商品主图"], { requireInputs: false }), null);
+  assert.equal(rowBlockReason(ok, ["商品主图", "宽"], { requireInputs: false }), null);
+  // 必填留到确认提交时按同一份 gaps 拦下，所以确认路径必须保持默认口径。
+  assert.match(rowBlockReason(ok, ["商品主图"])!, /还缺必填：商品主图/);
+  // 没选场景/发布版是结构性缺项：服务端也会拒绝，草稿同样不能放过。
+  assert.match(rowBlockReason({ sceneId: "", versionId: "" }, [], { requireInputs: false })!, /请先选择场景/);
+  assert.match(rowBlockReason({ sceneId: "demo", versionId: "" }, [], { requireInputs: false })!, /请先选择场景/);
+});
+
 const emptyContract = { fields: [] as const, error: undefined as string | undefined };
 
 test("契约阶段：没有输入字段的发布版是「无需填写」，不能永远停在读取中", () => {

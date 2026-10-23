@@ -1,6 +1,6 @@
 import { createComfyUIBypassResolver } from "../comfyuiBypass.js";
 import { resolveComfyUIReroutes } from "../comfyuiReroutes.js";
-import { comfyNamedAutogrowSchemas } from "../comfyuiInputSchema.js";
+import { comfyDynamicComboOptions, comfyDynamicComboSchemas, comfyNamedAutogrowSchemas } from "../comfyuiInputSchema.js";
 import { comfyAutogrowInputNames } from "./comfyMediaBindings.js";
 import type { ComfyUIWorkflowNode, ComfyUIPropertyInfo, ComfyUINodeInfo } from "../domain/types.js";
 import { asRecord, uniqueStrings } from "../domain/workflowValues.js";
@@ -41,7 +41,14 @@ export function summarizeComfyUINodeInfo(payload: unknown, nodeType: string): Co
       const type = comfyAutogrowImageInputNames(rawSchema).length ? "image_list"
         : comfyAutogrowInputNames(rawSchema, "audio").length ? "audio_list" : comfyPropertyType(typeToken);
       const namedInputs = Object.entries(comfyNamedAutogrowSchemas(rawSchema, name)).map(([childName, childSchema]) => ({ name: childName, type: comfyPropertyType(Array.isArray(childSchema) ? childSchema[0] : childSchema), required: false }));
-      return [{ name, type, required: section === "required", ...(options.length ? { options } : {}) }, ...namedInputs];
+      // A V3 dynamic combo only materializes the inputs of its selected option. Listing every
+      // option's children would advertise ports that do not exist at runtime, so each child
+      // carries the option that must be selected for it to be bindable.
+      const dynamicInputs = comfyDynamicComboOptions(rawSchema).flatMap(option => Object.entries(option.inputs.required ?? {}).flatMap(([childName, childSchema]) =>
+        /^[a-zA-Z0-9_]+$/.test(childName)
+          ? [{ name: name + "." + childName, type: comfyPropertyType(Array.isArray(childSchema) ? childSchema[0] : childSchema), required: false, option: option.key }]
+          : []));
+      return [{ name, type, required: section === "required", ...(options.length ? { options } : {}) }, ...namedInputs, ...dynamicInputs];
     });
   });
   const outputTypes = Array.isArray(definition?.output) ? definition.output : [];
@@ -97,6 +104,77 @@ function comfyWidgetValues(node: Record<string, unknown>) {
     ...valueEntries.map((entry) => [entry.name, entry.value] as const),
   ]);
   return { named: namedValues, values: valueEntries.length ? [] : values };
+}
+
+/** Media sockets are not widgets, so they never occupy a position in widgets_values. */
+function comfySocketSchema(rawSchema: unknown) {
+  const schema = Array.isArray(rawSchema) ? rawSchema : [rawSchema];
+  const type = typeof schema[0] === "string" ? schema[0].toUpperCase() : "";
+  if (["IMAGE", "VIDEO", "AUDIO", "MASK", "*"].includes(type)) return true;
+  return asRecord(schema[1])?.forceInput === true;
+}
+
+function comfySchemaAccepts(rawSchema: unknown, value: unknown) {
+  if (value === undefined) return false;
+  const schema = Array.isArray(rawSchema) ? rawSchema : [rawSchema];
+  const type = schema[0];
+  const options = asRecord(schema[1]);
+  if (Array.isArray(type)) return typeof value === "string" && type.includes(value);
+  if (type === "COMBO") {
+    const values = Array.isArray(options?.options) ? options.options : [];
+    return !values.length || (typeof value === "string" && values.includes(value));
+  }
+  if (["INT", "FLOAT", "NUMBER"].includes(String(type))) return typeof value === "number" && Number.isFinite(value);
+  if (type === "BOOLEAN") return typeof value === "boolean";
+  if (type === "STRING") return typeof value === "string";
+  // Custom widget types (for example TRACK_DATA) have no portable validator.
+  return true;
+}
+
+/**
+ * ComfyUI serializes widgets positionally, expanding a V3 dynamic combo into the parent
+ * selection followed by the selected option's children. Files edited outside the ComfyUI
+ * frontend can carry a `widgets_values_named` map that disagrees with that order (children
+ * dropped, later values shifted into the wrong widget). Realign against object_info so a
+ * stale map cannot silently submit an invalid value or lose the child inputs entirely.
+ */
+function alignComfyWidgetValues(inputs: Record<string, unknown>, linkedNames: Set<string>, definition: unknown, widget: { named: Record<string, unknown>; values: unknown[] }) {
+  const node = asRecord(comfyObjectInfoDefinition(definition));
+  const input = asRecord(node?.input);
+  const order = asRecord(node?.input_order);
+  if (!input) return;
+  const entries: Array<{ name: string; schema: unknown }> = [];
+  for (const section of ["required", "optional"]) {
+    const schemas = asRecord(input[section]);
+    if (!schemas) continue;
+    const ordered = order?.[section];
+    const names = Array.isArray(ordered) ? ordered.filter((name): name is string => typeof name === "string") : Object.keys(schemas);
+    for (const name of names) if (Object.hasOwn(schemas, name)) entries.push({ name, schema: schemas[name] });
+    for (const name of Object.keys(schemas)) if (!entries.some((entry) => entry.name === name)) entries.push({ name, schema: schemas[name] });
+  }
+  const names: string[] = [];
+  const schemas = new Map<string, unknown>();
+  for (const { name, schema } of entries) {
+    if (comfySocketSchema(schema)) continue;
+    names.push(name);
+    schemas.set(name, schema);
+    if (Array.isArray(schema) && schema[0] === "COMFY_DYNAMICCOMBO_V3") {
+      const selected = typeof widget.named[name] === "string" ? widget.named[name] : undefined;
+      for (const [child, childSchema] of Object.entries(comfyDynamicComboSchemas(schema, name, selected))) {
+        names.push(child);
+        schemas.set(child, childSchema);
+      }
+    }
+  }
+  names.forEach((name, index) => {
+    if (linkedNames.has(name)) return;
+    const named = widget.named[name];
+    const positional = index < widget.values.length ? widget.values[index] : undefined;
+    const schema = schemas.get(name);
+    if (named !== undefined && comfySchemaAccepts(schema, named)) { inputs[name] = named; return; }
+    if (comfySchemaAccepts(schema, positional)) { inputs[name] = positional; return; }
+    if (named !== undefined) inputs[name] = named;
+  });
 }
 
 function comfyObjectInfoDefinition(payload: unknown) {
@@ -378,33 +456,36 @@ export async function convertComfyUIWorkflow(payload: unknown, baseUrl?: string,
 
     const widget = comfyWidgetValues(node);
     const definition = Object.keys(widget.named).length || widget.values.length ? await loadObjectInfo(nodeType) : undefined;
-    const apiInputNames = comfyObjectInfoInputNames(definition);
-    const isApiInput = (name: string) => {
-      if (!apiInputNames.length) return true;
-      const parentName = name.split(".", 1)[0];
-      return apiInputNames.includes(name) || apiInputNames.includes(parentName);
-    };
-    for (const [name, value] of Object.entries(widget.named)) {
-      if (!linkedNames.has(name) && isApiInput(name)) inputs[name] = value;
-    }
-    if (widget.values.length && !Object.keys(widget.named).length) {
-      let names = comfyWidgetNames(node).filter((name) => !linkedNames.has(name));
-      if (widget.values.length > names.length) {
-        names = uniqueStrings([
-          ...names,
-          ...apiInputNames.filter((name) => !linkedNames.has(name)),
-        ]);
+    if (definition) alignComfyWidgetValues(inputs, linkedNames, definition, widget);
+    else {
+      const apiInputNames = comfyObjectInfoInputNames(definition);
+      const isApiInput = (name: string) => {
+        if (!apiInputNames.length) return true;
+        const parentName = name.split(".", 1)[0];
+        return apiInputNames.includes(name) || apiInputNames.includes(parentName);
+      };
+      for (const [name, value] of Object.entries(widget.named)) {
+        if (!linkedNames.has(name) && isApiInput(name)) inputs[name] = value;
       }
-      if (widget.values.length > names.length) {
-        names = uniqueStrings([
-          ...names,
-          ...nodeInputs.map(({ name }) => name).filter((name) => !linkedNames.has(name)),
-        ]);
+      if (widget.values.length && !Object.keys(widget.named).length) {
+        let names = comfyWidgetNames(node).filter((name) => !linkedNames.has(name));
+        if (widget.values.length > names.length) {
+          names = uniqueStrings([
+            ...names,
+            ...apiInputNames.filter((name) => !linkedNames.has(name)),
+          ]);
+        }
+        if (widget.values.length > names.length) {
+          names = uniqueStrings([
+            ...names,
+            ...nodeInputs.map(({ name }) => name).filter((name) => !linkedNames.has(name)),
+          ]);
+        }
+        widget.values.forEach((value, index) => {
+          const name = names[index];
+          if (name && !linkedNames.has(name) && isApiInput(name) && !(name in inputs)) inputs[name] = value;
+        });
       }
-      widget.values.forEach((value, index) => {
-        const name = names[index];
-        if (name && !linkedNames.has(name) && isApiInput(name) && !(name in inputs)) inputs[name] = value;
-      });
     }
 
     const outputs = Array.isArray(node.outputs) ? node.outputs.flatMap((value) => {

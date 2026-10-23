@@ -3,7 +3,7 @@ export type { WorkflowMediaRole };
 
 export type SceneId = string;
 
-export type PageId = "home" | "history" | "tasks" | "runs" | "assets" | "connections" | "studio" | "flows" | "users" | "feedback" | "logs";
+export type PageId = "home" | "history" | "tasks" | "runs" | "assets" | "packages" | "connections" | "studio" | "flows" | "users" | "credits" | "feedback" | "logs";
 
 export interface SceneModule {
   id: SceneId;
@@ -306,6 +306,14 @@ export interface WorkflowExecutionConfig {
   sourceRef?: string;
   onError?: WorkflowIterationErrorPolicy;
   maxConcurrency?: number;
+  /** 并发取自已声明的 number 输入；留空表示不限制（仍受全局预算约束）。 */
+  maxConcurrencyRef?: string;
+  /** for_each 第 N 项完成后的循环内确认点（调度屏障）。 */
+  reviewAfterItems?: number;
+  /** for_each 单项瞬时失败的重试次数（0–3，默认0=只执行一次；重试会再次调用模型并可能计费）。 */
+  itemRetries?: number;
+  /** 首次重试等待秒数（整数0–60，默认5，指数退避、上限60）。 */
+  itemRetryDelaySeconds?: number;
   carry?: { outputKey: string; initialSourceRef?: string };
 }
 
@@ -495,6 +503,98 @@ export interface TaskConcurrencySettings {
   nextAction: "update_with_revision";
 }
 
+/** Administrator-only direct model-provider registry; never cached in localStorage.
+ *  密钥：apiKey 是页面上直接填写的**明文**密钥，明文保存在本机 SQLite（用户明确选择）；
+ *  读接口永不回显明文，只给 credential 掩码。apiKeyEnv 是兼容回退的环境变量**名**。 */
+export interface DirectLlmCredentialView {
+  configured: boolean;
+  source: "provider-apiKey" | "environment" | "unset";
+  apiKeyMasked: string;
+  lastFour: string;
+  plaintextAtRest: boolean;
+  notes: string;
+}
+
+export interface DirectLlmProvider {
+  format: "zane-studio.direct-llm-provider/v1";
+  providerId: string;
+  name: string;
+  protocol: "openai-chat" | "anthropic";
+  baseUrl: string;
+  apiKeyEnv: string;
+  hasApiKey: boolean;
+  credential: DirectLlmCredentialView;
+  models: string[];
+  modelsFetchedAt: string | null;
+  enabled: boolean;
+  revision: number;
+  origin: "saved" | "legacy-singleton" | "environment";
+  reservedDefault: boolean;
+  configured: boolean;
+  hasModels: boolean;
+  secretStorage: "local_sqlite_plaintext";
+  apiKeyEnvPattern: string;
+  providerIdPattern: string;
+  scope: "system";
+  appliesTo: "core.llm.direct";
+  request: {
+    method: "POST";
+    endpointSuffix: string;
+    modelsEndpointSuffix: "/models";
+    authentication: string;
+    retries: 0;
+    timeoutSource: "workflowTimeoutMinutes";
+  };
+  nextAction: "update_with_revision";
+}
+
+export interface DirectLlmProviderList {
+  format: "zane-studio.direct-llm-provider-list/v1";
+  revision: string;
+  total: number;
+  providers: DirectLlmProvider[];
+  hasMore: boolean;
+  nextCursor?: string;
+  protocols: Array<"openai-chat" | "anthropic">;
+  providerIdPattern: string;
+  apiKeyEnvPattern: string;
+  apiKeyMaxLength: number;
+  reservedDefaultProviderId: string;
+  secretStorage: "local_sqlite_plaintext";
+  secretStorageNotice: string;
+  nextAction: "create_or_update_provider_with_revision";
+}
+
+export interface DirectLlmModelQuery {
+  format: "zane-studio.direct-llm-models/v1";
+  providerId: string;
+  revision: number;
+  fetched: string[];
+  added: string[];
+  models: string[];
+  modelsFetchedAt: string;
+  nextAction: "use_model_ids_in_step_or_provider";
+}
+
+export interface DirectLlmProviderDeletion {
+  providerId: string;
+  deleted: boolean;
+  nextAction: "list_direct_llm_providers";
+}
+
+/** 更新请求体。**apiKey 是三态**：省略=保持已保存的密钥、空串=清除、非空=替换；
+ *  models 省略表示保持现有模型列表。 */
+export interface DirectLlmProviderInput {
+  revision: number;
+  name: string;
+  protocol: DirectLlmProvider["protocol"];
+  baseUrl: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  models?: string[];
+  enabled: boolean;
+}
+
 /** Administrator-only controlled local export root; never cached in localStorage.
  *  空 root 表示能力关闭。只有 core.code 步骤可选使用，且写盘由宿主在沙箱之外完成。 */
 export interface LocalExportSettings {
@@ -510,4 +610,69 @@ export interface LocalExportSettings {
   conflictPolicies: string[];
   limits: { files: number; fileBytes: number; totalBytes: number };
   nextAction: "update_with_revision";
+}
+
+/** Administrator-only run-event notification webhook. The URL usually carries a platform
+ *  token, so the server only ever returns `urlMasked`; never cached in localStorage. */
+export interface NotificationWebhookSettings {
+  format: "zane-studio.notification-webhook/v1";
+  id: "notification-webhook";
+  revision: number;
+  enabled: boolean;
+  configured: boolean;
+  hasUrl: boolean;
+  urlMasked: string;
+  webhookFormat: "discord" | "slack" | "feishu" | "generic";
+  events: string[];
+  supportedEvents: string[];
+  relay: {
+    enabled: boolean;
+    configured: boolean;
+    tokenMasked: string;
+    endpoint: string;
+    maxChars: number;
+  };
+  formats: Array<{ id: "discord" | "slack" | "feishu" | "generic"; label: string; maxChars: number }>;
+  aggregateSeconds: number;
+  scope: "system";
+  limits: { eventsPerMessage: number; minAggregateSeconds: number; maxAggregateSeconds: number; maxPendingEvents: number; messageChars: number };
+  delivery: {
+    pendingEvents: number;
+    deliveredMessages: number;
+    deliveredEvents: number;
+    failedMessages: number;
+    droppedEvents: number;
+    relayedMessages: number;
+    relayedFailed: number;
+    lastAttemptAt?: string;
+    lastSuccessAt?: string;
+    lastRelayAt?: string;
+    lastError?: string;
+  };
+  storageNotice: string;
+  nextAction: "update_with_revision" | "test_notification_webhook";
+}
+
+export interface NotificationWebhookTestResult {
+  format: "zane-studio.notification-webhook/v1";
+  id: "notification-webhook";
+  attempted: boolean;
+  sent: boolean;
+  status: number;
+  urlMasked: string;
+  attemptedAt: string;
+  error?: string;
+  nextAction: "update_with_revision" | "get_notification_webhook";
+}
+
+export interface NotificationRelayReceipt {
+  format: "zane-studio.notification-relay/v1";
+  relayed: boolean;
+  status: number;
+  target: string;
+  webhookFormat: "discord" | "slack" | "feishu" | "generic";
+  chars: number;
+  truncated: boolean;
+  attemptedAt: string;
+  error?: string;
 }

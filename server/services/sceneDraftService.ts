@@ -6,6 +6,7 @@ import { asRecord, splitWorkflowReference } from "../domain/workflowValues.js";
 import { contentRevision, referencedPresetIds, sceneContent, sceneContentHash } from "../domain/sceneContent.js";
 import { validateWorkflowShape, validateCarryReferences, validateStartConditionReferences } from "../domain/workflowValidation.js";
 import { isEmptyWorkflowInput, validateWorkflowInputs } from "../domain/inputValidation.js";
+import { parseScenePricing, validateScenePricing } from "../domain/scenePricing.js";
 import type { RunWorkflowDefinition } from "../domain/types.js";
 import type { ExecutorRegistry } from "../execution/executorRegistry.js";
 import { HttpError } from "../errors.js";
@@ -220,6 +221,9 @@ export class SceneDraftService {
     }
     // Installed capability validators are local; no executor or remote service is invoked.
     flow.steps.forEach(step => this.executors.prepareStep(step));
+    // 定价随发布快照固化：只能落在会调外部服务的步骤上，逐项计费必须有预估上限。
+    const pricing = parseScenePricing(asRecord(draft.scene)?.pricing);
+    validateScenePricing(pricing, flow);
     return flow;
   }
   async validate(sceneId: string, revision: string) {

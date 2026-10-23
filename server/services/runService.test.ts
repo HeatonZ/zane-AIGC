@@ -12,6 +12,7 @@ import { externalizeRuntimeValue, resolveWorkflowReference } from "../domain/wor
 import { RunService } from "./runService.js";
 import { ExecutorRegistry } from "../execution/executorRegistry.js";
 import { HttpError } from "../errors.js";
+import { systemLogBuffer } from "../observability/logger.js";
 
 function assertStepTiming(step: { status: string; startedAt?: string; finishedAt?: string; durationMs?: number }, status: string) {
   assert.equal(step.status, status);
@@ -39,6 +40,23 @@ test("后台执行成功：事件与 JSON 归档在 wait 返回前完成", async
   assert.deepEqual(events.map((event) => event.sequence), events.map((_, index) => index + 1));
   assert.ok(events.some((event) => event.type === "step.completed"));
   assert.equal(events.at(-1)?.type, "run.completed");
+});
+
+test("步骤生命周期同时写入进程内日志，按 runId 过滤能看到每一步", async (t) => {
+  // 管理端日志页按 runId 过滤时，只有 run.queued/run.completed 无法看出执行过程；
+  // 步骤事件是观察面（不参与状态机），但缺少它日志页对一次运行几乎没有信息量。
+  const { service, settings } = await harness(t);
+  await service.start();
+  const run = await service.submit(submission(id("step-logs")));
+  await service.wait(settings.projectDirectory, run.runId);
+  const entries = systemLogBuffer.snapshot().entries.filter((entry) => (entry.fields as { runId?: string }).runId === run.runId);
+  const stepEvents = entries.filter((entry) => entry.event.startsWith("step.")).map((entry) => entry.event);
+  assert.ok(stepEvents.includes("step.started"), "应记录步骤开始：" + stepEvents.join(","));
+  assert.ok(stepEvents.includes("step.completed"), "应记录步骤结束：" + stepEvents.join(","));
+  const started = entries.find((entry) => entry.event === "step.started")!;
+  assert.equal(started.fields.stepName, "第一步");
+  // 日志按 runId 聚合时也必须带上场景，页面才能同时显示运行与场景。
+  assert.ok(entries.some((entry) => entry.event === "run.queued" && entry.fields.sceneId === "test-scene"));
 });
 
 test("失败后断点续跑只调用未完成步骤", async (t) => {
@@ -525,4 +543,35 @@ test("非阻断警告先持久化并去重；单步成功复用及上游失败�
   assert.equal(firstCalls, 1);
   assert.deepEqual(done.steps.map(step => step.warnings), [["first 格式建议"], ["second 格式建议"]]);
   assert.deepEqual(store.getRun(settings.projectDirectory, done.runId)?.steps[0].warnings, ["first 格式建议"]);
+});
+
+test("运行事件旁路：接收事件与运行快照、抛错不影响执行、未接线时行为不变", async (t) => {
+  const observed: Array<{ type: string; status: string; runId: string }> = [];
+  let fail = false;
+  const store = new SqliteStore(":memory:");
+  const root = await temporaryDirectory(t, () => store.close());
+  const projectDirectory = path.join(root, "project"); await mkdir(projectDirectory);
+  const settings = { projectDirectory, comfyuiBaseUrl: "http://127.0.0.1:1", workflowTimeoutMinutes: 1, enabledHermesProfiles: [] };
+  const executors = new ExecutorRegistry().register({ kind: "fake", async execute() { return { value: "ok" }; } });
+  const service = new RunService({
+    store, executors, loadSettings: async () => settings, maxActiveRuns: 1,
+    observeEvents: (run, events) => {
+      if (fail) throw new Error("observer failure");
+      for (const event of events) observed.push({ type: event.type, status: run.status, runId: run.runId });
+    },
+  });
+  t.after(() => service.shutdown(100));
+  await service.start();
+  const run = await service.submit(submission(id("observed")));
+  assert.equal((await service.wait(settings.projectDirectory, run.runId)).status, "completed");
+  // 排队、开始、完成都在旁路里出现，且状态取当次持久化的运行快照。
+  const types = observed.map(item => item.type);
+  for (const type of ["run.queued", "run.started", "run.completed"]) assert.ok(types.includes(type), type + " 未进入旁路");
+  assert.equal(observed.find(item => item.type === "run.completed")?.status, "completed");
+  assert.ok(observed.every(item => item.runId === run.runId));
+
+  // 旁路抛错只记日志，运行照常完成。
+  fail = true;
+  const failing = await service.submit(submission(id("observer-fails")));
+  assert.equal((await service.wait(settings.projectDirectory, failing.runId)).status, "completed");
 });

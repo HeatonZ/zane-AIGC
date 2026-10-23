@@ -1,7 +1,51 @@
-# AI 工作台操作手册
+# AI 工作台操作手册（伞式目录）
 
-契约版本：1.5.36。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
-本手册与 MCP 的 zane://guide、HTTP /api/v1/ai/guide 同源。历史版本小节已拆到 zane://guide/changelog（HTTP /api/v1/ai/guide?detail=changelog），只在需要核对旧版本行为时读取，手册本身保持当前生效契约。
+契约版本：1.7.12。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
+本手册是伞式目录：会话级只下发本目录，正文按节读取。MCP 用 zane://guide/<节号>（如 zane://guide/9），HTTP 用 /api/v1/ai/guide?detail=<节号>；detail=full 一次返回目录、全部正文与历史变更记录，detail=changelog（MCP zane://guide/changelog）是历史版本小节，只在核对旧版本行为时读取。
+正文共 79702 字节、28 个节号（↳ 是父节的细分，父节正文已完整包含子节）；只读当前任务需要的那几节，不要把整本手册当成每次会话的入场券。
+
+## 最小铁律（摘要，细节见对应节）
+
+- 写入/提交响应丢失只查事先保存的同一 ID/对象：不换 ID、不自动重放、不把 409 当幂等成功（第 9 节）。
+- waiting 是等人工审核，不是失败：只用最新 reviewId 决策，续跑/重做不能绕过审核（第 5 节）。
+- 只读发现、编辑草稿、校验、发布都不执行生成；只有 submit/resume/rerun/approve 可能调用模型并计费，必须在用户授权范围内（第 3 节）。
+- 场景、流程、发布版本、预设只有服务端一套权威存储：不改 SQLite 或镜像 JSON，不重启正式后台（第 2 节）。
+
+## 分节目录
+
+| 节号 | 标题 | 字节 | 读取入口 |
+| --- | --- | --- | --- |
+| 1 | 接管前先检查（整节，含下列子节） | 19703 | zane://guide/1 |
+| 1.1 | ↳ 基础优先，不按场景造步骤 | 2859 | zane://guide/1.1 |
+| 1.2 | ↳ Hermes 步骤的 provider/model 选择 | 2171 | zane://guide/1.2 |
+| 1.3 | ↳ 大模型调用步骤 core.llm | 2226 | zane://guide/1.3 |
+| 1.4 | ↳ 直连模型提供商（core.llm.direct，1.5.40） | 4731 | zane://guide/1.4 |
+| 1.5 | ↳ Qwen Image 2.1 图生图：Writer 整理 → AIXG 转提示词 | 3099 | zane://guide/1.5 |
+| 1.6 | ↳ 长文出视频：Writer 分镜 → AIXG 提示词 → 单工程整片顺序续接（原生有声、无音乐） | 3588 | zane://guide/1.6 |
+| 2 | 入口与部署 | 1602 | zane://guide/2 |
+| 2.1 | 网页、HTTP、MCP 的场景一致性 | 3728 | zane://guide/2.1 |
+| 2.2 | 流程配置差异预览（1.5.5） | 3028 | zane://guide/2.2 |
+| 3 | 正常生产顺序 | 2414 | zane://guide/3 |
+| 4 | 状态机与有限等待 | 1510 | zane://guide/4 |
+| 5 | 审核不能绕过（整节，含下列子节） | 3502 | zane://guide/5 |
+| 5.1 | ↳ 循环内确认点与并发引用（1.5.41） | 2267 | zane://guide/5.1 |
+| 6 | 局部修改与断点恢复 | 2344 | zane://guide/6 |
+| 7 | 素材与媒体 | 6035 | zane://guide/7 |
+| 8 | 选片与成片整理 | 938 | zane://guide/8 |
+| 9 | 响应丢失与冲突恢复（最重要） | 1425 | zane://guide/9 |
+| 10 | 配置场景与发布业务 | 7373 | zane://guide/10 |
+| 10.1 | 输入契约与轻量结果 | 1274 | zane://guide/10.1 |
+| 10.2 | 日志查看（管理员，1.5.37）（整节，含下列子节） | 6755 | zane://guide/10.2 |
+| 10.2.1 | ↳ 日志内容的可读性（1.7.9） | 2968 | zane://guide/10.2.1 |
+| 10.3 | 查看运行里的本机媒体（管理员，1.5.38） | 2061 | zane://guide/10.3 |
+| 10.4 | 运行事件通知 Webhook（管理员，1.7.7）（整节，含下列子节） | 3480 | zane://guide/10.4 |
+| 10.4.1 | ↳ 入站转发：外部系统 → 工作台 → 目标 Webhook | 1519 | zane://guide/10.4.1 |
+| 11 | 接管验收清单 | 1623 | zane://guide/11 |
+| 13 | 场景包（1.7.0） | 5780 | zane://guide/13 |
+| 12 | 积分与卡密（1.6.0） | 5109 | zane://guide/12 |
+
+机器契约：docs/ai-openapi.json（AI操作面与高级提交/媒体/SSE）；工具目录：docs/ai-tools.md；契约导航 zane://openapi/index（完整文档约0.6MB，按需读取）。本目录与 docs/ai-operator.md（目录 + 全部正文）同源，生成 npm run docs:ai，校验 npm run docs:ai:check。
+
 
 ## 1. 接管前先检查
 
@@ -15,7 +59,7 @@
 ### 基础优先，不按场景造步骤
 
 场景差异优先配置 Profile、提示词、输入输出、ComfyUI 工作流/节点绑定；遍历、条件执行、审核和恢复复用通用流程机制。普通文生图/商品图/分镜视频不要仅因场景名称新增专用执行器。
-新步骤可选能力包含 Hermes、ComfyUI、core.code自定义代码、for_each通用逐项、通用开始条件startCondition、第三方接口请求等。以下能力标记compatibilityOnly:true，仍注册可执行（已发布快照与历史运行继续正常工作），但不再向新步骤提供、也不作为AI推荐：数据传递core.manual、条件判断core.condition、条件选择data.select、文本模板text.template、媒体选择与合并media.select_references、图片画布与排版media.image_layout、本地视频拼接media.video_concat、列表对齐data.zip，以及comfyui.h3_long_video、comfyui.long_text_video、comfyui.commerce_pack。替代方式：数据传递/条件控制/媒体选择合并/列表对齐用core.code（在隔离沙箱内表达场景特有编排），已授权媒体直接绑定到模型或ComfyUI步骤，图中文字/图形/版式由图像模型直接生成。
+新步骤可选能力包含 Hermes、大模型调用core.llm、ComfyUI、core.code自定义代码、for_each通用逐项、通用开始条件startCondition、第三方接口请求等。以下能力标记compatibilityOnly:true，仍注册可执行（已发布快照与历史运行继续正常工作），但不再向新步骤提供、也不作为AI推荐：数据传递core.manual、条件判断core.condition、条件选择data.select、文本模板text.template、媒体选择与合并media.select_references、图片画布与排版media.image_layout、本地视频拼接media.video_concat、列表对齐data.zip，以及comfyui.h3_long_video、comfyui.long_text_video、comfyui.commerce_pack。替代方式：数据传递/条件控制/媒体选择合并/列表对齐用core.code（在隔离沙箱内表达场景特有编排），已授权媒体直接绑定到模型或ComfyUI步骤，图中文字/图形/版式由图像模型直接生成。需要独立 system 指令或纯文本输出的模型调用用 core.llm。
 旧版兼容的重申（只对已有快照生效，不迁移、不自动替换）：media.select_references仍按selection/groups解析素材并保留selected、bundle、prompt与reference_map契约；media.image_layout仍支持一张image与layout输入、输出images与layout_manifest；media.video_concat仍按本机FFmpeg顺序拼接并保留原生声音，输出video/download/manifest（新场景的成片顺序用core.code整理，整片由ComfyUI工作流或导演台直接输出）；comfyui.commerce_pack保留旧图包下载协议（迁移必须显式核对清单与Amazon白底/无字等政策）。长文H3把已选人物→场景→道具合并为iteration.item.references.images、音色合并为iteration.item.references.audios，仅两条媒体列表分别绑定192.ref_images/ref_audios，不向节点发送四个业务分类；旧分类绑定仍兼容、不自动迁移，视频节点只接收单项时须显式选择/逐项，不能静默取第一项。
 list_capabilities 默认 limit:50（最大100），目录按安装注册顺序返回，不再分基础/专用等级；hasMore 时用同一目录的 nextCursor 继续读取，单能力声明不截断。目录 revision 变化返回 409 CAPABILITY_PAGE_CHANGED，重新读取第一页；无效参数或失效游标返回400。
 只读目录/筛选不修改任何草稿、已发布快照或历史运行。已标记 compatibilityOnly 的旧步骤仍可出现在已有草稿里并继续执行，只有核对语义后才用当前 revision 显式编辑草稿，校验并重新发布。
@@ -25,6 +69,21 @@ Hermes 步骤除 hermesProfile 外，还可声明两个可选字段：hermesProv
 选择只作用于声明它的步骤（含 for_each 逐项），不修改 Profile 配置、网关默认模型或历史运行快照；换模型不会自动重算已有结果，需要显式编辑草稿并重新发布，或通过 preview_rerun/rerun 的 stepOverrides、review_run 的 stepChanges 在修订链里改。
 校验规则：provider 最多 80 字符、模型最多 200 字符，只允许字母、数字和 _ . : @ / -，不接受空白或控制字符；草稿校验、发布预检与执行前各校验一次，无效值返回 INVALID_WORKFLOW 并说明字段。
 配置前先只读发现：list_hermes_profiles 列出本机真实 Profile；list_hermes_models（参数 profile 必填）读取该 Profile 在网关里的模型选择器目录，返回 currentProvider/currentModel 与 Provider 行（slug、显示名、是否当前、是否有凭证、模型ID列表、totalModels、modelsTruncated）。每 Provider 最多返回 200 个模型并在截断时明确标记；目录按 Profile 缓存 60 秒，refresh=true 显式重读；cursor 绑定 profile 与 revision，目录变化返回 409 HERMES_MODEL_PAGE_CHANGED（重读第一页，不拼接）；Profile 不存在返回 404 HERMES_PROFILE_NOT_FOUND；网关未启动/未配置 API Server/认证失败返回 502 HERMES_MODELS_UNAVAILABLE——此时仍可手工填写 provider 与模型，只有执行时才要求网关可达。该目录永不返回凭证、密钥环境变量名或上游地址。
+
+### 大模型调用步骤 core.llm
+core.llm 与 core.hermes 共用同一套 Profile、provider/model 覆盖、多模态附件与 JSON 契约，区别只有两点：**独立的 system 角色消息**，以及**可选的纯文本输出模式**。
+capabilityConfig.systemPrompt 作为单独的 system 消息发送；留空则不发送 system 消息（请求体与 core.hermes 一致，只有一条 user 消息）。capabilityConfig.outputMode 取 json（默认）或 text：json 要求模型只返回一个 JSON 对象、字段与声明输出端口完全一致，缺失或多余字段都判失败，沿用同一套严格解析与单一家族修复（不截断内容、不自动重投模型）；text 要求恰好声明一个 text 输出端口，并把模型回复**原文**（不解析 JSON、不裁剪首尾空白）作为该输出返回，用于「直接产出提示词正文」这类不需要结构化的场景。
+系统指令还可来自 capabilityConfig.skillRef：按 input.<本步骤输入key> / step.<步骤id>.outputs.<输出key>（可带 JSON 路径，多个用换行或逗号分隔）引用一段文本，典型是 core.code 用 fileAccess 读出的 SKILL.md 正文，多个场景共用一份技能文件。技能文本原样发送（不剥 frontmatter、不裁剪），与 systemPrompt 同时填写时固定文本在前；引用写法非法在校验/预检失败，目标不存在或指向媒体在请求前失败，解析为空则继续执行并记步骤警告。细节见变更记录 1.7.4。
+声明为 image_list/video_list 的步骤输入会作为多模态附件一并发送，沿用与 core.hermes 相同的抽帧、压缩与 10MB 内联上限，图片压缩缓存在续跑/重做时复用、不重复编码。因此需要「看着参考图写提示词」时，把参考图作为步骤输入绑定进来即可，不必让模型只看文字。
+典型用法：把原本写在外部节点（例如 ComfyUI 的 PE 提示词增强节点）里的系统提示词迁移到 systemPrompt，让模型直接产出最终提示词正文，再用 text 输出绑定给下游（例如写进 ComfyUI 采样器的 prompt 端口或 core.code 步骤）。systemPrompt 支持多行长文本，不受提示词模板的短文本限制。
+### 直连模型提供商（core.llm.direct，1.5.40）
+capabilityConfig.direct（boolean，默认 false）开启第二条执行路径：worker 直接请求你配置的兼容端点，**完全脱离 Hermes**——不读 hermesProfile、不解析网关地址、不使用网关密钥（该模式的存在原因正是 Hermes /v1/runs 链路在长回合里可能一直挂到单步超时）。默认 false 时行为与改造前逐字节一致，包括 hermesProvider/hermesModel 覆盖与全部错误文案。
+配置唯一来源是提供商注册表 list_direct_llm_providers / get_direct_llm_provider / create_direct_llm_provider / update_direct_llm_provider / delete_direct_llm_provider（路径 /api/v1/settings/direct-llm/providers[/{providerId}]）：可以配置多个提供商，每个提供商有自己的 protocol（openai-chat | anthropic）、baseUrl、apiKey、apiKeyEnv、models 与 enabled。每个提供商是 SQLite 里一条独立文档（文档ID direct-llm-provider:<providerId>），各自 revision 保护，因此编辑一个提供商不会让另一个的写入变冲突；create 重复 providerId 返回 409 PROVIDER_ALREADY_EXISTS，update/delete 用旧 revision 返回 409 RESOURCE_REVISION_CONFLICT。
+**密钥优先用页面上直接填写的明文 apiKey，它会被明文保存进本机 SQLite**（这是产品明确选择的存储方式）：请自行保护数据目录、数据库副本与备份，能读到该文件的人就能读到密钥。apiKey 为空时回退 apiKeyEnv 指向的工作台服务进程环境变量（只保存变量名）。**读接口永不回显明文**：只返回 credential.configured、credential.source、credential.apiKeyMasked（末尾 4 位）与 hasApiKey；明文不进日志、运行记录、运行输入、发布快照、步骤结果或导出清单。写入的密钥字段是三态——**省略=保持已保存的密钥**（只改名称或地址不会把它清空）、显式空串=清除、非空字符串=替换；enabled=true 要求 name/baseUrl 齐全且最终有一份可用密钥，否则 400。地址允许本机/内网/回环（这是对「仅公网」限制的有意例外，直连常见形态就是本机代理或自建网关），但拒绝 URL 内嵌用户名密码、查询串、片段与非 http(s)。
+步骤侧：capabilityConfig.direct=true + capabilityConfig.providerId（注册表里的稳定ID）+ 可选 capabilityConfig.model。省略 providerId 时使用**保留的默认提供商**（providerId direct-llm-default，origin 为 legacy-singleton 或 environment），它承载 1.5.39 单例与环境默认值 ZANE_DIRECT_LLM_BASE_URL/ZANE_DIRECT_LLM_API_KEY_ENV/ZANE_DIRECT_LLM_MODEL，因此升级前已发布的 direct 快照继续可用、不被改写；该保留项不能删除，第一次保存它会写成新式文档并删除旧单例，避免同一 ID 有两个真相（此后该提供商的 revision 从 1 起）。省略 model 时用提供商 models 列表的第一个；两者都没有则在发出任何请求之前明确失败，不会猜默认模型。
+请求形状按协议：openai-chat = POST <baseUrl>/chat/completions，Authorization: Bearer <环境变量值>，body {model, messages, stream:false}，读 choices[0].message.content；anthropic = POST <baseUrl>/messages，x-api-key + anthropic-version 2023-06-01，body {model, max_tokens:4096, system:<顶层字段>, messages}，读 content[] 中全部 type:text 块并拼接；图片按协议分别映射（OpenAI 的 image_url data URL / Anthropic 的 base64 source 块），复用同一套抽帧、压缩与 10MB 内联预算。超时沿用单步超时；一次请求不自动重试（补全非幂等，重发可能重复计费）。
+可用模型：query_direct_llm_models（POST /api/v1/settings/direct-llm/providers/{providerId}/models）按该提供商协议 GET <baseUrl>/models，成功后与已有 models 合并去重（上游顺序优先）写回同一 revision 保护的文档并更新 modelsFetchedAt；**手填的模型永不丢失**。失败一律明确报错（401/403 认证失败；404/405/501 或信封不可识别报「该协议不支持列模型」；其它带上游状态码与脱敏摘要），**绝不用空列表冒充成功**，也不写坏缓存；查询期间该提供商被并发改动返回 409，本次结果不写入。配置、草稿编辑、校验、发布与查询模型都不调用模型；只有提交执行才发出补全请求。机器契约 x-direct-llm v2。
+修改 Profile 配置、网关默认模型或历史运行快照都不会被本步骤改动。
 选择模型不等于可执行：只有实际执行（submit_scene/resume_run/rerun）才会调用模型并可能计费；读取目录、编辑草稿、校验和发布都不调用模型。
 
 ### Qwen Image 2.1 图生图：Writer 整理 → AIXG 转提示词
@@ -73,7 +132,7 @@ Codex 配置示例见 examples/mcp/codex.toml；其他使用 mcpServers 的客�
 
 ## 2.1 网页、HTTP、MCP 的场景一致性
 
-三者共用同一 WorkspaceService/SQLite，场景、流程、发布版本、预设和任务草稿只维护服务端一套。浏览器不读写本地业务场景库，不从旧localStorage初始化、不补默认或已删除场景、不改写已发布快照；未初始化时网页只提供显式空工作区初始化。浏览器仅保留待确认写入的防丢outbox：重载显示服务端快照，不自动应用或重放旧编辑；明确恢复先读服务端对账，原ID/base及冲突校验不变。坏outbox不静默过滤，原始数据保留至明确放弃。
+三者共用同一 WorkspaceService/SQLite，场景、流程、发布版本、预设和任务草稿只维护服务端一套。浏览器不读写本地业务场景库，不从旧localStorage初始化、不补默认或已删除场景、不改写已发布快照；未初始化时网页只提供显式空工作区初始化。管理端编辑只保存在内存并立即提交 /api/workspace/merge，浏览器不再保存待提交副本：刷新页面后未取得回执的编辑会丢失，界面用「编辑待同步」与服务端revision如实提示；提交失败保留失败基线，重试不会跳过它。
 get_workspace_status（GET /api/workspace/status）轻量返回 authority:sqlite、initialized、workspaceRevision、catalogView:draft、executionView:published。网页显示当前来源地址和共享配置 revision；与get_workspace/list_scenes核对时，先确认后台地址，再确认同一revision。
 list_scenes 与网页场景目录保持同一顺序，title/summary为草稿名称，publishedTitle/publishedSummary为当前发布快照名称。draftRevision与get_scene_draft.revision一致，draftMatchesPublished标记内容差异；草稿重命名不会改掉创作页/get_scene的旧发布名称。
 场景目录默认limit:50（最大200）；hasMore:true时按nextCursor续读，不能将第一页当作全部场景。游标绑定工作区revision；跨页编辑、删除、排序或其他配置变更返回409 SCENE_PAGE_CHANGED，重读第一页以避免拼出混合目录。无效游标400 INVALID_SCENE_CURSOR，无效参数400 INVALID_AI_REQUEST。空目录返回scenes:[]、total:0、hasMore:false，不补内置场景。
@@ -158,15 +217,22 @@ GET /api/v1/runs/{runId}/events/history?after=0&limit=100 返回 events、nextSe
 {"runId":"0b2ddab7-5c7c-4c66-9e62-56bf6d083f3b","reviewId":"本次pendingReview.id","action":"approve"}
 ~~~
 
-approve 可带 outputs 替换单次节点的部分结果；服务端会校验结果类型。逐项节点目前整批审核，不支持逐镜独立暂停或 outputs 编辑。
+approve 可带 outputs 替换单次节点的部分结果；服务端会校验结果类型。逐项节点默认整批审核，不支持 outputs 编辑或逐镜独立暂停；需要「先出前 N 项、确认后再出剩余」时在草稿里给该 for_each 步骤配置 execution.reviewAfterItems=N（见 5.1）。
 仅管理员管理审核的Hermes redo 可带 feedback 文本说明问题和期望；服务端捕获原结果、保存 feedbackHistory 并让模型按意见修订，不需要改写整段提示词。
 redo 可带 stepChanges 修改 promptTemplate、hermesProfile、hermesProvider、hermesModel、capabilityConfig、inputs；对象/数组配置是完整替换，不是深度merge。
 approve 可能启动后续生成，redo 会重做当前节点并产生新的 reviewId。旧/重复reviewId 返回409 REVIEW_CONFLICT，重读后检查是否已执行，不自动再次批准。
 waiting 时普通 resume/rerun 返回 REVIEW_REQUIRED。取消后恢复也不承诺绕过未批准关卡。
 
+### 5.1 循环内确认点与并发引用（1.5.41）
+
+「先出 2 张确认、再出剩余」不用把批次拆成两个步骤：给同一个 for_each 步骤加 execution.reviewAfterItems=2。它是**调度屏障**——第 2 项完成前不派发第 3 项，所以确认时恰好是这 2 张，并发不会越过该点；此时 pendingReview.scope=batch_items、afterItems=N，该步骤保持 running 而不是 completed。approve 复用已完成的前 N 项继续剩余项、不再在该点暂停；redo 只重做截至该点的这一段并再次暂停（新 reviewId）；两者都不重复生成已确认的前段，也仍不支持 outputs 编辑（逐项步骤只能退回重做）。它与步骤结尾的 review.enabled 相互独立、可同时配置，确认说明沿用 review.instruction；N 不小于遍历项数时不触发并在步骤 warnings 记录「审核点第 N 项未触发」；onError=stop 或 carry 出现失败时按原失败路径处理，不伪装成确认点。
+并发可以跟随输入：execution.maxConcurrencyRef=input.<key> 指向本场景已声明的 number 输入，留空表示**不限制**（取 32，仍受 ComfyUI 全局并发预算 ZANE_COMFYUI_MAX_CONCURRENCY 与任务级上限约束）；0、负数、小数、超过 32 或非数字在预检/提交阶段返回 400 INVALID_ITERATION_CONCURRENCY，不会静默回退成串行；与静态 maxConcurrency 互斥，carry 恒串行。生效并发恒取 min(解析值, 本次遍历项数)。
+单项瞬时失败可以重试：execution.itemRetries=0–3（默认 0，与历史一致只执行一次）与可选 itemRetryDelaySeconds=0–60（默认 5，指数退避、上限 60）。只重试瞬时类——Hermes HTTP 408/429/5xx、网络/套接字中断、请求超时，以及上游半途断流导致的输出解析失败；鉴权、参数/校验、schema/契约、业务 4xx、取消、直连与 ComfyUI 失败一律不重试。重试发生在**单项内部**：项序、reviewAfterItems 屏障与 carry 前缀复用都不受影响；每次重试在该项 warnings 记一条（第几次、原因、等待秒数），等待期间取消立即中断，重试耗尽后走原 onError/carry 失败路径。每次重试都重新调用模型、可能再次计费，所以默认关闭。
+
 ## 6. 局部修改与断点恢复
 
 Hermes 已完成结果可用 changes.feedback:[{stepId,message,itemIndex?}] 反馈重做；单项反馈只改该项，整步反馈应用所有项。反馈和原结果保留在 feedbackHistory，后续修订/断点续跑继承有效意见；原模板和旧运行不变。
+只想把意见交给该步骤的 Agent、暂不重做时用 request_step_agent_feedback（POST /api/v1/runs/{runId}/steps/{stepId}/feedback）：按运行快照真实重建执行期上下文（解析后的步骤输入、上游结果、逐项来源项、原结果与步骤级 Profile/provider/model），把 message + 可选 context{artifact,observation,expectation,constraints} 交给该步骤原本调用的同一个 Agent 一次，返回原文与按该步骤输出契约解析的 outputs——**不排队、不新建运行、不写运行记录、不改场景、不发布、不生成媒体**，runId/状态/revision 都不变，也不返回完整提示词。它真实调用模型、可能计费、一次请求不自动重试；解析或输出校验失败返回 502 STEP_FEEDBACK_AGENT_FAILED 并带一段原文（有界、不写入任何记录）。要采纳修订仍必须显式走重做链路：把同一条意见交给 review_run 的 redo（带 feedback）或 preview_rerun/rerun 的 changes.feedback；两条路共用同一份反馈校验与长度上限，坐标（stepId/itemIndex）与可反馈条件也一致。
 优先 preview_rerun，检查每步 action:reuse/run/replace、reason 及镜头索引。输入变化可能影响整个下游，不只一个节点。
 同一份 changes 预览确认后再 rerun，使用新的、已保存的 runId。预览不是持久化锁定计划；提交时重算并校验来源状态。
 
@@ -183,7 +249,7 @@ resume_run 复用已持久化完成步骤，但尚未checkpoint的远程请求�
 
 ## 7. 素材与媒体
 
-素材元数据维护、运行收藏、归档和版本管理仅管理员（含使用管理员本人凭证的AI）可用。普通用户可用list_own_assets分页检索自己的未归档素材，并在用户端输入中选择其固定版本；upload_own_asset上传的素材归属从已验证身份取得。本人目录不返回他人或未归属历史，也不能维护管理员素材。UI、HTTP、MCP共用AssetService与SQLite，没有AI旁路库。
+素材元数据维护、运行收藏、归档和版本管理仅管理员（含使用管理员本人凭证的AI）可用。普通用户可用list_own_assets分页检索自己的未归档素材；新客户端不提供素材库页面或选择入口，媒体输入只上传本次任务文件，素材目录仍按身份开放给AI/HTTP。upload_own_asset上传的素材归属从已验证身份取得。本人目录不返回他人或未归属历史，也不能维护管理员素材。UI、HTTP、MCP共用AssetService与SQLite，没有AI旁路库。
 媒体执行输入首选真实assetId+assetVersion；previewUrl只是需鉴权的浏览器/HTTP显示接口，不是执行端读取凭证。后端在预检/入队阶段校验固定版本，提交时从权威素材服务归档同一任务私有副本。Hermes/AIXG把归档字节转换为inline图片附件，ComfyUI读取并上传同一来源，参考图顺序保持一致；不会把本机路径文本当图片，也不让两端自行取最新版。Hermes保留现有inline图片预算、必要时压缩；不会改变固定素材版本，ComfyUI继续使用原归档字节。不向ComfyUI/外部URL转发工作台token。管理员已有本后台同源（同协议/端口、loopback等价）或相对固定版本媒体地址也按同一服务解析；跨源地址仍为外部源，不取得本机素材权限，代理地址请用固定ID引用。普通用户仍只接受本人固定引用、不接受路径或URL。第三方multipart步骤（core.http_request的multipartImages）除本运行归档图片外，也接受本运行内已上传的ComfyUI图片附件：表单上传的图与同一次运行上游步骤产出的图都没有运行内归档副本，按配置的comfyuiBaseUrl从ComfyUI取回原字节后按引用顺序上传，只接受普通文件名/子目录段；显式开启multipartLocalFiles（默认false）后还可读取管理员本地导出根目录内的真实文件，与core.code的localExport/fileAccess共用同一授权边界并取真实路径校验包含性，拒绝越界与符号链接逃逸，用于「本地素材目录→第三方图生图」的固定流程。INVALID_ASSET_REFERENCE/ASSET_FILE_MISSING在排队前拒绝，不重传素材、不改提示词；读原runId确认真实失败后，显式resume_run保存新的runId并复用已完成步骤，不自动触发付费生成。OpenAPI x-asset-media-execution和媒体inputRequirements.mediaExecution提供机器契约。
 list_assets默认24条、最多100条，可用q检索名称/description/分组/标签，用kind/category/group/tag筛选；archived:true包含归档。摘要含currentVersion/versionCount/revision/versionsOmitted，不携带历史与大参数。hasMore时用同一筛选的nextCursor继续；游标绑定项目、身份、筛选与目录快照。ASSET_PAGE_CHANGED重读第一页，不拼接不同快照。
 get_asset读取一个摘要和当前固定reference；list_asset_versions分页读取新到旧的历史，每版含固定reference和parametersOmitted。get_asset_version读取一个版本；includeParameters:true按parametersOffset/parametersLimit读取JSON字符片段（默认8000、最多16000）。hasMore时沿nextOffset续读，完整拼接后解析，不能把片段当完整参数。
@@ -198,7 +264,7 @@ upload_asset 读取 MCP 进程所在机器的绝对 filePath，流式上传到�
 HTTP 上传 POST /api/v1/assets/upload?createId=预先保存的UUID&kind=image&category=material，Content-Type:application/octet-stream，X-File-Name 用 encodeURIComponent 编码；请求体是文件字节，不是 JSON 或 multipart。
 upload_asset/save_asset新建必须先生成并持久保存createId；响应丢失先get_asset(assetId=createId)对账，ASSET_ALREADY_EXISTS不是幂等成功，不换ID重投。新增版本带assetId+当前revision且不带createId；回执丢失核对同ID的revision/currentVersion/source/sha256，不盲追加第二版。并发创建同ID只有一个成功。
 description（最多4000字）、group（160字）、tags（最多30个，每个80字）用于检索和选材；tags更新时完整替换，其他未提供元数据保留。新建未指定category默认material，新增版本未指定分类保留原值。类型/分类不匹配、未知键与错误类型会拒绝，不静默截断。HTTP上传tags是JSON数组查询参数；不是逗号串。
-浏览器只保存按身份隔离的未确认写入ID/基线revision outbox，不缓存或恢复素材快照；重载仍读取服务端。明确点击读取原ID对账后才清除提示，不自动重放。
+素材写入只保留按身份隔离的未确认操作ID/基线revision记录，用于按原ID对账；不缓存或恢复素材快照，重载仍读取服务端。
 update_asset 必须带当前revision；409后重读，不能盲覆盖。
 
 媒体访问：GET/HEAD /api/v1/assets/{assetId}/versions/{version}/media 支持Range。
@@ -269,15 +335,117 @@ inputExamples标记requiresUserInput、missingRequiredInputs和syntacticallyComp
 结果目录/foreach列表按cursor/limit分页，数组值按valueOffset/valueLimit分段。includeValues:false只看元数据；超过maxValueBytes明确valueOmitted/omissionReason/valueBytes，不能把缺省值当成完整结果。媒体提供精确source和HTTP预览地址，不嵌入二进制。
 结果响应revision与cursor绑定到当前查询/结果版本；运行结果在分页中变化返回RESULT_PAGE_CHANGED，重新读第一页。输入、提示词和完整流程不会夹带在单步结果里。
 
+## 10.2 日志查看（管理员，1.5.37）
+
+管理端「运行日志」页与 get_system_logs/get_ops_log 共用同一只读服务，两个来源刻意分开，因为它们的生命周期和保留保证不同：
+1. 进程内结构化日志窗口（get_system_logs，GET /api/v1/maintenance/logs）：现有 log() 采集点写入的有界环形缓冲，容量由 ZANE_LOG_BUFFER_ENTRIES 决定（默认 2000，范围 100–20000）。**重启即清零、不落库、不新增 SQLite 表**，与 RunMetricsTracker 同构。返回最近优先的 entry（sequence 单调自增、time、level、event、已脱敏 fields）。
+2. 运维日志文件尾部（get_ops_log，GET /api/v1/maintenance/logs/ops）：只读 APP_DATA_DIR 下白名单成员——watchdog.log、watchdog-server.log、server.stdout.log、server.stderr.log、zane-server.stdout.log、zane-server.stderr.log。file 只能取白名单名字，不接受任意路径，所以它不是文件读取代理。
+
+筛选：level 是最低等级语义（level=warn 返回 warn+error），与 ZANE_LOG_LEVEL 一致；event 按前缀匹配（run. 命中全部 run.*）；q 在事件名与字段 JSON 中做子串匹配；runId 匹配字段中的 runId/sourceRunId/newRunId（所以修订与续跑链也聚得起来）；sceneId 匹配字段中的 sceneId。
+分页与窗口：游标是按 sequence 定位的 keyset 锚点，因此**追加安全**——读取这个日志本身会写入 http.request 条目，条目集合每次都在变，所以续页不会因此在翻页中途失效，既不重不漏。游标同时绑定筛选条件，换筛选复用旧游标返回 400 INVALID_LOG_CURSOR，不会被重新解释成第一页。真正让游标失效的只有一种情况：更早的条目被容量挤出（最旧保留边界前移），此时返回 409 LOG_PAGE_CHANGED 并带 details.currentRevision 与 details.retainedFromSequence，必须重读第一页，不拼接两个快照。**buffer.dropped>0 表示更早的日志已被容量挤出，不是没有产生**；sequence 缺口同理。levelsAvailable 是本进程实际记录过的等级，受 ZANE_LOG_LEVEL 下限影响——缺少 warn 表示该等级根本没被记录，不是没有告警。
+运维日志的完整性标记必须读：complete 才是真正的整份文件；文件超过 4MB 字节上限时只扫描末尾窗口，此时 scannedWholeFile:false 且 totalLines/lineNumber 只相对该窗口；missing:true 表示该文件当前不存在（例如服务没以该方式启动过），不是读取失败；available 列出本机实际存在可读的白名单文件；truncated:true 表示有行被长度预算裁剪。
+脱敏边界：凭证/密钥类键值（password、authorization、cookie、apiKey、token、secret 等）替换为 [REDACTED]，URL 查询串、URL userinfo 与内联 Bearer/api-key 赋值一并脱敏；**密钥字段名与引号保留**，因此脱敏后的整行仍是合法 JSON，可以照常按 JSON 读取（不要把整行打成不可解析的碎片）。超长字段与单行裁剪后置 truncated=true，绝不静默截断；运维日志首行的 UTF-8 BOM 会被剥离。**日志仍会包含本机地址与项目路径**——那正是诊断价值，与客户端错误响应只给 code/requestId 的口径不同。不返回提示词、模型对话、运行输入全文或任何密钥明文。
+只读性：不写文件、不轮转、不删除、不生成、不执行。日志窗口与运维日志都是观察面，不能当作状态判据：判断运行状态仍用 get_run/get_own_run，判断服务健康仍用 get_workbench 与 /api/health、/api/ready。
+普通用户入口不提供这两个操作；用户排障用 get_own_run_activity 读取本人业务时间线，或提交系统反馈交管理员，不读取原始日志。
+
+### 10.2.1 日志内容的可读性（1.7.9）
+
+管理端日志页不再只显示事件名与一整块原始 JSON：每行是「时间（含毫秒）+ 等级 + 分类 + 中文事件名 + 一行摘要 + 原始事件名」，下面一行是关键事实标签（请求方法与路径、状态码、错误码、运行/场景/步骤、耗时），失败条目再加一行完整原因并用红色标出。展开后按重要性逐项列出字段（错误字段最前，对象/数组格式化为 JSON），可单字段复制或复制整条；页头汇总本页失败条数并提供「只看警告与错误」。中文事件名与摘要是**展示层派生**（src/lib/logPresentation.ts），不改服务端契约、不做页面内二次过滤；未登记的事件原样显示事件名并用标量字段摘要兜底，绝不猜一个可能错的名字。运维日志的 JSON 行同样结构化展开，非 JSON 行（stdout 的普通输出）保留原文，并可切回「原始文本」逐行核对文件本身；被长度预算裁剪的行不再当作可解析 JSON。
+http.error 现在记录 method、path、status、code 与原始错误原因（不含查询串），因此新日志能直接回答「哪个请求失败了」。此前只有 requestId 与状态码；对这类历史条目，页面用同窗口内相同 requestId 的 http.request 条目关联出方法与路径——关联不到时明确留空，不编造路径，也不修改历史条目。
+页面以一句中文正文为主：每行只说「发生了什么」（如「步骤「出图」失败：上游 500」「任务已完成，用时 2 分 5 秒」），接口路径、requestId、字段名与事件名默认不进正文，收在展开后的「技术信息」折叠区；运行ID只作为可点击的短标签出现。
+默认不请求纯接口调用：页面用 excludeEvent=http.request 在服务端排除（该参数为逗号分隔前缀，与 event 同时给出时先包含再排除），避免只有路径和状态码的条目占满窗口；需要时点「显示接口调用」取回。失败按「请求+状态码+原因」聚合，同一次失败的 request/error 两条先按 requestId 合并；成功的心跳轮询折成×N。展开一条会补同请求全部记录、运行上下文（状态/起止/用时/提交人/血缘/逐步状态，只读接口）与前后各三条。
+运行执行现在会把步骤生命周期写进同一进程内缓冲：step.started / step.completed / step.completed_with_errors / step.failed / step.skipped / step.cancelled 与 step.item.*（含 runId、stepId、stepName、capabilityId、itemIndex、durationMs、message、warningCount、error）。因此 get_system_logs 用 runId 过滤时能看到一次运行的逐步过程，而不是只有 run.queued / run.completed 两条。这些条目与 run.checkpoint 一样**只是观察面**，不进入运行状态机、不改变审核/恢复语义，也不会因为日志缓冲被挤出而影响任何状态判断。
+
+## 10.3 查看运行里的本机媒体（管理员，1.5.38）
+
+core.code 的 fileAccess 会把受控根目录内的真实文件路径写进 text/json 输出（例如 characterPath 声明为 text、reference 声明为 json）。这些文件不在运行归档里，因此 output-media 读不了它们——它只服务声明为 image/video/audio[_list] 的输出。结果是界面上这类图完全看不见。
+读取方式：GET /api/v1/runs/{runId}/local-media?outputKey=...&stepId=...&itemIndex=...&mediaIndex=...&w=...。**只提交坐标，不提交路径**：服务端按 (stepId,itemIndex,outputKey) 从运行记录取出该值，按本地媒体路径的首次出现顺序（去重）取第 mediaIndex 个。省略 stepId 表示最终输出；最终输出不接受 itemIndex。省略 w 返回原文件，指定 w 返回显示用 WebP 派生图（非图片或缩放失败回退原字节）。
+判定规则（前后端共用同一份实现，两边必须一致，否则第 N 张图会错位）：整串必须是绝对路径（Windows 盘符、UNC、或 / 开头且非 /api/），且以媒体扩展名结尾。普通文本、非媒体文件（.txt）以及「文本里提到某个路径」都不算媒体，不会被误显示成图片。
+授权边界只有一条：解析出的路径必须落在管理员配置的 local-export 根目录内部（与 core.code localExport/fileAccess 共用同一个根，经 get_local_export/update_local_export 配置）。越界与指向根外的符号链接/联接点都拒绝；未配置根目录返回 FILE_ACCESS_DISABLED；文件已被移动或删除返回 404 LOCAL_MEDIA_NOT_FOUND。**因此它不是任意文件读取代理**，可读范围就是管理员显式授权的那一个根目录，客户端无法用它读取根外任何文件。
+该通道仅管理员可用，且不出现在用户专用入口；普通用户看本人结果时不会经此读取本机文件。只读：不写文件、不生成媒体、不调用模型、不计费。机器契约 x-local-media v1，OpenAPI 中为 media_local / head_local。
+
+## 10.4 运行事件通知 Webhook（管理员，1.7.7）
+
+「集成连接 → 运行事件通知」与 get/update_notification_webhook 共用同一 SQLite 单例（revision 保护）：白名单事件（run.queued/started/waiting/completed/failed/cancelled/stale、step.failed、step.completed_with_errors、review.approve/redo）按 aggregateSeconds（5–300 秒）合并后投递；每消息最多 10 个事件，正文上限取全局 1900 与平台上限的较小值，超出明确截断。
+中间层把**聚合**与**平台适配**分开：聚合层只产出统一文本与事件数组，平台差异集中在 domain/notificationFormats.ts 的适配器——discord {content,allowed_mentions:{parse:[]}}（不触发 @everyone，1900）、slack {text,unfurl_links:false,unfurl_media:false}（2900）、feishu {msg_type:"text",content:{text}}（3500）、generic {source,text,events[]}（1900）。换平台只改 webhookFormat；formats 给出各平台上限。
+这是**观察面**，不是运行状态机的一部分：入队同步无 I/O、发送异步；失败只计入 delivery（failedMessages/droppedEvents/lastError），不阻塞也不改变运行、审核、结算与归档。429 按 Retry-After 或响应体 retry_after 退避（上限 5 秒）后重试一次；失败批不重排队，队列上限 200，重启后未发送事件丢失（不落库）。
+地址含平台 token：明文存本机 SQLite，**读接口只回 urlMasked**，明文不进日志、运行记录、输入、发布快照或导出。url 三态：省略=保持、空串=清除、非空=替换；启用要求已有地址且至少 1 个事件，清空地址同时关闭转发。保存/启用/读取都不发送；只有 test_notification_webhook 按当前适配器发一条固定消息，失败返回 sent:false。排障看 delivery 与 notification. 日志；运行状态仍以 get_run 为准。普通用户入口不提供这三个操作。契约 x-notification-webhook v1。
+
+### 入站转发：外部系统 → 工作台 → 目标 Webhook
+
+若**别的系统**要把消息交给工作台再转发：`POST /api/v1/hooks/relay`，不需要工作台账号，也不经管理员身份中间件。**两种凭证任一匹配**：relay token 或运维凭证 `ZANE_ADMIN_TOKEN`；前者权限更小，推荐给外部系统。目标只来自服务端，**不能指定**；未启用 404 `RELAY_NOT_ENABLED`，凭证错误 401 `RELAY_TOKEN_INVALID`。
+**调用方形状不可控，入站解析是宽松的**：text/plain 纯文本按原文转发（保留换行）；任意 JSON 按常见字段名取正文（text/content/message/msg/body/payload/summary/description/alert 等，并递归看 data/payload/content 一层），title/subject 作为首行加粗；飞书 `{msg_type,content:{text}}`、Slack/Discord 形状、表单 `text=…&title=…` 都能接住；结构完全不认识时把整个对象序列化成正文，**不拒收**；声明 JSON 但语法坏掉按纯文本转发。只有「什么都提取不出」或正文显式为空白才 400 `INVALID_RELAY_MESSAGE`。请求体里的 url/target 一律忽略。
+它是**同步**的（不聚合不排队）：直接返回 `{relayed,status,target,chars,truncated,error?}`，正文按目标平台上限截断并标记，目标拒绝返回 `relayed:false` 且不重放。启用用 `update_notification_webhook` 的 `relayEnabled`/`relayToken`（24–200 位；空串=清除并关闭），须已配置地址；管理员自测用 `relay_notification`。
+
 ## 11. 接管验收清单
 
+- 质检：get_run_audit → submit_run_critique → audit_run_with_hermes（计费，丢回执查同一ID）；细节见 changelog 1.5.42。
 - 后台 /api/v1/ai 返回当前契约；worker就绪，场景已发布，能力版本匹配。
 - npm run ai:doctor 能从真实stdio协议发现工具/资源，并只读工作台/场景/能力，不执行生成。
 - npm run test:ai:smoke 在隔离临时后台走场景→预检→提交→waiting→审核→完成，且与正式数据无关。
 - AI任务日志保存 runId、scene版本、输入、事件游标、素材版本、reviewId 和清单revision。
+- 需要排查后台问题时用 get_system_logs 按 runId/sceneId 聚日志，用 get_ops_log 读 watchdog/server 日志尾部；先看 buffer.dropped 与 complete/scannedWholeFile，不要把裁剪窗口当成完整历史。
 - 已确认何时需要人工审核、允许的生成规模和重做范围。
 - 提交响应丢失演练不会出现第二个运行；客户端断开不会取消后台运行。
 - 正式后台升级由用户安排；本实现不自动重启正式服务或调用真实Hermes/ComfyUI。
 
-机器契约：docs/ai-openapi.json（AI操作面与高级提交/媒体/SSE）；工具目录：docs/ai-tools.md。
+机器契约：docs/ai-openapi.json（AI操作面与高级提交/媒体/SSE）；工具目录：docs/ai-tools.md。MCP 里契约导航读 zane://openapi/index（契约版本、x-* 契约键与逐路径操作事实），完整文档 zane://openapi 约0.6MB，只在确实需要逐操作请求/响应schema时读取，不要整份载入会话。
 生成命令 npm run docs:ai，校验命令 npm run docs:ai:check；修改schema或手册源文件后一起更新，避免文档漂移。
+
+## 13. 场景包（1.7.0）
+
+**包是用户面唯一的产品单元**，场景降级为包内部件。包草稿 = 包级输入 + 有序组件项；每项固定 `sceneId+versionId` 并声明输入绑定（`input` / `literal` / `previous`）。校验：项 ID 唯一、只引用更早项、组件已发布、必填输入已绑定。
+
+**发布自包含**：`publish_package` 内嵌组件快照并固化定价，组件改版或删除都不会让包悬空。`publicationId` 对账，不重复发布；不执行生成。
+
+**服务自己定价**：包草稿可声明 `pricing`（`base` + `items` 按项 ID），发布固化为 `source=package`，替换内部场景或场景无定价都不影响收费；省略回退组件定价。
+
+**运行**：`submit_own_package` 一次预扣全部上限价，逐项串行提交为普通子运行（不各自扣费）。失败、取消或确认点即停。`confirmAfter` 项完成后进入 `waiting_confirm`：approve 继续、redo 重跑本项，前段不重复生成。结算按已完成项计费并退还差额。
+
+**用户面只给服务视图**：`get_own_package_run`/`list_own_package_runs` 只返回 `stage`、`progress`、确认点、失败重试入口与结算，不含组件名、步骤名、子运行ID或错误原文；产出用 `get_own_package_outputs`，本次运行的原始输入用 `get_own_package_run_inputs`。
+
+**原始输入可复用**：`get_own_package_run_inputs` 的字段取该次运行固化的包发布快照、值取提交时快照，之后改版或重新发布都不影响；分页、省略标记与媒体投影与 `get_own_run_inputs` 一致。返回值可直接作为 `prepare_own_package`/`submit_own_package` 的 `inputValues` 起点（媒体仍是本人固定 `assetId+assetVersion`），网页「再做一次」走的就是这条路径。
+
+**授权单元是 `packageIds`**；组件场景不需要单独授权，只有组件授权而无包授权也不能提交。
+
+**客户端入口（1.7.12）**：用户端没有独立首页，打开直接落在服务页；导航只有「服务」和「作品」（账户与反馈走顶栏图标）。只被授权一个服务时自动进入该服务的工作台，点顶部「服务」仍可回到目录且不会再次自动跳转。工作台里可「用这组参数」把某次运行的原始输入就地填回左侧表单（复用 `reusableInputs` 校验：只填当前发布版仍声明且合法的字段，媒体复用固定素材引用），不跳页、不提交、不影响计费路径；画布上的图是 512 预览，点开可看原图真实像素与体积。
+
+**媒体输入的 `referenceType`（1.7.11 修复）**：步骤输入引用场景里的媒体输入（`sourceRef=input.<媒体字段>`）时，**必须同时声明 `referenceType`**（`image_list`/`video_list`/`audio_list`）。不声明时媒体引用不会被解析成运行期媒体值：`core.code` 的媒体输出端口拿不到任何媒体（返回空数组），`core.http_request` 的 multipart 上传直接报 `HTTP_REQUEST_MEDIA_UNSUPPORTED`。现象是「任务跑完了但没有图」或「传参考图失败」，从界面上看不出是配置问题。只有能力自己从运行输入里取媒体的场景（部分 Hermes/ComfyUI 流程）可以不声明，因此这不是全局强校验，而是改场景/建包时必须主动检查的一条。
+
+**服务页面（presentation）**：包草稿的 `presentation` 随发布快照固化，决定用户打开这个包时看到的页面；只影响展示，不改执行与定价。两种骨架由 `layout` 选择：
+
+- `layout: "page"`（默认）：介绍型整页，用 `presentation.page` 的有序区块拼出来——`hero`（eyebrow/headline/subline/showcase≤8/actions≤3/align）、`features`（items≤12，title/detail/badge）、`gallery`（items≤24、columns 2|3|4）、`steps`（items≤12）、`text`（body 必填、空行分段）、`form`（**每页最多 1 个**，submitLabel/note）、`results`（emptyHint）、`faq`（items≤16）、`cta`（headline 必填、label、action）。适合第一次了解服务的人。
+- `layout: "workspace"`：工具型工作台，左边控制栏、右边结果画布，结果常驻不滚走，提交后原地出结果不跳页。**高频反复使用的出图/改图类服务优先用它**。此时 `page` 里不能再有 `form`/`results` 区块（工作台自带，重复会被拒绝）；文案在 `presentation.workspace` 里给：`title`、`subtitle`、`resultTitle`、`emptyHint`、`history`（boolean，底部历史条，默认显示）。`theme`/`promptIdeas`/`presets`/`resultLabels` 两种布局共用。
+
+`theme` 支持 `accent`/`accentSoft`/`heroFrom`/`heroTo`（必须 `#RRGGBB`）与 `surface`（`light`|`dark`，决定整页底色）；`navLabel` 是顶部导航里的短名（默认取标题）；`footer` 是页脚说明与 `http(s)` 链接（非法协议被丢弃）。
+
+校验口径：未知区块 `type`、重复的 `form`、`layout=workspace` 时仍配 `form`/`results`、`layout` 写错、必填缺失、超长文案、非法颜色在**保存/发布时**直接拒绝（`INVALID_PACKAGE_PRESENTATION`，指出第几个区块），不静默丢块——页面上少一块是看不出来的。省略 `page` 的旧包按 `hero`+`highlights` 合成默认页（主视觉 → 卖点 → 表单 → 结果），不需要补配置。发布后用 `get_available_package` 读到的是快照里的同一份 presentation；改页面要改草稿再发布，历史运行不受影响。
+
+错误码：PACKAGE_ACCESS_DENIED / PACKAGE_NOT_PUBLISHED / PACKAGE_COMPONENT_UNAVAILABLE / PACKAGE_PREVIOUS_VALUE_MISSING / PACKAGE_NOT_WAITING / PACKAGE_NOT_FAILED / PACKAGE_BUSY / PACKAGE_REVISION_CONFLICT / PACKAGE_ALREADY_EXISTS / INVALID_PACKAGE_PRESENTATION。机器契约 x-packages v1。
+
+## 12. 积分与卡密（1.6.0）
+
+**积分是服务定价单位，不是上游成本镜像。** Hermes 网关不回传精确 token 账单、ComfyUI 不报 GPU 秒数，所以不存在「按真实成本折算」的口径；积分只按**发布时固化的定价**计算。不要向用户宣称积分等于成本，也不要说系统能精确预测花费——能给的是上限。
+
+**定价写在哪里。** 场景草稿的 `scene.pricing`（get_scene_draft 可见、update_scene_draft 可改、get_scene 返回发布版固化值）：`base` 是每次运行基础分，`steps` 按步骤 ID 定价。只能给调用外部服务的步骤定价（hermes、comfyui（不含纯拼接）、core.http_request、core.llm）。`per_call` 每次调用计一次；`per_item` 按成功项计，**逐项来源是前序步骤输出时必须声明 `maxItems`**。省略 pricing 表示该场景不收费。金额**最多两位小数**，第三位小数直接拒绝而不是四舍五入；内部按「厘」整数记账，单价×项数、余额相减、结算与对账合计都不带浮点尾数。
+
+**时序：预检 → 预扣 → 结算，单向。**
+
+- `prepare_own_scene` / `prepare_scene` 返回 `costPlan`（上限价明细）与本人 `credits` 余额：先看够不够，再提交。
+- `submit_own_scene` 按上限价预扣（账本 `run_reserve:<runId>`），余额不足返回 **402 CREDIT_INSUFFICIENT**（带 required/available/shortfall，nextAction=redeem_code），不进入队列；提交被业务拒绝时全额释放。
+- 运行到终态按实际成功产出结算（账本 `run_settle:<runId>`）：completed 的步骤与逐项计费；failed / skipped / cancelled 与复用项（reusedFromRunId）不计费；差额退还。**charged 永远不超过预扣价，永不事后补扣**，所以「跑到一半发现积分不够」不会发生。
+- `waiting`（等人工审核）不是终态，不结算；approve 继续执行、redo 重跑的部分都在同一份预扣里，不会二次收费。续跑/局部重做会新建运行并按来源运行固化的 pricing 重新预扣。
+
+**幂等与对账。** 余额是账本（credit_entries，append-only）的物化值，两者同事务更新；幂等键是 `run_reserve:<runId>` / `run_settle:<runId>`，因此响应丢失后按同一 runId 查询即可对账，**不会重复扣费也不会重复退款**。`get_own_credits` 的 `available = balance − reserved`：reserved 是进行中运行的未结算预扣，只是占用，不是已花掉。
+
+**租户公平配额。** `ZANE_MAX_ACTIVE_RUNS_PER_USER`（默认 0=不限制）限制单账户在跑数（排队+执行+等待审核都算占用）；超出返回 **429 USER_RUN_LIMIT_REACHED**，遵守 Retry-After 等待，不要靠换 runId 重试。全局并发（ZANE_MAX_ACTIVE_RUNS）仍然生效。
+
+**卡密（CDK）。** 管理员 `create_redeem_batch` 生成批次（faceValue、count≤500），**固定返回 200**：用 `created` 区分本次新建与原批次回执（同 batchId 不新建、不重复发码）。明文存本机 SQLite，可随时 `list_redeem_codes` 回读与导出；明文上线前的旧批次 `recoverable=false`，只能作废重发。作废：`void_redeem_code` 单张、`void_redeem_batch` 整批；**已兑换也可退**，默认 `reclaim=true` 按面值收回并写 `cdk_refund`，余额不足扣到 0、缺口在 `shortfall`。明文不进用户端、日志与运行记录，兑换校验仍用哈希。用户 `redeem_own_code` 同码重复提交返回 `alreadyRedeemed` 且不重复加分；他人已用、不存在、作废统一 **REDEEM_CODE_INVALID** 防枚举，兑换与登录共用限流。
+
+**自助注册。** 默认关闭；`ZANE_SELF_SIGNUP=true` 时用户入口可 `POST /api/auth/register`（用户名+密码，密码≥10位）。新账号**空场景授权**、积分按 `ZANE_SIGNUP_GRANT_CREDITS` 赠送（默认 0）；注册成功不等于可用：要管理员 `set_user_scene_access` 授权场景、再兑换积分才能提交。`/api/auth/status` 的 `signupAvailable` 是唯一判据。
+
+**对账。** `get_credit_reconciliation`（仅管理员，只读）逐账户给出余额、流水累计、未结算预扣，并单列两类异常：余额≠流水累计（有人绕过账本写余额）、退款超过预扣（多退）。**结算写错时余额与流水会一起错，所以只看一致性发现不了问题，必须同时看 reserved 是否长期不下降**；它只报告事实与计数，不自动修复。
+
+**常见错误码。** CREDIT_INSUFFICIENT（402，余额不足，读 available/shortfall）、CREDIT_REVISION_CONFLICT（409，调账前先重读）、USER_RUN_LIMIT_REACHED（429）、REDEEM_CODE_INVALID / REDEEM_CODE_EXPIRED / REDEEM_CODE_USED（卡密）、INVALID_CREDIT_CURSOR（400，流水游标无效）、REDEEM_CODE_NOT_FOUND（404，卡密不存在）。
+
+**边界。** 计费不改变运行状态机与审核语义；管理员提交的运行不计费；历史运行没有定价记录也不补扣；积分表在本地 SQLite，不随项目目录变化，也不进发布快照（快照里只有 pricing 规则）。

@@ -22,7 +22,7 @@ metadata:
 服务器配置名是 `zane-workbench`，Hermes 规范化后的前缀为 `mcp__zane_workbench__`。
 如果工具被延迟发现，先用客户端工具搜索查 `zane_workbench`；不要猜另一种前缀，也不要因为暂未发现工具改成操作数据库。
 
-1. 用 `mcp__zane_workbench__read_resource`，参数 `{"uri":"zane://guide"}`，读取实时操作手册。
+1. 用 `mcp__zane_workbench__read_resource` 读取实时操作手册：先读 `{"uri":"zane://guide"}` 拿伞式目录（节号、标题、字节数、入口），再按当前目标只读需要的节，例如 `{"uri":"zane://guide/9"}`（响应丢失与恢复）、`{"uri":"zane://guide/5"}`（审核）。不要每次把整本手册拉下来。
 2. `mcp__zane_workbench__get_workbench` 检查契约、worker.ready/accepting、projectConfigured、目标项目目录。
 3. `mcp__zane_workbench__list_scenes` → `get_scene` → `prepare_scene`。固定返回的 `sceneId`、`versionId` 和素材版本。预检不调用外部生成，也不保证远端服务正常。
 4. 若接口返回404/HTML或后台未就绪，停在诊断，说明需要升级后台；不重启正式服务，不编辑 SQLite/JSON 镜像。
@@ -66,4 +66,4 @@ metadata:
 - 选片用真实 shotId 和候选来源；完整后 `compose_clip_selection` 仅本地 FFmpeg 合成，仍先保存新 runId。不要把合成当成重跑生成。
 - 交付包含 runId、场景版本、真实媒体地址/文件、审核状态和 QA 结论。未完成时明确当前状态、下一步和需要用户处理的阻塞。
 
-完整参数、状态机与恢复规则以 `zane://guide`、`zane://openapi` 为准；这份技能负责 Hermes 角色和路由，不复制整套接口文档。
+完整参数、状态机与恢复规则以 `zane://guide` 目录及其分节资源（`zane://guide/<节号>`）、`zane://openapi` 为准；这份技能负责 Hermes 角色和路由，不复制整套接口文档。

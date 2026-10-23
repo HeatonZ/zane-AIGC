@@ -24,8 +24,8 @@ export function aiWorkspace(review = false) {
   const scene = { id: "demo", title: "测试场景", summary: "测试" };
   return { format: "zane-studio.workspace/v1", scenes: [scene, { id: "unpublished", title: "未发布" }], workflows: { demo: { ...saved, name: "不能运行的草稿" } }, optionPresets: [{ id: "style-options", name: "新草稿选项", options: ["草稿值"] }], drafts: [], sceneVersions: { demo: { publishedVersionId: "version-a", versions: [{ id: "version-a", version: "1234abcd", publishedAt: "2026-10-01T00:00:00.000Z", scene, workflow: saved, optionPresets: [{ id: "style-options", name: "发布版选项", options: ["已发布值"] }] }] } } };
 }
-export async function aiHarness(t: TestContext, options: { review?: boolean; executor?: StepExecutor; emptyWorkspace?: boolean; thirdPartyRequest?: CapabilityRuntime["thirdPartyRequest"]; getLocalExportRoot?: () => string; comfyui?: CapabilityRuntime["comfyui"] } = {}) {
-  const h = await productionHarness(t, options.executor, undefined, options.thirdPartyRequest, options.getLocalExportRoot, options.comfyui);
+export async function aiHarness(t: TestContext, options: { review?: boolean; executor?: StepExecutor; emptyWorkspace?: boolean; thirdPartyRequest?: CapabilityRuntime["thirdPartyRequest"]; getLocalExportRoot?: () => string; comfyui?: CapabilityRuntime["comfyui"]; hermes?: CapabilityRuntime["hermes"] } = {}) {
+  const h = await productionHarness(t, options.executor, undefined, options.thirdPartyRequest, options.getLocalExportRoot, options.comfyui, options.hermes);
   const workspace = new WorkspaceService(h.store, path.join(h.root, "workspace.json"));
   if (!options.emptyWorkspace) await workspace.initialize(aiWorkspace(options.review));
   await h.service.start();

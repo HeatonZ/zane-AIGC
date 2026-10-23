@@ -225,6 +225,40 @@ function active(plan: RecordValue): boolean {
   return Boolean(plan.controller_active) || ['running', 'pausing', 'stopping', 'merging'].includes(String(plan.run_status));
 }
 
+/**
+ * ComfyUI 重新保存画布会按当前节点 schema 重建输入槽，VHS 的 frame_rate 有两种退化形态：
+ * 旧版它是可连线输入，新版把它降为纯控件——重存后要么槽位整个消失，要么槽位保留但没连线、
+ * 只剩一个标量控件值（通常是默认 8，与 H3 实际的 24fps 不符）。H3LVUnified 的 fps 输出才是
+ * 帧率权威，因此这两种「没有真实连线」的形态都按原设计意图补回连接；已连到别处的仍然报错，
+ * 避免掩盖真实的工作流改动。
+ */
+export function h3WorkflowWiring(graph: Graph) {
+  const loaders = Object.entries(graph).filter(([, node]) => node.class_type === 'H3LVUnified');
+  const videos = Object.entries(graph).filter(([, node]) => node.class_type === 'VHS_VideoCombine');
+  const references = Object.entries(graph).filter(([, node]) => node.class_type === 'MiniMaxH3ReferenceToVideo');
+  if (loaders.length !== 1 || videos.length !== 1 || references.length !== 1) {
+    throw new Error('H3 长视频工作流必须包含一个 H3LVUnified、一个 MiniMaxH3ReferenceToVideo 和一个 VHS_VideoCombine');
+  }
+  const [loaderId, loader] = loaders[0];
+  const [videoId, videoNode] = videos[0];
+  const loaderInputs = record(loader.inputs);
+  const referenceInputs = record(references[0][1].inputs);
+  const videoInputs = record(videoNode.inputs);
+  if (!loaderInputs || !referenceInputs || !videoInputs) throw new Error('H3 工作流节点输入格式无效');
+  const isLink = (value: unknown) => Array.isArray(value) && value.length === 2 && typeof value[0] === 'string' && Number.isInteger(value[1]);
+  if (!isLink(videoInputs.frame_rate)) videoInputs.frame_rate = [loaderId, 12];
+  const linked = (value: unknown, outputIndex: number) => Array.isArray(value) && value.length === 2 && String(value[0]) === loaderId && value[1] === outputIndex;
+  const missing = [
+    !linked(referenceInputs.length, 2) ? 'MiniMaxH3ReferenceToVideo.length 未接 H3LVUnified 的 generation_frames' : '',
+    !linked(videoInputs.audio, 0) ? 'VHS_VideoCombine.audio 未接 H3LVUnified 的 original_audio_padded' : '',
+    !linked(videoInputs.filename_prefix, 3) ? 'VHS_VideoCombine.filename_prefix 未接 H3LVUnified 的 filename_prefix' : '',
+    !linked(videoInputs.frame_rate, 12) ? 'VHS_VideoCombine.frame_rate 未接 H3LVUnified 的 fps' : '',
+    videoInputs.save_output !== true ? 'VHS_VideoCombine.save_output 未开启' : '',
+  ].filter(Boolean);
+  if (missing.length) throw new Error('H3 工作流连接不完整：' + missing.join('；'));
+  return { loaderId, videoId, loaderInputs, referenceInputs, videoInputs };
+}
+
 /** Uses the plugin's project API so native segment loading, trimming and assembly stay authoritative. */
 export async function runH3LongVideo(
   graph: Graph,
@@ -242,23 +276,7 @@ export async function runH3LongVideo(
   if (!Array.isArray(exported.segments) || !exported.segments.length) throw new Error('H3 分段方案为空');
   if (!input.images.length || input.images.length > 6) throw new Error('H3 长视频需要按顺序提供 1 至 6 张参考图');
   const prompts = promptMap(input.promptRows, exported.segments as unknown[], input.images.length);
-  const loaders = Object.entries(graph).filter(([, node]) => node.class_type === 'H3LVUnified');
-  const videos = Object.entries(graph).filter(([, node]) => node.class_type === 'VHS_VideoCombine');
-  const references = Object.entries(graph).filter(([, node]) => node.class_type === 'MiniMaxH3ReferenceToVideo');
-  if (loaders.length !== 1 || videos.length !== 1 || references.length !== 1) {
-    throw new Error('H3 长视频工作流必须包含一个 H3LVUnified、一个 MiniMaxH3ReferenceToVideo 和一个 VHS_VideoCombine');
-  }
-  const [loaderId, loader] = loaders[0];
-  const [videoId, videoNode] = videos[0];
-  const [, reference] = references[0];
-  const loaderInputs = record(loader.inputs);
-  const referenceInputs = record(reference.inputs);
-  const videoInputs = record(videoNode.inputs);
-  if (!loaderInputs || !referenceInputs || !videoInputs) throw new Error('H3 工作流节点输入格式无效');
-  const linked = (value: unknown, outputIndex: number) => Array.isArray(value) && value.length === 2 && String(value[0]) === loaderId && value[1] === outputIndex;
-  if (!linked(referenceInputs.length, 2) || !linked(videoInputs.audio, 0) || !linked(videoInputs.filename_prefix, 3) || !linked(videoInputs.frame_rate, 12) || videoInputs.save_output !== true) {
-    throw new Error('H3 工作流需要保持原有帧数、音频、文件名和帧率连接，并开启 VHS save_output');
-  }
+  const { loaderId, videoId, loaderInputs, referenceInputs } = h3WorkflowWiring(graph);
   for (const node of Object.values(graph)) {
     if (node.class_type !== 'SelfLiftAvatarH3Sampler') continue;
     const samplerLink = record(node.inputs)?.sampler;

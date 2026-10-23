@@ -201,8 +201,16 @@ export class WorkspaceService {
     });
   }
   async status() {
-    const workspace = await this.get();
-    return { authority: "sqlite" as const, initialized: Boolean(workspace), workspaceRevision: typeof workspace?.revision === "number" ? workspace.revision : null, catalogView: "draft" as const, executionView: "published" as const };
+    // The revision alone is enough, and parsing the whole snapshot on every poll
+    // (every open workbench, every few seconds) is pure waste. A missing row still
+    // goes through `get()`: that is the one path that imports the legacy JSON
+    // mirror, and status must not silently skip a pending migration.
+    let revision = this.store.getWorkspaceRevision();
+    if (revision === undefined) {
+      const imported = await this.get();
+      revision = typeof imported?.revision === "number" ? imported.revision : undefined;
+    }
+    return { authority: "sqlite" as const, initialized: revision !== undefined, workspaceRevision: revision ?? null, catalogView: "draft" as const, executionView: "published" as const };
   }
   async initialize(value: unknown) {
     const candidate = normalizeWorkspacePayload(value);

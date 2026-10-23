@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
-import { loadComfyUINodeInfo, loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadHermesModels, loadHermesProfiles } from "../lib/api";
+import { loadComfyUINodeInfo, loadComfyUIWorkflow, loadComfyUIWorkflows, loadConnectionSettings, loadDirectLlmProviders, loadHermesModels, loadHermesProfiles } from "../lib/api";
 import { clearConfirmedStaleComfyBindings } from "../lib/comfyBindingValidation";
 import { allReferenceOptions, carryReferenceOptions, conditionOperators, defaultControlConfig, defaultStartCondition, inputReferenceOptions, inputValueType, isMediaArrayReference, isWorkflowArrayReference, iterationItemReferenceOption, newConditionRule, outputReferenceOptions, referenceOption, referencePathError, referenceTypeLabel, referenceWithJsonPath, splitReferencePath, stepOutputOptions } from "../lib/workflowReferences";
 import type {
@@ -32,6 +32,7 @@ import type {
   ComfyUIWorkflowDetail,
   ComfyUIWorkflowNode,
   ComfyUIWorkflowSummary,
+  DirectLlmProvider,
   HermesModelCatalog,
   HermesProfile,
   JsonValue,
@@ -522,6 +523,11 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
   const [modelCatalogError, setModelCatalogError] = useState("");
   const [modelCatalogRefresh, setModelCatalogRefresh] = useState(0);
+  // 直连提供商注册表：direct 步骤用它选提供商与模型，与 Hermes Profile/目录完全无关。
+  const [directProviders, setDirectProviders] = useState<DirectLlmProvider[]>([]);
+  const [directProvidersLoading, setDirectProvidersLoading] = useState(false);
+  const [directProvidersError, setDirectProvidersError] = useState("");
+  const [directProvidersRefresh, setDirectProvidersRefresh] = useState(0);
   const [comfyWorkflows, setComfyWorkflows] = useState<ComfyUIWorkflowSummary[]>([]);
   const [comfyNodes, setComfyNodes] = useState<ComfyUIWorkflowNode[]>([]);
   const [comfyFormat, setComfyFormat] = useState<ComfyUIWorkflowDetail["format"] | null>(null);
@@ -598,7 +604,8 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
 
   // The gateway model catalog is advisory: an unreachable gateway must not block editing, so a
   // failure only drops the suggestions and leaves free-text entry usable.
-  const selectedProfile = selectedStep?.hermesProfile ?? "";
+  const selectedDirect = selectedStep?.capabilityConfig?.direct === true;
+  const selectedProfile = selectedDirect ? "" : selectedStep?.hermesProfile ?? "";
   useEffect(() => {
     if (!selectedProfile) { setModelCatalog(null); setModelCatalogError(""); return; }
     const controller = new AbortController();
@@ -614,6 +621,24 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
       });
     return () => controller.abort();
   }, [selectedProfile, modelCatalogRefresh]);
+
+  // 直连提供商目录同样是建议性的：读取失败只丢掉下拉候选，仍可手工填写 providerId 与模型。
+  // 它只在 direct 步骤上加载，因此非直连步骤完全不接触注册表，也不受其可用性影响。
+  useEffect(() => {
+    if (!selectedDirect) { setDirectProviders([]); setDirectProvidersError(""); return; }
+    const controller = new AbortController();
+    setDirectProvidersLoading(true);
+    setDirectProvidersError("");
+    loadDirectLlmProviders({ limit: 100 })
+      .then((page) => { setDirectProviders(page.providers); setDirectProvidersLoading(false); })
+      .catch((reason) => {
+        if (controller.signal.aborted) return;
+        setDirectProviders([]);
+        setDirectProvidersLoading(false);
+        setDirectProvidersError(reason instanceof Error ? reason.message : "无法读取直连提供商目录");
+      });
+    return () => controller.abort();
+  }, [selectedDirect, directProvidersRefresh]);
 
   useEffect(() => {
     setReferenceToInsert("");
@@ -1177,8 +1202,15 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
     for (const flush of flushes) flush();
     // 校验错误里只有「没有待发布差异」这一条能被本次提交改变，其余仍然阻止发布。
     if (validation.length || (!hasUnpublishedChanges && !flushes.length)) { flash(validation[0] ?? "没有待发布的修改"); return; }
+    // 按钮用 aria-disabled，浏览器仍会把点击送进来；这里必须自己拦住。
+    // 保存已失败时发布只会得到一个服务端没有的版本号，必须先对账。
+    // 「正在保存」不拦：onPublish 会等在途回执，失败时抛错而不是宣布发布成功。
+    if (saveStatus === "failed") {
+      flash("配置尚未同步，请先在顶栏重试或读取服务端配置，再发布", 3200);
+      return;
+    }
     let version: SceneVersion | undefined;
-    try { version = await onPublish(); } catch (error) { flash(error instanceof Error ? error.message : "发布尚未确认"); return; }
+    try { version = await onPublish(); } catch (error) { flash(error instanceof Error ? error.message : "发布尚未确认", 3200); return; }
     flash(version ? `已发布 v${version.version}` : "发布尚未确认：请先处理未同步的配置或读取服务端配置");
   }
 
@@ -1423,8 +1455,8 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
                 {selectedStep.runCondition && <div className="select-wrap"><select value={String(selectedStep.runCondition.expectedResult)} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, runCondition: step.runCondition ? { ...step.runCondition, expectedResult: event.target.value === "true" } : undefined }))} aria-label="条件期望结果"><option value="true">结果为真时执行</option><option value="false">结果为假时执行</option></select><ChevronDown size={14} /></div>}
               </div>
             </div>}
-            {selectedCapability?.editor.profile && <div className="step-profile-row"><div className="field-group"><label className="field-label">Hermes Profile</label><div className="select-wrap"><select value={selectedStep.hermesProfile ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, hermesProfile: event.target.value }))}><option value="">选择 Profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id}{profile.isDefault ? "（默认）" : enabledProfiles.includes(profile.id) ? "（已启用）" : "（未启用）"}</option>)}</select><ChevronDown size={14} /></div></div><button className="text-button" onClick={onOpenConnections}>管理 Profile <ArrowRight size={13} /></button></div>}
-            {selectedCapability?.editor.profile && <div className="designer-subsection hermes-model-subsection">
+            {selectedCapability?.editor.profile && !selectedDirect && <div className="step-profile-row"><div className="field-group"><label className="field-label">Hermes Profile</label><div className="select-wrap"><select value={selectedStep.hermesProfile ?? ""} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, hermesProfile: event.target.value }))}><option value="">选择 Profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id}{profile.isDefault ? "（默认）" : enabledProfiles.includes(profile.id) ? "（已启用）" : "（未启用）"}</option>)}</select><ChevronDown size={14} /></div></div><button className="text-button" onClick={onOpenConnections}>管理 Profile <ArrowRight size={13} /></button></div>}
+            {selectedCapability?.editor.profile && !selectedDirect && <div className="designer-subsection hermes-model-subsection">
               <div className="designer-subsection-heading"><div><h3>Provider 与模型</h3><p>可选：只覆盖本步骤的请求级选择，不改 Profile 配置与网关默认值；都留空时按 Profile 默认模型执行</p></div>
                 <button className="text-button" type="button" disabled={!selectedStep.hermesProfile || modelCatalogLoading} onClick={() => setModelCatalogRefresh((current) => current + 1)}>{modelCatalogLoading ? "读取中…" : "重新读取目录"}</button></div>
               {!selectedStep.hermesProfile && <div className="designer-field-explainer"><Info size={14} /><span>先选择 Hermes Profile，才能读取该 Profile 的 Provider 与模型目录。</span></div>}
@@ -1442,6 +1474,32 @@ export default function FlowDesigner({ saveStatus = "saved", sceneId, scenes, sc
               </div>
               {(selectedStep.hermesProvider || selectedStep.hermesModel) && <div className="designer-field-explainer"><Info size={14} /><span>本步骤将按 {selectedStep.hermesProvider ? `Provider「${selectedStep.hermesProvider}」` : "Profile 默认 Provider"} 与 {selectedStep.hermesModel ? `模型「${selectedStep.hermesModel}」` : "Profile 默认模型"} 执行；换模型不会自动重算已有结果，需重新执行或局部重做。</span>
                 <button className="text-button" type="button" onClick={() => updateStep(selectedStep.id, (step) => ({ ...step, hermesProvider: undefined, hermesModel: undefined }))}>清除选择</button></div>}
+            </div>}
+            {selectedCapability?.editor.profile && selectedDirect && <div className="designer-subsection direct-llm-subsection">
+              <div className="designer-subsection-heading"><div><h3>直连提供商与模型</h3><p>本步骤完全不经过 Hermes：不读 Profile、不解析网关地址或网关密钥；只按所选提供商的协议直接请求它</p></div>
+                <button className="text-button" type="button" disabled={directProvidersLoading} onClick={() => setDirectProvidersRefresh((current) => current + 1)}>{directProvidersLoading ? "读取中…" : "重新读取提供商"}</button></div>
+              {directProvidersError && <div className="designer-profile-error">{directProvidersError}（仍可手工填写 providerId；只有执行时才需要该提供商可达）</div>}
+              <div className="step-profile-row">
+                <div className="field-group"><label className="field-label">直连提供商</label>
+                  <div className="select-wrap"><select value={String(selectedStep.capabilityConfig?.providerId ?? "")} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, capabilityConfig: { ...step.capabilityConfig, providerId: event.target.value } }))}>
+                    <option value="">保留的默认提供商（1.5.39 单例/环境默认值）</option>
+                    {directProviders.map((provider) => <option key={provider.providerId} value={provider.providerId}>{provider.name || provider.providerId} · {provider.protocol}{provider.enabled ? " · 已启用" : " · 已关闭"}{provider.reservedDefault ? " · 保留默认" : ""}</option>)}
+                  </select><ChevronDown size={14} /></div>
+                  <small className="field-help">来自「集成连接 → 直连模型提供商」。留空表示保留的默认提供商，用于兼容 1.5.39 已发布快照。</small>
+                </div>
+                <div className="field-group"><label className="field-label">直连模型（可选）</label>
+                  <input className="text-input" list="direct-llm-model-options" placeholder="留空则用提供商的第一个模型" value={String(selectedStep.capabilityConfig?.model ?? "")} onChange={(event) => updateStep(selectedStep.id, (step) => ({ ...step, capabilityConfig: { ...step.capabilityConfig, model: event.target.value } }))} />
+                  <datalist id="direct-llm-model-options">{(directProviders.find((provider) => provider.providerId === String(selectedStep.capabilityConfig?.providerId ?? ""))?.models ?? []).map((model) => <option key={model} value={model} />)}</datalist>
+                  <small className="field-help">留空时用该提供商 models 列表的第一个；两者都没有时执行会明确失败，不会猜默认模型。</small>
+                </div>
+              </div>
+              {(() => {
+                const chosen = directProviders.find((provider) => provider.providerId === String(selectedStep.capabilityConfig?.providerId ?? ""));
+                if (!chosen) return <div className="designer-field-explainer"><Info size={14} /><span>保留的默认提供商取值顺序：新式存储的默认提供商 → 1.5.39 单例 → 环境默认值 ZANE_DIRECT_LLM_BASE_URL/ZANE_DIRECT_LLM_API_KEY_ENV/ZANE_DIRECT_LLM_MODEL。要彻底脱离旧配置，请在上面的下拉里显式选择一个提供商。</span></div>;
+                return <div className="designer-field-explainer"><Info size={14} /><span>本步骤会请求 {chosen.baseUrl}{chosen.request.endpointSuffix}（{chosen.protocol === "anthropic" ? "x-api-key" : "Authorization: Bearer"}，密钥取环境变量 {chosen.apiKeyEnv || "（未配置）"} 的值，执行时从工作台进程环境读取）。密钥值不写入场景、不进入运行记录。</span>
+                  <button className="text-button" type="button" onClick={onOpenConnections}>管理提供商 <ArrowRight size={13} /></button></div>;
+              })()}
+              {selectedStep.capabilityConfig?.direct !== true && <div className="designer-field-explainer"><Info size={14} /><span>只有 capabilityConfig.direct 勾选后才会使用这里的提供商。</span></div>}
             </div>}
             {profileError && <div className="designer-profile-error">{profileError}</div>}
 

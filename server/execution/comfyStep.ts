@@ -565,6 +565,17 @@ async function bindComfyImageList(graph: Record<string, Record<string, unknown>>
   if (!values.length && required) throw new Error(`${stepName} 的图片列表至少需要一张图片`);
   const attachments = await Promise.all(values.map((item) => uploadComfyImageSource(item, baseUrl, stepName, signal)));
   const imagePaths = attachments.map((item, index) => comfyInputImagePath(item, stepName, index));
+  // LoadImage.image is a filename selector, not an IMAGE socket: an uploaded
+  // input path is assigned to the existing widget instead of inserting a new
+  // loader. Mirrors the LoadAudio.audio branch, so a scene can bind the image
+  // entry node directly.
+  if (nodeType === "LoadImage" && property === "image") {
+    if (!(property in nodeInputs)) throw new Error(`${stepName} 找不到 LoadImage.image 输入`);
+    if (imagePaths.length > 1) throw new Error(`${stepName} 的 LoadImage.image 需要一张图片，请选择单项`);
+    if (imagePaths[0]) nodeInputs[property] = imagePaths[0];
+    else delete nodeInputs[property];
+    return;
+  }
   const slotNames = comfyAutogrowImageInputNames(rawSchema);
   if (slotNames.length) {
     if (imagePaths.length > slotNames.length) {
@@ -625,7 +636,11 @@ export async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonV
         request = fetchComfyUIJson(`${baseUrl}/object_info/${encodeURIComponent(directType)}`, 4500, signal);
         nodeInfoCache.set(directType, request);
       }
-      directPropertyDeclared = comfyNodeInputSchema(await request, directType, binding.property) !== undefined;
+      // A V3 dynamic combo materializes its children only for the selected option, so the
+      // selection recorded on the graph decides whether the dotted property really exists.
+      const parent = binding.property.split(".", 1)[0]!;
+      const selected = binding.property.includes(".") ? directInputs[parent] : undefined;
+      directPropertyDeclared = comfyNodeInputSchema(await request, directType, binding.property, selected) !== undefined;
     }
     const resolvedTarget = resolveComfyInputBindingTarget(graph, binding, directPropertyDeclared);
     const node = resolvedTarget.node;
@@ -635,6 +650,9 @@ export async function runComfyUIStep(step: RunStep, inputs: Record<string, JsonV
     }
     if (!node) {
       const availableNodes = Object.entries(graph).map(([id, candidate]) => `${id}${typeof candidate.class_type === "string" ? `（${candidate.class_type}）` : ""}`).join("、");
+      if (resolvedTarget.remapBlocked === "connected") {
+        throw new Error(`${step.name} 的 ComfyUI 工作流「${workflowFile}」中不存在节点 ${binding.nodeId}（绑定 ${binding.key}），而当前图里唯一带 ${binding.property} 输入的节点已被上游连线占用。为避免覆盖工作流里既有的数据流，不会把它改指过去；请在 ComfyUI 中为该绑定补一个未连线的 ${binding.property} 输入，或把绑定改到正确的节点。`);
+      }
       throw new Error(`${step.name} 的 ComfyUI 工作流「${workflowFile}」中不存在节点 ${binding.nodeId}（绑定 ${binding.key}）。可用节点：${availableNodes || "无"}；请重新绑定节点。`);
     }
     if (!nodeInputs) throw new Error(`${step.name} 的 ComfyUI 工作流「${workflowFile}」节点 ${binding.nodeId} 没有可执行输入；请重新导出或选择 API/UI 工作流文件。`);

@@ -2,8 +2,9 @@ import { stat } from "node:fs/promises";
 import type { JsonValue, RunWorkflowDefinition, SavedSettings } from "../domain/types.js";
 import { asRecord, normalizeRunWorkflow } from "../domain/workflowValues.js";
 import { validateWorkflowShape, validateCarryReferences, validateStartConditionReferences } from "../domain/workflowValidation.js";
-import { validateWorkflowInputs, workflowInputDefaults } from "../domain/inputValidation.js";
+import { validateWorkflowInputs, workflowInputDefaults, type InputValidationOptions } from "../domain/inputValidation.js";
 import { sceneInputContract } from "../domain/inputContract.js";
+import { parseScenePricing, planSceneCost } from "../domain/scenePricing.js";
 import { SceneDraftService, sceneDraftFromWorkspace } from "./sceneDraftService.js";
 import { sceneQuery } from "../ai/sceneSchemas.js";
 import { HttpError } from "../errors.js";
@@ -70,12 +71,23 @@ export class AiSceneService {
       if (!preset || !Array.isArray(preset.options) || preset.options.some(option => typeof option !== "string")) throw new HttpError(409, "发布版本的选项预设缺失，请重新发布", "INVALID_SCENE_VERSION");
       return { ...field, options: preset.options as string[] };
     });
-    return { view: "published" as const, sceneId, workspaceRevision: workspace.revision, versionId: selectedId, version: version.version, publishedAt: version.publishedAt, isCurrentPublished: selectedId === record?.publishedVersionId, scene: structuredClone(version.scene), workflow, ...sceneInputContract(workflow), boundaries: this.boundaries(workflow) };
+    return { view: "published" as const, sceneId, workspaceRevision: workspace.revision, versionId: selectedId, version: version.version, publishedAt: version.publishedAt, isCurrentPublished: selectedId === record?.publishedVersionId, scene: structuredClone(version.scene), workflow, ...sceneInputContract(workflow), boundaries: this.boundaries(workflow), pricing: parseScenePricing(asRecord(version.scene)?.pricing) ?? null };
   }
   boundaries(workflow: RunWorkflowDefinition) {
-    return { externalSteps: workflow.steps.filter(step => step.kind === "hermes" || (step.kind === "comfyui" && step.capabilityId !== "media.video_concat" && step.comfyui?.adapter !== "video_concat") || step.capabilityId === "core.http_request").map(step => ({ stepId: step.id, name: step.name, capabilityId: step.capabilityId ?? null, kind: step.kind, mayCostMoney: true })), reviewSteps: workflow.steps.filter(step => step.review?.enabled).map(step => ({ stepId: step.id, name: step.name, instruction: step.review?.instruction ?? "", scope: step.execution?.mode === "for_each" ? "batch" : "once" })), notices: ["外部服务未在预检中调用，无法保证在线或预估最终费用。", "waiting 必须用当前 reviewId 处理，不能用 resume/rerun 绕过。", "提交和后续审核可能触发付费生成；响应丢失只查询预先保存的 runId。"] };
+    const reviewSteps = workflow.steps.flatMap(step => {
+      const reviews: Array<{ stepId: string; name: string; instruction: string; scope: "once" | "batch" | "batch_checkpoint"; afterItems?: number }> = [];
+      if (step.review?.enabled) reviews.push({ stepId: step.id, name: step.name, instruction: step.review.instruction ?? "", scope: step.execution?.mode === "for_each" ? "batch" : "once" });
+      // An in-loop checkpoint pauses inside one for_each step even without a step-boundary review.
+      if (typeof step.execution?.reviewAfterItems === "number") reviews.push({ stepId: step.id, name: step.name, instruction: step.review?.instruction ?? "", scope: "batch_checkpoint", afterItems: step.execution.reviewAfterItems });
+      return reviews;
+    });
+    return { externalSteps: workflow.steps.filter(step => step.kind === "hermes" || (step.kind === "comfyui" && step.capabilityId !== "media.video_concat" && step.comfyui?.adapter !== "video_concat") || step.capabilityId === "core.http_request").map(step => ({ stepId: step.id, name: step.name, capabilityId: step.capabilityId ?? null, kind: step.kind, mayCostMoney: true })), reviewSteps, notices: ["外部服务未在预检中调用，无法保证在线或预估最终费用。", "waiting 必须用当前 reviewId 处理，不能用 resume/rerun 绕过。", "提交和后续审核可能触发付费生成；响应丢失只查询预先保存的 runId。"] };
   }
-  async prepare(sceneId: string, versionId: string, supplied: Record<string, JsonValue>) {
+  /**
+   * 发布版预检。requireInputs:false 供任务草稿使用：默认值、类型、选项、素材版本与文件照常校验，
+   * 只是不要求必填已填——草稿可以边填边存，必填在确认提交前才判（见 TaskService.confirm）。
+   */
+  async prepare(sceneId: string, versionId: string, supplied: Record<string, JsonValue>, options: InputValidationOptions = {}) {
     const selected = await this.get(sceneId, versionId);
     const settings = await this.loadSettings();
     if (!settings.projectDirectory) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
@@ -91,7 +103,9 @@ export class AiSceneService {
     });
     // Check asset versions and files without copying inputs or creating run artifacts.
     const resolved = await this.assets.resolveInputs(settings.projectDirectory, selected.workflow, inputValues);
-    validateWorkflowInputs(selected.workflow, resolved);
-    return { ...selected, valid: true, inputValues, ...sceneInputContract(selected.workflow, resolved), boundaries: this.boundaries(selected.workflow), validationScope: "snapshot-inputs-assets-capabilities", externalServicesChecked: false };
+    validateWorkflowInputs(selected.workflow, resolved, options);
+    // 预检给出上限价：用户提交前就能看到最多花多少，与 submit 的预扣口径完全一致。
+    const costPlan = planSceneCost(selected.pricing ?? undefined, selected.workflow, inputValues as Record<string, unknown>);
+    return { ...selected, valid: true, inputValues, ...sceneInputContract(selected.workflow, resolved), boundaries: this.boundaries(selected.workflow), costPlan, validationScope: "snapshot-inputs-assets-capabilities", externalServicesChecked: false };
   }
 }

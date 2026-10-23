@@ -2,13 +2,15 @@ import RunMediaDownloadButton from "./RunMediaDownloadButton";
 import RunWarnings from "./RunWarnings";
 import { useEffect, useRef, useState } from "react";
 import { useLiveClock } from "../hooks/useLiveClock";
-import { Activity, AlertCircle, Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, ClipboardCheck, Copy, Download, FileText, Layers3, LoaderCircle, PackageOpen, RefreshCw, RotateCcw, Square } from "lucide-react";
+import { Activity, AlertCircle, Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, ClipboardCheck, Copy, FileText, Layers3, LoaderCircle, PackageOpen, RefreshCw, RotateCcw, Square } from "lucide-react";
 import { accessApi, type OwnRun } from "../lib/accessApi";
 import { useProtectedMedia } from "../lib/mediaPreview";
 import { resultPath, mergeResultPage, type ResultContext, type ResultOutput, type ResultPage } from "../lib/userPortal";
 import { activityLabel, mergeResultSlice, previousValueOffset, runDate, runStatusLabels, stepDurationLabel } from "../lib/runDetails";
 import RunOverview from "./RunOverview";
 import RunValueView from "./RunValueView";
+import RunInputSnapshot from "./RunInputSnapshot";
+import MediaDownloadButton from "./MediaDownloadButton";
 import { isProtectedMediaUrl, ProtectedMediaPreview } from "./UserMediaInput";
 
 type InputPage = ReturnType<typeof import("../../server/services/runDetailService").businessRunInputs>;
@@ -26,7 +28,7 @@ function OutputImage({ url, alt, userId, number }: { url: string; alt: string; u
   return <figure ref={holder}>
     {source && decoded ? <a href={source} target="_blank" rel="noreferrer"><img src={source} alt={alt} loading="lazy" onError={() => setDecoded(false)} /></a>
       : <div className="run-empty-state" role={error || !decoded ? "alert" : "status"}><strong>{error || !decoded ? "图片暂时无法读取" : "正在读取图片…"}</strong>{(error || !decoded) && <><p>{error ?? "图片文件无法解码"}</p><button className="button button-outline" onClick={() => { setDecoded(true); retry(); }}>重试</button></>}</div>}
-    <figcaption><span>第 {number} 项</span>{source && <a href={url} download className="run-icon-button"><Download size={14} />下载</a>}</figcaption>
+    <figcaption><span>第 {number} 项</span><MediaDownloadButton url={url} kind="image" fallback={alt} index={number - 1} /></figcaption>
   </figure>;
 }
 function OutputCard({ output, onSlice, busy, userId }: { output: ResultOutput; onSlice: (offset: number, narrow?: boolean) => void; busy: boolean; userId: string }) {
@@ -48,8 +50,8 @@ function OutputCard({ output, onSlice, busy, userId }: { output: ResultOutput; o
     {output.valueOmitted ? <div className="run-empty-state"><AlertCircle size={22} /><strong>内容未返回，不是空结果</strong><p>{output.omissionReason === "metadata_only" ? "当前只读取了元数据。" : "当前片段超过响应预算，请按更小片段读取。"}</p><button className="button button-outline" disabled={busy} onClick={() => onSlice(offset, true)}>读取较小片段</button></div>
       : media.length ? <div className="business-media-grid">{media.map((item, index) => {
         const number = (item.source?.mediaIndex ?? offset + index) + 1;
-        return /video/.test(output.type) ? <figure key={item.url}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind="video" userId={userId} label={output.label + " " + number} /> : <video src={item.url} controls preload="metadata" aria-label={output.label + " " + number} />}<figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
-          : /audio/.test(output.type) ? <figure key={item.url}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind="audio" userId={userId} label={output.label} /> : <audio src={item.url} controls preload="metadata" aria-label={output.label} />}<figcaption><span>第 {number} 项</span><a href={item.url} download className="run-icon-button"><Download size={14} />下载</a></figcaption></figure>
+        return /video/.test(output.type) ? <figure key={item.url}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind="video" userId={userId} label={output.label + " " + number} /> : <video src={item.url} controls preload="metadata" aria-label={output.label + " " + number} />}<figcaption><span>第 {number} 项</span><MediaDownloadButton url={item.url} kind="video" fallback={output.label} index={number - 1} /></figcaption></figure>
+          : /audio/.test(output.type) ? <figure key={item.url}>{isProtectedMediaUrl(item.url) ? <ProtectedMediaPreview url={item.url} kind="audio" userId={userId} label={output.label} /> : <audio src={item.url} controls preload="metadata" aria-label={output.label} />}<figcaption><span>第 {number} 项</span><MediaDownloadButton url={item.url} kind="audio" fallback={output.label} index={number - 1} /></figcaption></figure>
             : <OutputImage key={item.url} url={item.url} alt={output.label + " " + number} userId={userId} number={number} />;
       })}</div> : <RunValueView value={output.value} type={output.type} source={output.source} mediaUserId={userId} className={`business-value ${output.type === "text" ? "text" : ""}`} />}
     {segmented && <footer className="run-value-pager"><span>{output.valuePage.kind === "string" ? "字符" : "项"} {offset + 1}–{offset + (output.valuePage.count ?? size)} / {output.valuePage.total}{output.valueOmitted ? "（未读取）" : ""}</span>
@@ -126,14 +128,8 @@ export default function UserRunDetail({ run, userId, busy, submissionPending, on
     ...(narrow ? { maxValueBytes: 262144, textLimit: 512 } : {}),
   } });
   function inputCard(input: InputValue) {
-    const page = input.valuePage;
-    return <article key={input.key} className="business-input"><header><div><h4>{input.label}</h4><small>{input.key} · {input.type}{input.required ? " · 必填" : ""}</small></div><span className="run-input-tag">原始输入</span></header>
-      {input.valueOmitted ? <div className="run-omitted"><p>片段超过响应预算，值未返回。</p><button className="button button-outline" disabled={loading} onClick={() => void read("inputs", { inputKey: input.key, offset: page.offset, narrow: true })}>缩小片段读取</button></div>
-        : <RunValueView value={input.present ? input.value : undefined} type={input.type} mediaUserId={userId} className="business-value" />}
-      {(page.hasMore || page.offset > 0) && <footer className="run-value-pager"><span>{page.kind === "string" ? "字符" : page.kind === "object" ? "键" : "项"} {page.offset + 1}–{page.offset + page.count} / {page.total}</span>
-        <button className="run-icon-button" disabled={loading || !page.offset} onClick={() => void read("inputs", { inputKey: input.key, offset: previousValueOffset(page, 2000), chunk: page.pageSize })}><ChevronLeft size={14} />上一段</button>
-        <button className="run-icon-button" disabled={loading || !page.hasMore || input.valueOmitted} onClick={() => void read("inputs", { inputKey: input.key, offset: page.nextValueOffset, chunk: page.pageSize })}>下一段<ChevronRight size={14} /></button></footer>}
-    </article>;
+    return <RunInputSnapshot key={input.key} inputs={[input]} userId={userId} loading={loading}
+      onSlice={(target, offset, narrow) => void read("inputs", { inputKey: target.key, offset, chunk: target.valuePage.pageSize, ...(narrow ? { narrow: true } : {}) })} />;
   }
   return <section className="business-run-detail" aria-label="本人运行详情">
     <RunOverview run={run} actions={<>

@@ -1,5 +1,9 @@
 import { evaluateConditionExpression } from "../domain/startCondition.js";
 import { carryValue } from "../domain/iterationCarry.js";
+import { resolveIterationConcurrency } from "../domain/iterationConcurrency.js";
+import { itemRetryDelayMs, iterationRetryPolicy } from "../domain/iterationRetry.js";
+import { isTransientItemFailure } from "./itemRetry.js";
+import { delayWithAbort } from "./cancellation.js";
 import { feedbackForStep } from "../domain/stepFeedback.js";
 import type { HermesFeedbackContext, StepFeedbackRecord } from "../domain/feedbackContracts.js";
 import { randomUUID } from "node:crypto";
@@ -17,11 +21,11 @@ export interface PreparedRun {
   artifacts: RunArtifactPaths;
   createdAt: string;
   runTitle?: string;
-  /** 由哪个代码场景包运行创建；子运行靠它回指包运行。 */
-  packageRunId?: string;
   feedbackHistory?: StepFeedbackRecord[];
   feedbackSourceAliases?: Record<string, string>;
   resumedFromRunId?: string;
+  /** 由哪个服务（包）运行创建；媒体授权据此跳过内部场景授权。 */
+  packageRunId?: string;
   resumeSource?: RunRecord;
   rerunFromRunId?: string;
   rerun?: import("../services/rerunPlanner.js").PlannedRerun;
@@ -303,6 +307,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         let sourceItems: JsonValue[] = [];
         let sourceType: string | undefined;
         const carry = step.execution.carry;
+        const itemRetry = iterationRetryPolicy(step.execution);
         const carryType = step.outputs?.find(output => output.key === carry?.outputKey)?.type ?? "json";
         let initialCarry: JsonValue = null;
         const parent: RunStepRecord = { stepId: step.id, name: step.name, status: "running", startedAt: stepStartedAt, inputs: stepInputs, inputLabels, outputLabels, outputTypes, items: [] };
@@ -352,6 +357,8 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           }
         }
         parent.items = [...resumableItems.values()].sort((left, right) => left.index - right.index);
+        const sourceFailedItems = Array.isArray(savedItems) ? savedItems.filter(item => asRecord(item)?.status === "failed").length : 0;
+        if (sourceFailedItems) parent.warnings = [...(parent.warnings ?? []), `续跑复用来源运行的已完成项；来源运行另有 ${sourceFailedItems} 项失败，会随本次续跑重新执行`];
         syncSteps(itemSteps);
         await persistRuntime("running");
 
@@ -387,10 +394,29 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         let iterationFailed = false;
         let nextItemIndex = 0;
         let stopScheduling = false;
-        const configuredConcurrency = step.execution?.maxConcurrency;
-        const maxConcurrency = carry ? 1 : typeof configuredConcurrency === "number" && Number.isSafeInteger(configuredConcurrency)
-          ? Math.min(32, Math.max(1, configuredConcurrency))
-          : 1;
+        let concurrency: ReturnType<typeof resolveIterationConcurrency>;
+        try {
+          concurrency = resolveIterationConcurrency(step, itemInputValues);
+        } catch (error) {
+          itemFailure = error instanceof Error ? error.message : `${step.name} 的并发配置无效`;
+          Object.assign(parent, finishStepTiming({ ...parent, status: "failed" as const, message: itemFailure }));
+          syncSteps(itemSteps);
+          await persistRuntime("running");
+          break;
+        }
+        const maxConcurrency = concurrency.value;
+        // In-loop checkpoint. It is a scheduling barrier: items at or after the checkpoint are not
+        // dispatched, so the confirmation always shows exactly N items and concurrency never jumps
+        // past the segment the operator is about to review. An approved checkpoint stays lifted.
+        const requestedCheckpoint = step.execution?.reviewAfterItems;
+        const checkpointApproved = asRecord(asRecord(resumeSourceSteps.get(step.id))?.review)?.status === "approved";
+        const checkpoint = typeof requestedCheckpoint === "number" && Number.isSafeInteger(requestedCheckpoint) && requestedCheckpoint >= 1
+          ? requestedCheckpoint
+          : undefined;
+        if (checkpoint !== undefined && checkpoint >= sourceItems.length && !checkpointApproved) {
+          parent.warnings = [...(parent.warnings ?? []), `循环内审核点第 ${checkpoint} 项未触发：本次遍历只有 ${sourceItems.length} 项`];
+        }
+        const activeCheckpoint = checkpoint !== undefined && checkpoint < sourceItems.length && !checkpointApproved ? checkpoint : undefined;
 
         async function executeIteration(itemIndex: number) {
           if (runController.signal.aborted) {
@@ -456,32 +482,69 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
           setIterationItem(itemRecord);
           syncSteps(itemSteps);
           await persistRuntime("running");
-          try {
-            const outputs = await executeStep(itemStep, currentInputs, currentValues, currentTypes, sourceItems, itemIndex, itemRecord);
-            itemRecord.outputs = outputs;
-            if (carry) carryValue(outputs[carry.outputKey], carryType, "本项传递输出");
-            itemRecord.status = "completed";
-            Object.assign(itemRecord, finishStepTiming(itemRecord));
-            iterationProcessed[itemIndex] = true;
-            iterationOutputs[itemIndex] = outputs;
-            iterationSucceeded[itemIndex] = true;
-          } catch (error) {
+          // Retries stay inside this one item: order, checkpoint barrier and carry prefix reuse
+          // are untouched. A retry re-invokes the model, which is why the default is 0.
+          let attemptNo = 1;
+          for (;;) {
             if (runController.signal.aborted) {
+              // Also reached when the abort landed during the retry wait: never start another attempt.
               itemCancelled = true;
               stopScheduling = true;
               itemRecord.status = "cancelled";
               Object.assign(itemRecord, finishStepTiming(itemRecord));
               iterationProcessed[itemIndex] = true;
               itemRecord.error = String(runController.signal.reason ?? "运行已取消") || "运行已取消";
-            } else {
-              const message = error instanceof Error ? error.message : `${step.name} 的第 ${itemIndex + 1} 项执行失败`;
-              itemRecord.status = "failed";
+              break;
+            }
+            try {
+              const outputs = await executeStep(itemStep, currentInputs, currentValues, currentTypes, sourceItems, itemIndex, itemRecord);
+              itemRecord.outputs = outputs;
+              if (carry) carryValue(outputs[carry.outputKey], carryType, "本项传递输出");
+              itemRecord.status = "completed";
+              // A failed attempt must not leave its captured response behind on a successful retry.
+              delete itemRecord.agentResponse;
+              delete itemRecord.error;
               Object.assign(itemRecord, finishStepTiming(itemRecord));
               iterationProcessed[itemIndex] = true;
-              itemRecord.error = message;
-              iterationErrors.set(itemIndex, message);
-              iterationFailed = true;
-              if (carry || step.execution?.onError === "stop") stopScheduling = true;
+              iterationOutputs[itemIndex] = outputs;
+              iterationSucceeded[itemIndex] = true;
+              break;
+            } catch (error) {
+              if (runController.signal.aborted) {
+                itemCancelled = true;
+                stopScheduling = true;
+                itemRecord.status = "cancelled";
+                Object.assign(itemRecord, finishStepTiming(itemRecord));
+                iterationProcessed[itemIndex] = true;
+                itemRecord.error = String(runController.signal.reason ?? "运行已取消") || "运行已取消";
+                break;
+              }
+              const message = error instanceof Error ? error.message : `${step.name} 的第 ${itemIndex + 1} 项执行失败`;
+              const retrying = attemptNo <= itemRetry.attempts && isTransientItemFailure(error);
+              if (!retrying) {
+                itemRecord.status = "failed";
+                Object.assign(itemRecord, finishStepTiming(itemRecord));
+                iterationProcessed[itemIndex] = true;
+                itemRecord.error = message;
+                iterationErrors.set(itemIndex, message);
+                iterationFailed = true;
+                if (carry || step.execution?.onError === "stop") stopScheduling = true;
+                break;
+              }
+              const waitMs = itemRetryDelayMs(attemptNo, itemRetry.delayMs);
+              const reason = message.length > 240 ? `${message.slice(0, 240)}…` : message;
+              itemRecord.warnings = [...(itemRecord.warnings ?? []), `第 ${itemIndex + 1} 项第 ${attemptNo} 次尝试遇到瞬时失败：${reason}；${waitMs / 1000} 秒后重试第 ${attemptNo + 1} 次（最多重试 ${itemRetry.attempts} 次；重试会再次调用模型并可能计费）`];
+              // The failed attempt's raw reply is superseded by the next attempt's evidence.
+              delete itemRecord.agentResponse;
+              delete itemRecord.error;
+              attemptNo += 1;
+              syncSteps(itemSteps);
+              await persistRuntime("running");
+              try {
+                await delayWithAbort(waitMs, runController.signal);
+              } catch {
+                // Cancelled during the wait: the loop head re-checks the signal and records it.
+              }
             }
           }
           syncSteps(itemSteps);
@@ -496,6 +559,7 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
             }
             if (stopScheduling) return;
             const itemIndex = nextItemIndex;
+            if (activeCheckpoint !== undefined && itemIndex >= activeCheckpoint) return;
             nextItemIndex += 1;
             if (itemIndex >= sourceItems.length) return;
             await executeIteration(itemIndex);
@@ -505,6 +569,21 @@ export async function executeWorkflow(prepared: PreparedRun, context: ExecutionC
         await Promise.all(Array.from({ length: Math.min(maxConcurrency, sourceItems.length) }, () => worker()));
         for (let itemIndex = 0; itemIndex < sourceItems.length; itemIndex += 1) {
           if (iterationProcessed[itemIndex]) collectIterationOutputs(iterationOutputs[itemIndex], iterationSucceeded[itemIndex]);
+        }
+        const checkpointPaused = activeCheckpoint !== undefined && nextItemIndex >= activeCheckpoint && !itemCancelled && !stopScheduling;
+        if (checkpointPaused) {
+          // The batch stays "running" without a finish time: it is suspended, not complete. A hard
+          // stop (onError:"stop"/carry) is not a checkpoint pause and keeps the existing failure path.
+          const checkpointReviewId = randomUUID();
+          parent.review = { status: "pending", id: checkpointReviewId };
+          if (iterationFailed) {
+            parent.warnings = [...(parent.warnings ?? []), `第 ${activeCheckpoint} 项之前有逐项失败，剩余项在确认后继续；修正失败项请选择退回重做`];
+            itemFailure = "";
+          }
+          pendingReview = { id: checkpointReviewId, stepId: step.id, name: step.name, createdAt: new Date().toISOString(), scope: "batch_items", afterItems: activeCheckpoint, ...(step.review?.instruction ? { instruction: step.review.instruction } : {}) };
+          syncSteps(itemSteps);
+          await persistRuntime("running");
+          break;
         }
         if (iterationErrors.size) {
           const firstFailure = [...iterationErrors.entries()].sort(([left], [right]) => left - right)[0];

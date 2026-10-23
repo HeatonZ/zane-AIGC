@@ -1,5 +1,7 @@
 import TaskConcurrencyConfig from "../components/TaskConcurrencyConfig";
 import LocalExportConfig from "../components/LocalExportConfig";
+import DirectLlmConfig from "../components/DirectLlmConfig";
+import NotificationWebhookConfig from "../components/NotificationWebhookConfig";
 import { Check, ChevronDown, CircleHelp, ExternalLink, FolderOpen, LoaderCircle, Save, ServerCog, ShieldCheck, Unplug, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { loadConnectionSettings, loadHermesProfiles, saveConnectionSettings } from "../lib/api";
@@ -153,7 +155,11 @@ export default function Connections({ connectors, onRefresh }: ConnectionsProps)
 
       <LocalExportConfig />
 
-      <div className="connection-footnote"><Unplug size={15} /><span>Profile 由 Hermes CLI 管理。步骤可以单独指定 Hermes Profile；ComfyUI 仍使用原生 HTTP API。</span><a href="https://docs.comfy.org/" target="_blank" rel="noreferrer" aria-label="ComfyUI 文档"><ExternalLink size={14} /></a></div>
+      <DirectLlmConfig />
+
+      <NotificationWebhookConfig />
+
+      <div className="connection-footnote"><Unplug size={15} /><span>Profile 由 Hermes CLI 管理。步骤可以单独指定 Hermes Profile；需要完全脱离 Hermes 的调用请在上面的「直连模型提供商」里配置兼容端点，再在 core.llm 步骤勾选直连。ComfyUI 仍使用原生 HTTP API。</span><a href="https://docs.comfy.org/" target="_blank" rel="noreferrer" aria-label="ComfyUI 文档"><ExternalLink size={14} /></a></div>
     </div>
   );
 }

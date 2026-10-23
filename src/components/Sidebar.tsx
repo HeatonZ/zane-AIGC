@@ -14,6 +14,7 @@ import {
   Sparkles,
   Workflow,
   Users,
+  Ticket,
   MessageSquare,
 } from "lucide-react";
 import type { PageId, SceneId, SceneModule } from "../types";
@@ -61,13 +62,17 @@ export default function Sidebar({ page, sceneId, scenes, onNavigate, onOpenScene
         <button className={`nav-item ${page === "assets" ? "active" : ""}`} onClick={() => onNavigate("assets")} aria-label="素材库" title="素材库">
           <Boxes size={17} /><span>素材库</span>
         </button>
+        <button className={`nav-item ${page === "packages" ? "active" : ""}`} onClick={() => onNavigate("packages")} aria-label="场景包" title="场景包">
+          <Package size={17} /><span>场景包</span>
+        </button>
         <button className={`nav-item ${page === "flows" ? "active" : ""}`} onClick={() => onNavigate("flows")} aria-label="流程配置" title="流程配置">
           <Workflow size={17} /><span>流程配置</span>
         </button>
-        <button className={`nav-item ${page === "logs" ? "active" : ""}`} onClick={() => onNavigate("logs")} aria-label="运行日志" title="运行日志"><ScrollText size={17} /><span>运行日志</span></button>
 
         <button className={`nav-item ${page === "users" ? "active" : ""}`} onClick={() => onNavigate("users")} aria-label="用户管理" title="用户管理"><Users size={17} /><span>用户管理</span></button>
+        <button className={`nav-item ${page === "credits" ? "active" : ""}`} onClick={() => onNavigate("credits")} aria-label="积分与卡密" title="积分与卡密"><Ticket size={17} /><span>积分与卡密</span></button>
         <button className={`nav-item ${page === "feedback" ? "active" : ""}`} onClick={() => onNavigate("feedback")} aria-label="系统反馈" title="系统反馈"><MessageSquare size={17} /><span>系统反馈</span></button>
+        <button className={`nav-item ${page === "logs" ? "active" : ""}`} onClick={() => onNavigate("logs")} aria-label="运行日志" title="运行日志"><ScrollText size={17} /><span>运行日志</span></button>
         <div className="nav-divider" />
         <div className="nav-section-heading"><span className="nav-section-label">创作场景</span><button className="tiny-icon-button" onClick={onSortScenes} disabled={scenes.length < 2} title="场景排序" aria-label="场景排序"><ArrowDownUp size={14} /></button></div>
         {scenes.map((scene, index) => <button className={`nav-item ${page === "studio" && sceneId === scene.id ? "active" : ""}`} key={scene.id} onClick={() => onOpenScene(scene.id)} aria-label={scene.title} title={scene.title}>

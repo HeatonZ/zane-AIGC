@@ -38,7 +38,8 @@ test("客户端上传入口支持一次多选，批次进度与回执对账不�
   assert.match(mediaInput, /Math\.min\(uploadProgress\.completed \+ 1, uploadProgress\.total\)/);
   assert.match(portal, /async function upload\(key: string, type: string, files: File\[\]\)/);
   assert.match(portal, /onUpload=\{files => void upload\(field\.key, field\.type, files\)\}/);
-  assert.match(portal, /pending\.push\(\{ id, key, type, sceneId: scene\.sceneId \}\)/);
+  // 回执待核验清单必须带原 assetId + 目标输入键；单项场景已移除，不再依赖 scene。
+  assert.match(portal, /pending\.push\(\{ id, key, type \}\)/);
   assert.match(portal, /setUploadUnknown\(current => \[\.\.\.current, \.\.\.pending\]\)/);
   assert.match(portal, /setUploadUnknown\(remaining\)/);
   assert.match(studio, /type="file" accept="image\/\*" multiple/);

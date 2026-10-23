@@ -84,7 +84,10 @@ export function isReadableMediaItem(value: unknown) {
   return Boolean(
     (typeof record?.filename === "string" && record.filename.trim())
     || (typeof record?.path === "string" && record.path.trim())
-    || (typeof record?.url === "string" && /^(?:https?:\/\/|data:)/i.test(record.url)),
+    || (typeof record?.url === "string" && /^(?:https?:\/\/|data:)/i.test(record.url))
+    // 用户面固定素材引用：上传回执与运行快照里媒体就是这个形状（assetId + 固定版本），
+    // 没有 filename/path/url。不认它会让「传参考图」在提交前就被判成类型不匹配。
+    || (typeof record?.assetId === "string" && record.assetId.trim() && Number.isSafeInteger(record.assetVersion) && (record.assetVersion as number) >= 1),
   );
 }
 

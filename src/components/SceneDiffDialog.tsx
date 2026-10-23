@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import ModalPortal from "./ModalPortal";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { ApiError, loadSceneDraftDiff, loadSceneDraftDiffValue } from "../lib/api";
+import { savePhase, saveWaitMessage, saveWaitTimeoutMs, type SaveStatus } from "../lib/saveGate";
 import type { SceneDiffChange, SceneDiffPage, SceneDiffSection, SceneDiffValue } from "../../server/domain/sceneDiffContracts";
 
 const sectionLabels: Record<SceneDiffSection, string> = { scene: "场景信息", workflow: "流程设置", inputs: "场景输入", steps: "处理步骤", outputs: "最终输出", optionPresets: "选项预设" };
@@ -63,14 +64,27 @@ export function SceneDiffContent({ page, onInvalidated }: { page: SceneDiffPage;
     })}
   </>;
 }
-export default function SceneDiffDialog({ sceneId, sceneTitle, contentHash, saveStatus, onClose }: { sceneId: string; sceneTitle: string; contentHash: string; saveStatus: "saving" | "saved" | "failed"; onClose(): void }) {
+export default function SceneDiffDialog({ sceneId, sceneTitle, contentHash, saveStatus, onClose }: { sceneId: string; sceneTitle: string; contentHash: string; saveStatus: SaveStatus; onClose(): void }) {
   const modalRef = useModalFocus(onClose);
   const [page, setPage] = useState<SceneDiffPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
+  // 「保存中」不是终态：请求丢失或排队时它会一直停在这里，弹窗既没有错误也没有重试按钮。
+  // 超时后按「未确认」处理，把重试入口交回给用户，而不是让界面无限等待。
+  const [saveTimedOut, setSaveTimedOut] = useState(false);
   const controller = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (saveStatus !== "saving") { setSaveTimedOut(false); return; }
+    setSaveTimedOut(false);
+    const timer = window.setTimeout(() => setSaveTimedOut(true), saveWaitTimeoutMs);
+    return () => window.clearTimeout(timer);
+  }, [saveStatus, contentHash]);
+  const phase = savePhase(saveStatus, saveTimedOut);
+  const waitMessage = saveWaitMessage(saveStatus, saveTimedOut);
+  // 差异只在确认保存后才读取；等待与未确认都保留上一次结果，不清空已读内容。
+  const diffReady = phase === "ready";
   useEffect(() => {
     const request = new AbortController(); controller.current = request;
     setPage(null); setError(""); setLoadingMore(false);
@@ -103,13 +117,13 @@ export default function SceneDiffDialog({ sceneId, sceneTitle, contentHash, save
     <section ref={modalRef} className="scene-diff-dialog" role="dialog" aria-modal="true" aria-labelledby="scene-diff-title">
       <header className="scene-diff-heading"><div><h2 id="scene-diff-title"><GitCompareArrows size={19} />{sceneTitle} · 差异预览</h2><p>已保存草稿 ↔ 当前发布快照。仅预览，不保存、不发布、不生成。</p></div><button type="button" className="icon-button" aria-label="关闭差异预览" onClick={onClose}><X size={19} /></button></header>
       <div className="scene-diff-body" aria-busy={loading || loadingMore}>
-        {saveStatus !== "saved" && <div className="scene-diff-warning" role="status">{saveStatus === "saving" ? "正在保存配置，等待服务端确认后自动加载差异…" : "保存尚未确认，暂不预览旧服务端草稿。请先对账并确认保存。"}</div>}
+        {waitMessage && <div className="scene-diff-warning" role="status">{waitMessage}</div>}
         {loading && <div className="scene-diff-empty" role="status"><LoaderCircle size={23} className="scene-diff-spinner" /><p>正在读取权威草稿与发布快照…</p></div>}
         {error && <div className="scene-diff-error" role="alert">{error}</div>}
-        {page && saveStatus === "saved" && <SceneDiffContent key={page.revision} page={page} onInvalidated={invalidated} />}
+        {page && diffReady && <SceneDiffContent key={page.revision} page={page} onInvalidated={invalidated} />}
         {page?.hasMore && <div className="scene-diff-pagination"><span>已加载 {page.changes.length} / {page.total} 项</span><button type="button" className="button button-outline" onClick={() => void readMore()} disabled={loadingMore}>{loadingMore ? "读取中…" : "加载更多差异"}</button></div>}
       </div>
-      <footer className="scene-diff-footer"><small>发布仍需通过校验并显式确认；预览不会改变现版本。</small><button type="button" className="button button-outline" onClick={() => setRefresh(value => value + 1)} disabled={loading || loadingMore || saveStatus !== "saved"}><RefreshCw size={14} />重新预览</button><button type="button" className="button button-dark" onClick={onClose}>关闭</button></footer>
+      <footer className="scene-diff-footer"><small>发布仍需通过校验并显式确认；预览不会改变现版本。</small><button type="button" className="button button-outline" onClick={() => setRefresh(value => value + 1)} disabled={loading || loadingMore || !diffReady}><RefreshCw size={14} />重新预览</button><button type="button" className="button button-dark" onClick={onClose}>关闭</button></footer>
     </section>
   </div></ModalPortal>;
 }

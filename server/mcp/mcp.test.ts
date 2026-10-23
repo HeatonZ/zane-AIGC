@@ -10,6 +10,7 @@ import { aiHarness } from "../testing/aiSupport.js";
 import { createThirdPartyJsonRequester } from "../execution/thirdPartyJsonRequest.js";
 import { id } from "../testing/testSupport.js";
 import { aiOperations } from "../ai/operations.js";
+import { AI_GUIDE_SECTIONS, aiGuideSection } from "../ai/guide.js";
 import type { ApiResult } from "./httpClient.js";
 import type { AssetRecord, AssetReference } from "../domain/productionContracts.js";
 
@@ -32,14 +33,51 @@ test("真实stdio MCP：工具schema/资源/提示词发现，发布场景→预
   const h = await aiHarness(t, { review: true, executor: { kind: "fake", async execute({ step }) { calls.push(step.id); return { value: "MCP " + step.id }; } } });
   const { client, call } = await connect(t, h.base);
   const tools = await client.listTools(); assert.deepEqual(tools.tools.map(tool => tool.name).sort(), aiOperations.map(operation => operation.name).sort());
+  // 工具元数据每次会话固定下发，因此按字节设预算：说明只写调用前必须知道的事实
+  // （字段语义在各工具自己的 inputSchema 里，长篇理由在手册分节）。超预算先去重，不要加长说明。
+  const toolsBytes = Buffer.byteLength(JSON.stringify(tools.tools), "utf8");
+  const longest = tools.tools.map(tool => ({ name: tool.name, bytes: Buffer.byteLength(tool.description ?? "", "utf8") })).reduce((a, b) => a.bytes >= b.bytes ? a : b);
+  // 1.6.0 新增积分/卡密 7 个工具、1.7.0 新增场景包 14 个工具：说明与长文放在手册 §12/§13 与
+  // x-credits/x-packages 契约，这里只为新增工具本身放宽；后续仍应先拆 schema/说明而不是继续抬高上限。
+  // 1.7.3 新增 list_redeem_codes / void_redeem_batch 两个卡密管理工具（各约 300 字节 schema+说明），
+  // 按同一口径只放宽这两个工具的实际体积，单条说明 1000 字节上限不变。
+  // 1.7.7 新增 get/update/test_notification_webhook 三个工具（约 3.3KB schema+说明）：事件白名单、
+  // 聚合与投递语义写在手册 §10.4 与 x-notification-webhook，这里按实际增量放宽；单条说明上限不变。
+  // 1.7.9 新增 relay_notification（约 0.6KB schema+说明，入站转发的管理员入口）：字段语义在
+  // relayMessage schema、行为在 §10.4 子节，按同一口径只放宽该工具的实际体积。
+  // 1.7.11 服务页面：presentation 仍是自由 JSON 对象（schema 体积不变），增量来自
+  // create/update/publish_package 三条说明各补一句「服务页面」指针（合计约 0.5KB）；
+  // 区块字段、长度与校验口径都写在手册 §13，说明里不再复制。按实际增量放宽 1KB。
+  assert.ok(toolsBytes <= 227_000, `tools/list 共 ${toolsBytes} 字节，超过 227000 预算：先在说明里指向手册节，不要再复制字段语义`);
+  assert.ok(longest.bytes <= 1_000, `工具说明 ${longest.name} 为 ${longest.bytes} 字节，超过 1000 预算：把它拆到手册分节并在说明里引用节号`);
   const submitSchema = tools.tools.find(tool => tool.name === "submit_scene")!.inputSchema; assert.ok(submitSchema.required?.includes("versionId")); assert.ok(submitSchema.required?.includes("runId"));
   assert.equal(tools.tools.find(tool => tool.name === "prepare_scene")!.annotations?.readOnlyHint, true); assert.equal(tools.tools.find(tool => tool.name === "submit_scene")!.annotations?.idempotentHint, false);
-  const resources = await client.listResources(); assert.deepEqual(resources.resources.map(resource => resource.uri).sort(), ["zane://capabilities", "zane://guide", "zane://guide/changelog", "zane://openapi", "zane://scenes"]);
-  const guide = await client.readResource({ uri: "zane://guide" }); assert.ok("text" in guide.contents[0]); assert.match(String(guide.contents[0].text), /响应丢失/);
+  const resources = await client.listResources(); assert.deepEqual(resources.resources.map(resource => resource.uri).sort(), ["zane://capabilities", "zane://guide", "zane://guide/changelog", "zane://openapi", "zane://openapi/index", "zane://scenes", ...AI_GUIDE_SECTIONS.map(section => section.uri)].sort());
+  // 伞式目录：会话级 zane://guide 只回目录，正文按 zane://guide/<节号> 读取；分节资源在 resources/list 里可见。
+  const guide = await client.readResource({ uri: "zane://guide" }); assert.ok("text" in guide.contents[0]);
+  const index = String(guide.contents[0].text); assert.match(index, /伞式目录/); assert.match(index, /响应丢失/);
+  assert.doesNotMatch(index, /\n## [0-9]/, "会话级资源不得夹带手册正文");
+  assert.ok(Buffer.byteLength(index, "utf8") < 12_000, "默认读取必须只是目录，不能再是整本手册");
+  const section = await client.readResource({ uri: "zane://guide/9" }); assert.ok("text" in section.contents[0]);
+  assert.equal(String(section.contents[0].text), aiGuideSection("9")!.text); assert.match(String(section.contents[0].text), /^## 9\. 响应丢失与冲突恢复/);
+  await assert.rejects(() => client.readResource({ uri: "zane://guide/99" }), "未知节号必须是明确的资源不存在，不静默返回目录或空内容");
   // 历史版本小节已拆出会话级手册：默认读取不再付整部版本历史的成本，按需再读 changelog。
-  assert.doesNotMatch(String(guide.contents[0].text), /## 局域网管理入口（1\.5\.34）/);
+  assert.doesNotMatch(index, /## 局域网管理入口（1\.5\.34）/);
   const changelog = await client.readResource({ uri: "zane://guide/changelog" }); assert.ok("text" in changelog.contents[0]); assert.match(String(changelog.contents[0].text), /## 局域网管理入口（1\.5\.34）/);
   const openapi = await client.readResource({ uri: "zane://openapi" }); assert.ok("text" in openapi.contents[0]); assert.equal(JSON.parse(String(openapi.contents[0].text)).openapi, "3.1.0");
+  // 完整契约设体积上限：把重复的错误矩阵或重复 schema 重新内联回来，这里会先失败。
+  assert.ok(Buffer.byteLength(String(openapi.contents[0].text), "utf8") <= 700_000, "OpenAPI 完整文档超过 700000 字节：把重复的错误矩阵/schema 收回 components 复用");
+  // 导航索引：不整份载入也能看懂契约面（契约版本、x-* 键、逐路径操作事实）。
+  const openapiIndex = await client.readResource({ uri: "zane://openapi/index" }); assert.ok("text" in openapiIndex.contents[0]);
+  const navigator = JSON.parse(String(openapiIndex.contents[0].text)) as { contractKeys: string[]; full: { resource: string }; operations: Array<{ operationId: string; effect: string; access: string; mcpTool?: string }> };
+  assert.deepEqual(navigator.full.resource, "zane://openapi");
+  for (const key of ["x-direct-llm", "x-run-quality", "x-code-step", "x-local-export"]) assert.ok(navigator.contractKeys.includes(key), "导航索引缺少契约键：" + key);
+  assert.ok(navigator.operations.length >= aiOperations.length, "导航索引必须覆盖全部操作");
+  assert.ok(navigator.operations.every(item => item.operationId), "导航索引的每条操作都必须有 operationId");
+  // 只有 MCP 工具才声明副作用与权限：纯 HTTP 端点（媒体 HEAD、openapi.json 等）本来就没有。
+  assert.ok(navigator.operations.filter(item => item.mcpTool).every(item => item.effect && item.access), "MCP 工具必须在导航索引里声明副作用与权限");
+  assert.equal(navigator.operations.find(item => item.mcpTool === "submit_scene")?.effect, "execute");
+  assert.ok(Buffer.byteLength(String(openapiIndex.contents[0].text), "utf8") < 40_000, "导航索引必须显著小于完整文档，否则按需读取没有意义");
   const prompt = await client.getPrompt({ name: "operate-workbench", arguments: { goal: "测试接管" } }); assert.match(JSON.stringify(prompt), /测试接管/);
   assert.equal((await call("get_workbench")).payload.ok, true); assert.equal((await call("list_scenes")).payload.ok, true); assert.equal((await call("list_capabilities")).payload.ok, true);
   assert.equal((await call("prepare_scene", { sceneId: "demo", versionId: "version-a", inputValues: {} })).payload.ok, true);

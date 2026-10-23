@@ -20,6 +20,13 @@ export function mediaPreviewUrl(url: string, kind: MediaKind, width = previewWid
     parameters.set("w", String(width));
     return `${output[1]}?${parameters}`;
   }
+  // 本地媒体（仅管理员）与 output-media 一样支持显示用缩放，参数语义保持一致。
+  const local = /^(\/api\/v1\/runs\/[^/]+\/local-media)(\?.*)?$/.exec(url);
+  if (local) {
+    const parameters = new URLSearchParams(local[2] ?? "");
+    parameters.set("w", String(width));
+    return `${local[1]}?${parameters}`;
+  }
   return url;
 }
 
@@ -88,7 +95,10 @@ export function useProtectedMedia(url: string | undefined, kind: MediaKind, user
     if (typeof IntersectionObserver === "undefined") { setVisible(true); return; }
     const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) { setVisible(true); observer.disconnect(); } }, { rootMargin: "240px" });
     observer.observe(node);
-    return () => observer.disconnect();
+    // 兜底：某些容器（如隐藏/虚拟滚动/布局未稳定的卡片）不会产生相交回调，
+    // 结果图会永远空白。挂载后仍未判定可见就直接加载，宁可多读一次也不要空着。
+    const fallback = setTimeout(() => setVisible(true), 1200);
+    return () => { clearTimeout(fallback); observer.disconnect(); };
   }, [url, visible, node]);
   useEffect(() => {
     if (!url || !visible) return;

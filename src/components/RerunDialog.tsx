@@ -73,7 +73,10 @@ export default function RerunDialog({ run, target, onClose, onSubmit }: { run: W
   }
   return <ModalPortal><div className="modal-backdrop"><section ref={modalRef} className="rerun-dialog" role="dialog" aria-modal="true" aria-labelledby="rerun-title">
     <header><div><h2 id="rerun-title">{mode === "feedback" ? "反馈并重做 Hermes 结果" : "修改结果与局部重做"}</h2><p>基于 {run.runTitle || run.workflowName} 创建新版本；原记录和结果保持不变。</p></div><button className="icon-button" type="button" onClick={onClose} disabled={submitting} aria-label="关闭局部重做"><X size={18} /></button></header>
-    <fieldset className="rerun-dialog-body" disabled={submitting}>
+    {/* 滚动区是 div：fieldset 的 overflow-y 在 Chromium 里不产生可滚动区域，
+        正文超长时底部内容够不到。disabled 语义保留在内层 fieldset 上。 */}
+    <div className="rerun-dialog-body">
+    <fieldset className="rerun-dialog-fields" disabled={submitting}>
       <div className="rerun-selectors"><label className="field-group"><span className="field-label">目标步骤</span><select className="text-input" value={stepId} disabled={submitting} onChange={(event) => { invalidate(); setStepId(event.target.value); setScope("all"); }}>{steps.map((step, index) => <option key={step.id} value={step.id}>{index + 1}. {step.name}</option>)}</select></label>
         {draftStep.execution?.mode === "for_each" && <label className="field-group"><span className="field-label">修改范围</span><select className="text-input" value={scope} disabled={submitting} onChange={(event) => { invalidate(); setScope(event.target.value); }}><option value="all">整个步骤</option>{record?.items?.map((item) => <option key={item.index} value={item.index}>第 {item.index + 1} 项 · {item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : item.status}</option>)}</select></label>}
         <label className="field-group"><span className="field-label">操作</span><select className="text-input" value={mode} disabled={submitting} onChange={(event) => { invalidate(); setMode(event.target.value as RerunMode); }}><option value="feedback" disabled={!canFeedback}>反馈并重做 Hermes 结果</option><option value="rerun">修改参数 / 重新生成</option><option value="replace">直接替换生成结果</option></select></label></div>
@@ -108,6 +111,7 @@ export default function RerunDialog({ run, target, onClose, onSubmit }: { run: W
       {error && <div className="notice error" role="alert">{error}</div>}
       {plan && <section className="rerun-plan" aria-label="局部重做计划"><h3>本次执行计划</h3><p>将重算 {plan.steps.filter((step) => step.action === "run").length} 个步骤，保留或替换 {plan.steps.filter((step) => step.action !== "run").length} 个步骤。</p><ol>{plan.steps.map((step) => <li key={step.stepId} data-action={step.action}><strong>{step.name}</strong><span>{step.action === "reuse" ? "复用" : step.action === "replace" ? "替换" : "重算"}</span><small>{step.reason}{step.runItemIndexes ? " · 第 " + step.runItemIndexes.map((index) => index + 1).join("、") + " 项重做；复用 " + (step.reuseItemIndexes?.length ?? 0) + " 项" : ""}</small></li>)}</ol></section>}
     </fieldset>
+    </div>
     <footer><button className="button button-outline" type="button" onClick={onClose} disabled={submitting}>取消</button><button className="button button-outline" type="button" onClick={() => void preview()} disabled={pending || submitting || (mode === "replace" && !canReplace) || (mode === "feedback" && (!canFeedback || !feedback.trim()))}>{pending && <LoaderCircle className="spin" size={14} />}预览影响范围</button><button className="button button-primary" type="button" onClick={() => void submit()} disabled={!previewedChanges || pending || submitting}>{submitting ? "正在提交…" : mode === "feedback" ? "提交反馈并创建修订版" : "创建新版本并执行"}</button></footer>
   </section></div></ModalPortal>;
 }

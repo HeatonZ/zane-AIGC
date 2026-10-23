@@ -113,6 +113,25 @@ export async function readLocalText(root: string, target: unknown): Promise<stri
   return readFile(real, "utf8");
 }
 
+/** 解析一个「必须真实存在且是文件」的受控根目录内路径，供只读媒体读取复用。
+ *
+ *  复用同一套边界与失败语义（与 list/stat/readText 完全一致），因此本地媒体查看不会
+ *  获得比 core.code fileAccess 更宽的读取范围：
+ *   1) 路径归一化后必须落在根目录内 → 否则 FILE_OUTSIDE_ROOT；
+ *   2) 已存在路径的真实路径也必须在根内 → 符号链接/联接点不能把读取带到根外；
+ *   3) 必须是已存在的普通文件 → 否则 FILE_NOT_FOUND。
+ *  返回真实路径（realpath），调用方直接用它读字节。 */
+export async function resolveContainedLocalFile(root: string, target: unknown): Promise<string> {
+  const resolved = resolveLocalReadTarget(root, target);
+  const anchor = await realRoot(root);
+  const real = await assertContained(anchor, resolved);
+  if (real === undefined) fail("文件不存在：" + resolved, "FILE_NOT_FOUND");
+  const info = await stat(real).catch(() => undefined);
+  if (!info) fail("文件不存在：" + resolved, "FILE_NOT_FOUND");
+  if (!info.isFile()) fail("路径不是文件：" + resolved, "FILE_ACCESS_FAILED");
+  return real;
+}
+
 /** 只读元数据查询：目标不存在返回 exists:false（便于用户代码探测批次目录），越界仍然失败。 */
 export async function statLocalPath(root: string, target: unknown): Promise<LocalFileStat> {
   const resolved = resolveLocalReadTarget(root, target);

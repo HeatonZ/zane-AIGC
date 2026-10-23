@@ -52,6 +52,22 @@ test("空目录和空权威工作区不补内置场景；状态/目录查询不�
   assert.equal((await h.scenes.list()).initialized, true); assert.equal((await h.workspace.status()).workspaceRevision, 1); assert.equal((await h.workspace.get())?.revision, 1);
 });
 
+test("状态查询只读 revision：不解析快照、不触发旧 JSON 迁移", async t => {
+  const h = await aiHarness(t, { emptyWorkspace: true });
+  await h.workspace.initialize({ format: "zane-studio.workspace/v1", scenes: [{ id: "s", title: "场景" }], workflows: {}, optionPresets: [], drafts: [], sceneVersions: {} });
+  const revision = h.store.getWorkspaceRevision();
+  assert.equal(revision, (await h.workspace.get())?.revision);
+  // 直接以 store 桩验证 status 不读 snapshot：即使快照无法解析，revision 仍可用。
+  const original = h.store.getWorkspace.bind(h.store);
+  let snapshotReads = 0;
+  h.store.getWorkspace = () => { snapshotReads += 1; return original(); };
+  t.after(() => { h.store.getWorkspace = original; });
+  const status = await h.workspace.status();
+  assert.equal(status.workspaceRevision, revision); assert.equal(status.initialized, true);
+  assert.equal(snapshotReads, 0, "status 不得读取或解析工作区快照");
+  assert.equal(h.store.getWorkspaceRevision(), revision);
+});
+
 test("MCP编辑发布后的能力固定与源草稿比较，UI和API一致；旧revision和丢失发布响应按同ID对账", async t => {
   const h = await aiHarness(t, { emptyWorkspace: true });
   const created = await h.scenes.drafts.create({ scene: { id: "sync", title: "同源场景" }, workflow: { inputs: [], steps: [{ id: "test", name: "test", kind: "fake", outputs: [{ key: "value", type: "text" }] }], outputs: [{ key: "result", type: "text", sourceRef: "step.test.outputs.value" }] } });

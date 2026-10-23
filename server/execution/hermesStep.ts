@@ -7,8 +7,8 @@ import { mediaContentTypeExtension } from "../artifacts/runArtifacts.js";
 import { defaultWorkflowTimeoutMinutes, execFileAsync, ffmpegBinary, ffprobeBinary, workflowTimeoutLabel, workflowTimeoutMs } from "../config.js";
 import type { HermesApiConnection, JsonValue, RunStep, SavedSettings } from "../domain/types.js";
 import type { HermesFeedbackContext } from "../domain/feedbackContracts.js";
-import { asRecord, externalizeRuntimeValue, normalizeMediaList, parseWorkflowLiteral, resolvePromptTemplate, resolveWorkflowValue, toJsonValue, workflowMediaValueKind, workflowReferenceRoot } from "../domain/workflowValues.js";
-import { fetchHermesWithRetry, hermesTransportError, HermesHttpError, HermesRunEndpointUnavailableError, requestHermesRun } from "../hermesTransport.js";
+import { asRecord, canonicalWorkflowType, externalizeRuntimeValue, normalizeMediaList, parseWorkflowLiteral, resolvePromptTemplate, resolveWorkflowValue, toJsonValue, workflowMediaValueKind, workflowReferenceRoot } from "../domain/workflowValues.js";
+import { fetchHermesWithRetry, hermesTransportError, HermesHttpError, HermesRunEndpointUnavailableError, HermesTransientError, isTransientHermesStatus, requestHermesRun } from "../hermesTransport.js";
 import { log } from "../observability/logger.js";
 import { mediaKindFromWorkflowType, createRuntimeMediaValue } from "../runtimeValue.js";
 import { cancellationError, throwIfAborted } from "./cancellation.js";
@@ -17,10 +17,29 @@ import { hermesModelSelectionError, hermesRequestModelFields, type HermesModelSe
 import { readHermesImageSource } from "./hermesImageSource.js";
 import { appendHermesFeedback } from "./hermesFeedback.js";
 import { parseHermesJson, parseHermesOutput } from "./hermesOutput.js";
+import { requestDirectLlmCompletion } from "./directLlmRequest.js";
+import type { DirectLlmTarget } from "../domain/directLlm.js";
 
 type HermesMessagePart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string; detail: "high" } };
+
+/** One chat message. core.hermes only ever sends a single user turn; core.llm adds the system role. */
+export type HermesMessage = { role: "system" | "user"; content: string | HermesMessagePart[] };
+
+/** Additive options for callers that need more than the historical single-user-turn Hermes call. */
+export interface HermesStepOptions {
+  /** Sent as a separate system-role message. Omitted keeps the historical user-only request body. */
+  systemPrompt?: string;
+  /** "json" (default) enforces the declared-output JSON contract; "text" returns the raw reply for one text output. */
+  outputMode?: "json" | "text";
+  /** 直连模型提供商：给出即走直连（不读任何 Hermes Profile 或网关配置），undefined 保持历史行为。
+   *  目标由提供商注册表解析，只含环境变量名；密钥值在请求时才从工作台进程环境读取。 */
+  direct?: DirectLlmTarget;
+  /** true 时连同模型回复原文一起返回（`{ raw, outputs }`），供需要在运行之外保留原文的调用方使用；
+   *  默认 false 保持历史返回值不变。 */
+  captureRawReply?: boolean;
+}
 
 const hermesImageLimit = 12;
 const hermesVideoFrameCount = 6;
@@ -46,9 +65,9 @@ export function mimeTypeForMediaPath(filename: string, fallback = "application/o
   } as Record<string, string>)[extension] ?? fallback;
 }
 
-function mediaDataUrl(bytes: Buffer, contentType: string) {
+function mediaDataUrl(bytes: Buffer, contentType: string, label = "Hermes") {
   const normalizedType = contentType.split(";")[0].trim().toLowerCase();
-  if (!normalizedType.startsWith("image/")) throw new Error("Hermes 多模态输入只支持图像附件");
+  if (!normalizedType.startsWith("image/")) throw new Error(`${label} 多模态输入只支持图像附件`);
   return `data:${normalizedType};base64,${bytes.toString("base64")}`;
 }
 
@@ -152,9 +171,9 @@ async function compressHermesImageWithFfmpeg(bytes: Buffer, signal: AbortSignal 
   }
 }
 
-async function hermesImageDataUrl(bytes: Buffer, _filename: string, contentType: string, signal?: AbortSignal, maxBytes = hermesImageTargetBytes) {
+async function hermesImageDataUrl(bytes: Buffer, _filename: string, contentType: string, signal?: AbortSignal, maxBytes = hermesImageTargetBytes, label = "Hermes") {
   const prepared = await prepareHermesImage(bytes, contentType, signal, maxBytes);
-  return mediaDataUrl(prepared.bytes, prepared.contentType || "image/jpeg");
+  return mediaDataUrl(prepared.bytes, prepared.contentType || "image/jpeg", label);
 }
 
 export async function fetchMediaResponse(url: string, signal?: AbortSignal, maxBytes = 100_000_000, limitMessage = "视频附件超过 100 MB 限制") {
@@ -196,17 +215,18 @@ async function readComfyMediaBytes(media: Record<string, unknown>, settings: Sav
   }
 }
 
-async function hermesImageUrl(value: unknown, settings: SavedSettings, signal?: AbortSignal, maxBytes = hermesImageTargetBytes): Promise<string> {
+async function hermesImageUrl(value: unknown, settings: SavedSettings, signal?: AbortSignal, maxBytes = hermesImageTargetBytes, label = "Hermes"): Promise<string> {
   const source = await readHermesImageSource(value, {
     sourceLimitBytes: hermesImageSourceLimit,
     signal,
-    readComfy: media => readComfyMediaBytes(media, settings, signal, hermesImageSourceLimit, "Hermes 图片原文件超过 100 MB 限制"),
+    label,
+    readComfy: media => readComfyMediaBytes(media, settings, signal, hermesImageSourceLimit, `${label} 图片原文件超过 100 MB 限制`),
   });
   if (source.kind === "url") return source.url;
-  return hermesImageDataUrl(source.bytes, source.filename, mimeTypeForMediaPath(source.filename, source.contentType || "image/jpeg"), signal, maxBytes);
+  return hermesImageDataUrl(source.bytes, source.filename, mimeTypeForMediaPath(source.filename, source.contentType || "image/jpeg"), signal, maxBytes, label);
 }
 
-async function materializeHermesVideo(value: unknown, settings: SavedSettings, directory: string, signal?: AbortSignal) {
+async function materializeHermesVideo(value: unknown, settings: SavedSettings, directory: string, signal?: AbortSignal, label = "Hermes") {
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (/^https?:\/\//i.test(trimmed)) return trimmed;
@@ -226,7 +246,7 @@ async function materializeHermesVideo(value: unknown, settings: SavedSettings, d
   }
 
   const media = asRecord(value);
-  if (!media) throw new Error("Hermes 视频输入格式无效");
+  if (!media) throw new Error(`${label} 视频输入格式无效`);
   if (typeof media.filename === "string") {
     const { bytes } = await readComfyMediaBytes(media, settings, signal);
     const extension = path.extname(media.filename).replace(/[^.A-Za-z0-9]/g, "").slice(0, 12) || ".mp4";
@@ -235,7 +255,7 @@ async function materializeHermesVideo(value: unknown, settings: SavedSettings, d
     return filename;
   }
   if (typeof media.url === "string" && /^https?:\/\//i.test(media.url)) return media.url;
-  throw new Error("Hermes 视频输入缺少可读取的文件或 URL");
+  throw new Error(`${label} 视频输入缺少可读取的文件或 URL`);
 }
 
 function formatVideoTimestamp(seconds: number) {
@@ -244,10 +264,10 @@ function formatVideoTimestamp(seconds: number) {
   return `${minutes}:${remainder}`;
 }
 
-async function hermesVideoFrameParts(value: unknown, label: string, settings: SavedSettings, signal?: AbortSignal, maxImageBytes = hermesImageTargetBytes): Promise<HermesMessagePart[]> {
+async function hermesVideoFrameParts(value: unknown, label: string, settings: SavedSettings, signal?: AbortSignal, maxImageBytes = hermesImageTargetBytes, serviceLabel = "Hermes"): Promise<HermesMessagePart[]> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "zane-hermes-video-"));
   try {
-    const source = await materializeHermesVideo(value, settings, directory, signal);
+    const source = await materializeHermesVideo(value, settings, directory, signal, serviceLabel);
     const inputOptions = /^https?:\/\//i.test(source)
       ? ["-protocol_whitelist", "file,http,https,tcp,tls,crypto", "-rw_timeout", "15000000"]
       : [];
@@ -283,7 +303,7 @@ async function hermesVideoFrameParts(value: unknown, label: string, settings: Sa
       const bytes = await readFile(filename).catch(() => undefined);
       if (!bytes?.length) throw new Error(`无法读取视频代表帧（${formatVideoTimestamp(timestamp)}）`);
       parts.push({ type: "text", text: `${label}，${formatVideoTimestamp(timestamp)} 帧` });
-      const imageUrl = await hermesImageDataUrl(bytes, filename, "image/jpeg", signal, maxImageBytes);
+      const imageUrl = await hermesImageDataUrl(bytes, filename, "image/jpeg", signal, maxImageBytes, serviceLabel);
       parts.push({ type: "image_url", image_url: { url: imageUrl, detail: "high" } });
     }
     return parts;
@@ -292,7 +312,7 @@ async function hermesVideoFrameParts(value: unknown, label: string, settings: Sa
   }
 }
 
-async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, prompt: string, settings: SavedSettings, signal?: AbortSignal): Promise<string | HermesMessagePart[]> {
+async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, prompt: string, settings: SavedSettings, signal?: AbortSignal, serviceLabel = "Hermes"): Promise<string | HermesMessagePart[]> {
   const parts: HermesMessagePart[] = [{ type: "text", text: prompt }];
   const mediaInputs = (step.inputs ?? []).flatMap((input) => {
     const type = input.valueSource === "literal" ? input.literalType ?? "text" : types.get(workflowReferenceRoot(input.sourceRef ?? ""));
@@ -320,7 +340,7 @@ async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonVa
     if (mediaKind === "video") {
       for (let index = 0; index < value.length; index += 1) {
         const videoLabel = value.length > 1 ? `${label}（第 ${index + 1} 个视频）` : label;
-        const frames = await hermesVideoFrameParts(value[index], videoLabel, settings, signal, imageBudgetBytes);
+        const frames = await hermesVideoFrameParts(value[index], videoLabel, settings, signal, imageBudgetBytes, serviceLabel);
         imageCount += frames.filter((part) => part.type === "image_url").length;
         if (imageCount > hermesImageLimit) throw new Error(`${step.name} 最多支持 ${hermesImageLimit} 张图片或视频帧`);
         parts.push(...frames);
@@ -331,7 +351,7 @@ async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonVa
     for (let index = 0; index < imageValues.length; index += 1) {
       throwIfAborted(signal);
       if (imageCount >= hermesImageLimit) throw new Error(`${step.name} 最多支持 ${hermesImageLimit} 张图片或视频帧`);
-      const imageUrl = await hermesImageUrl(imageValues[index], settings, signal, imageBudgetBytes);
+      const imageUrl = await hermesImageUrl(imageValues[index], settings, signal, imageBudgetBytes, serviceLabel);
       imageCount += 1;
       parts.push({ type: "text", text: imageValues.length > 1 ? `${label}（第 ${index + 1} 张）` : label });
       parts.push({ type: "image_url", image_url: { url: imageUrl, detail: "high" } });
@@ -339,12 +359,12 @@ async function hermesMessageContent(step: RunStep, inputs: Record<string, JsonVa
   }
   const serializedLength = Buffer.byteLength(JSON.stringify(parts), "utf8");
   if (serializedLength > hermesInlineMediaLimit) {
-    throw new Error("Hermes API Server 单次请求上限为 10 MB；附件已按数量压缩后仍超限，请减少附件数量或缩短提示词");
+    throw new Error(`${serviceLabel === "Hermes" ? "Hermes API Server" : serviceLabel} 单次请求上限为 10 MB；附件已按数量压缩后仍超限，请减少附件数量或缩短提示词`);
   }
   return parts.some((part) => part.type === "image_url") ? parts : prompt;
 }
 
-async function requestHermesChatCompletion(profile: string, connection: HermesApiConnection, content: string | HermesMessagePart[], timeoutMs: number, signal?: AbortSignal, selection?: HermesModelSelection) {
+async function requestHermesChatCompletion(profile: string, connection: HermesApiConnection, messages: HermesMessage[], timeoutMs: number, signal?: AbortSignal, selection?: HermesModelSelection) {
   throwIfAborted(signal);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -362,7 +382,7 @@ async function requestHermesChatCompletion(profile: string, connection: HermesAp
       },
       body: JSON.stringify({
         ...hermesRequestModelFields(selection?.provider, selection?.model),
-        messages: [{ role: "user", content }],
+        messages,
         stream: false,
       }),
       signal: controller.signal,
@@ -373,7 +393,9 @@ async function requestHermesChatCompletion(profile: string, connection: HermesAp
       const apiError = asRecord(envelope?.error);
       const message = typeof apiError?.message === "string" ? apiError.message : typeof envelope?.message === "string" ? envelope.message : `HTTP ${response.status}`;
       if (response.status === 401 || response.status === 403) throw new Error(`Hermes Profile「${profile}」API 密钥认证失败`);
-      throw new Error(`Hermes API 请求失败：${message}`);
+      const failure = `Hermes API 请求失败：${message}`;
+      // Only the type differs for 408/429/5xx: the executor may retry it when the step opts in.
+      throw isTransientHermesStatus(response.status) ? new HermesTransientError(failure, response.status) : new Error(failure);
     }
     const choices = Array.isArray(envelope?.choices) ? envelope.choices : [];
     const choice = asRecord(choices[0]);
@@ -382,7 +404,8 @@ async function requestHermesChatCompletion(profile: string, connection: HermesAp
     return message.content;
   } catch (error) {
     if (signal?.aborted) throw cancellationError();
-    if (error instanceof Error && error.name === "AbortError") throw new Error(`Hermes API 请求超时（单步上限 ${workflowTimeoutLabel(timeoutMs / 60 / 1000)}）`);
+    // A request timeout is upstream-side and may clear on its own; only the type marks it retryable.
+    if (error instanceof Error && error.name === "AbortError") throw new HermesTransientError(`Hermes API 请求超时（单步上限 ${workflowTimeoutLabel(timeoutMs / 60 / 1000)}）`);
     if (error instanceof TypeError) throw hermesTransportError(profile, connection, "chat/completions", error);
     throw error;
   } finally {
@@ -391,7 +414,7 @@ async function requestHermesChatCompletion(profile: string, connection: HermesAp
   }
 }
 
-async function requestHermesCompletion(profile: string, connection: HermesApiConnection, content: string | HermesMessagePart[], timeoutMs = workflowTimeoutMs(defaultWorkflowTimeoutMinutes), signal?: AbortSignal, selection?: HermesModelSelection) {
+async function requestHermesCompletion(profile: string, connection: HermesApiConnection, messages: HermesMessage[], timeoutMs = workflowTimeoutMs(defaultWorkflowTimeoutMinutes), signal?: AbortSignal, selection?: HermesModelSelection) {
   throwIfAborted(signal);
   try {
     return await requestHermesRun({
@@ -404,7 +427,7 @@ async function requestHermesCompletion(profile: string, connection: HermesApiCon
       },
       body: {
         ...hermesRequestModelFields(selection?.provider, selection?.model),
-        input: [{ role: "user", content }],
+        input: messages,
       },
       idempotencyKey: randomUUID(),
       timeoutMs,
@@ -415,29 +438,32 @@ async function requestHermesCompletion(profile: string, connection: HermesApiCon
     // /v1/runs, but a 404/405 here should not make existing profiles unusable.
     if (error instanceof HermesRunEndpointUnavailableError) {
       log("warn", "hermes.runs_endpoint_unavailable", { profile, baseUrl: connection.baseUrl, status: error.status });
-      return requestHermesChatCompletion(profile, connection, content, timeoutMs, signal, selection);
+      return requestHermesChatCompletion(profile, connection, messages, timeoutMs, signal, selection);
     }
     if (error instanceof HermesHttpError && (error.status === 401 || error.status === 403)) {
       throw new Error(`Hermes Profile「${profile}」API 密钥认证失败`);
     }
     if (signal?.aborted) throw cancellationError();
-    if (error instanceof Error && error.name === "AbortError") throw new Error(`Hermes API 请求超时（单步上限 ${workflowTimeoutLabel(timeoutMs / 60 / 1000)}）`);
+    // A request timeout is upstream-side and may clear on its own; only the type marks it retryable.
+    if (error instanceof Error && error.name === "AbortError") throw new HermesTransientError(`Hermes API 请求超时（单步上限 ${workflowTimeoutLabel(timeoutMs / 60 / 1000)}）`);
     if (error instanceof TypeError) throw hermesTransportError(profile, connection, "runs", error);
+    // 408/429/5xx from the runs API keep their wording and become retryable for the executor.
+    if (error instanceof HermesHttpError && isTransientHermesStatus(error.status)) throw new HermesTransientError(error.message, error.status);
     throw error;
   }
 }
 
-function coerceHermesOutput(value: unknown, type: string): JsonValue {
+function coerceHermesOutput(value: unknown, type: string, label = "Hermes"): JsonValue {
   if (type === "text") return typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
   if (type === "number") {
     const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
-    if (!Number.isFinite(parsed)) throw new Error("Hermes 输出不是有效数字");
+    if (!Number.isFinite(parsed)) throw new Error(`${label} 输出不是有效数字`);
     return parsed;
   }
   if (type === "boolean") {
     if (typeof value === "boolean") return value;
     if (typeof value === "string" && /^(true|false)$/i.test(value.trim())) return value.trim().toLowerCase() === "true";
-    throw new Error("Hermes 输出不是有效布尔值");
+    throw new Error(`${label} 输出不是有效布尔值`);
   }
   if (type === "json") return toJsonValue(typeof value === "string" ? parseHermesJson(value) : value);
   const mediaKind = mediaKindFromWorkflowType(type);
@@ -447,19 +473,59 @@ function coerceHermesOutput(value: unknown, type: string): JsonValue {
   return toJsonValue(value);
 }
 
-export async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, settings: SavedSettings, signal?: AbortSignal, feedback?: HermesFeedbackContext, captureAgentPrompt?: (prompt: string) => Promise<void>, captureAgentResponse?: (response: string) => Promise<void>) {
+/** 直连模式的最小配置校验：在任何付费请求之前把「没配好」和「配错了」分开报出来。
+ *  这里完全不涉及 Hermes：目标由提供商注册表按 providerId 解析出来。
+ *  密钥可以是提供商保存的明文 apiKey，也可以是 apiKeyEnv 指向的环境变量；
+ *  只判断「有没有一份密钥可用」与「环境变量本身在不在」，绝不打印密钥内容。 */
+function directLlmTarget(direct: DirectLlmTarget, stepName: string) {
+  if (!direct.enabled) throw new Error(`${stepName} 的直连模型提供商未启用；请在「集成连接 → 直连模型提供商」启用该提供商并填写服务地址与 API 密钥`);
+  if (!direct.baseUrl) throw new Error(`${stepName} 的直连模型提供商未配置服务地址`);
+  if (!direct.apiKey) {
+    if (!direct.apiKeyEnv) throw new Error(`${stepName} 的直连模型提供商未配置 API 密钥：请在页面上直接填写密钥，或填写环境变量名并在工作台服务进程环境中提供它的值`);
+    if (!process.env[direct.apiKeyEnv]) throw new Error(`${stepName} 的直连模型提供商未配置 API 密钥：工作台服务进程环境不存在环境变量 ${direct.apiKeyEnv}。请在页面上直接填写密钥，或设置该环境变量并重启工作台`);
+  }
+  if (!direct.model) throw new Error(`${stepName} 的直连模型提供商未配置模型名；请在提供商里填写模型，或在步骤里选择模型`);
+  return direct;
+}
+
+export async function runHermesStep(
+  step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>,
+  settings: SavedSettings, signal?: AbortSignal, feedback?: HermesFeedbackContext,
+  captureAgentPrompt?: (prompt: string) => Promise<void>, captureAgentResponse?: (response: string) => Promise<void>,
+  options?: HermesStepOptions & { captureRawReply: true },
+): Promise<{ raw: string; outputs: Record<string, JsonValue> }>;
+export async function runHermesStep(
+  step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>,
+  settings: SavedSettings, signal?: AbortSignal, feedback?: HermesFeedbackContext,
+  captureAgentPrompt?: (prompt: string) => Promise<void>, captureAgentResponse?: (response: string) => Promise<void>,
+  options?: HermesStepOptions,
+): Promise<Record<string, JsonValue>>;
+export async function runHermesStep(step: RunStep, inputs: Record<string, JsonValue>, stepValues: Map<string, Record<string, JsonValue>>, types: Map<string, string>, settings: SavedSettings, signal?: AbortSignal, feedback?: HermesFeedbackContext, captureAgentPrompt?: (prompt: string) => Promise<void>, captureAgentResponse?: (response: string) => Promise<void>, options?: HermesStepOptions) {
   throwIfAborted(signal);
+  // 直连模式跳过 Hermes Profile 校验与网关连接解析：两条路径互不影响。
+  const direct = options?.direct;
+  const serviceLabel = direct ? "直连模型提供商" : "Hermes";
+  const directTarget = direct ? directLlmTarget(direct, step.name) : undefined;
   const profile = step.hermesProfile;
-  if (!profile || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(profile)) throw new Error(`${step.name} 的 Hermes Profile 无效`);
-  const selectionError = hermesModelSelectionError(step.hermesProvider, step.hermesModel);
-  if (selectionError) throw new Error(`${step.name} 的${selectionError}`);
+  if (direct) {
+    // 直连路径完全不读 Hermes：不校验 hermesProfile，也不使用 hermesProvider/hermesModel
+    // （它们只是被忽略的历史字段，不是失败原因）。选中的是注册表里的提供商与模型。
+  } else if (!profile || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(profile)) {
+    throw new Error(`${step.name} 的 Hermes Profile 无效`);
+  } else {
+    const selectionError = hermesModelSelectionError(step.hermesProvider, step.hermesModel);
+    if (selectionError) throw new Error(`${step.name} 的${selectionError}`);
+  }
   const selection: HermesModelSelection = { provider: step.hermesProvider, model: step.hermesModel };
   const outputs = step.outputs ?? [];
   if (!outputs.length) throw new Error(`${step.name} 至少需要定义一个步骤输出`);
   const outputKeys = outputs.map((item) => item.key.trim());
   if (outputKeys.some((key) => !/^[a-zA-Z0-9_]+$/.test(key))) throw new Error(`${step.name} 的输出 key 无效`);
   if (new Set(outputKeys).size !== outputKeys.length) throw new Error(`${step.name} 的输出 key 不能重复`);
-  const connection = await readHermesApiConnection(profile);
+  const textMode = options?.outputMode === "text";
+  // Fail before any paid call when the declared outputs cannot carry a raw reply.
+  if (textMode && (outputs.length !== 1 || canonicalWorkflowType(outputs[0]!.type) !== "text")) throw new Error(`${step.name} 的纯文本输出模式只支持恰好一个 text 输出`);
+  const connection = directTarget ? undefined : await readHermesApiConnection(profile!);
   const promptTypes = new Map(types);
   for (const input of step.inputs ?? []) if (input.valueSource !== "literal" && input.referenceType && input.sourceRef) promptTypes.set(input.sourceRef, input.referenceType);
   const templatePrompt = resolvePromptTemplate(step.promptTemplate ?? "", inputs, stepValues, promptTypes);
@@ -481,25 +547,38 @@ export async function runHermesStep(step: RunStep, inputs: Record<string, JsonVa
     const description = typeof item.description === "string" ? item.description.trim() : "";
     return `${index + 1}. ${item.key}（${item.label ?? item.key}，类型：${item.type}）${description ? `；说明：${description}` : ""}`;
   }).join("\n");
-  const executionPrompt = `${appendHermesFeedback(prompt, feedback)}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n回复的第一个字符必须是 {，最后一个字符必须是 }，除该对象外不得出现任何其他内容（包括复核结论、自检报告、完成说明、文件名或路径）。\n字符串内的换行、回车、制表符、双引号和反斜杠必须按 JSON 语法转义，不能直接写入原始控制字符；数组元素与对象成员之间必须有逗号。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
+  const executionPrompt = textMode
+    ? appendHermesFeedback(prompt, feedback)
+    : `${appendHermesFeedback(prompt, feedback)}\n\n输出要求：\n只输出一个 JSON 对象，不要使用 Markdown 代码围栏，不要附加说明。\n回复的第一个字符必须是 {，最后一个字符必须是 }，除该对象外不得出现任何其他内容（包括复核结论、自检报告、完成说明、文件名或路径）。\n字符串内的换行、回车、制表符、双引号和反斜杠必须按 JSON 语法转义，不能直接写入原始控制字符；数组元素与对象成员之间必须有逗号。\n对象必须包含以下字段，字段名必须完全一致：\n${outputInstructions}\n不得输出未声明的字段。`;
   await captureAgentPrompt?.(executionPrompt);
-  const content = await hermesMessageContent(step, inputs, stepValues, types, executionPrompt, settings, signal);
-  const rawResponse = await requestHermesCompletion(profile, connection, content, workflowTimeoutMs(settings.workflowTimeoutMinutes), signal, selection);
+  // 同一条附件构造路径，只是失败文案里的服务名不同（直连不经过 Hermes 网关）。
+  const content = await hermesMessageContent(step, inputs, stepValues, types, executionPrompt, settings, signal, serviceLabel);
+  const systemPrompt = options?.systemPrompt?.trim();
+  const messages: HermesMessage[] = [
+    ...(systemPrompt ? [{ role: "system" as const, content: systemPrompt }] : []),
+    { role: "user" as const, content },
+  ];
+  const rawResponse = directTarget
+    ? await requestDirectLlmCompletion(directTarget, messages, workflowTimeoutMs(settings.workflowTimeoutMinutes), signal)
+    : await requestHermesCompletion(profile!, connection!, messages, workflowTimeoutMs(settings.workflowTimeoutMinutes), signal, selection);
   try {
-    const parsed = parseHermesOutput(rawResponse, outputKeys);
-    if (parsed.repair) log("warn", "hermes.output_json_repaired", { stepId: step.id, profile, ...parsed.repair });
+    // Text mode returns the model's reply verbatim: no JSON contract, no trimming of the answer.
+    if (textMode) return options?.captureRawReply ? { raw: rawResponse, outputs: { [outputKeys[0]!]: rawResponse } } : { [outputKeys[0]!]: rawResponse };
+    const parsed = parseHermesOutput(rawResponse, outputKeys, serviceLabel);
+    if (parsed.repair) log("warn", "hermes.output_json_repaired", { stepId: step.id, ...(profile ? { profile } : { directLlm: true }), ...parsed.repair });
     const result = parsed.value;
-    return Object.fromEntries(outputs.map((item) => {
+    const resolved = Object.fromEntries(outputs.map((item) => {
       const value = result[item.key];
-      if (value === undefined) throw new Error(`Hermes 输出缺少字段：${item.key}`);
-      return [item.key, coerceHermesOutput(value, item.type)];
+      if (value === undefined) throw new Error(`${serviceLabel} 输出缺少字段：${item.key}`);
+      return [item.key, coerceHermesOutput(value, item.type, serviceLabel)];
     }));
+    return options?.captureRawReply ? { raw: rawResponse, outputs: resolved } : resolved;
   } catch (error) {
     try {
       await captureAgentResponse?.(rawResponse);
     } catch (captureError) {
       // Never let a persistence failure replace the original Hermes parsing error or log response content.
-      log("warn", "hermes.response_capture_failed", { stepId: step.id, profile, errorName: captureError instanceof Error ? captureError.name : typeof captureError });
+      log("warn", "hermes.response_capture_failed", { stepId: step.id, ...(profile ? { profile } : { directLlm: true }), errorName: captureError instanceof Error ? captureError.name : typeof captureError });
     }
     throw error;
   }

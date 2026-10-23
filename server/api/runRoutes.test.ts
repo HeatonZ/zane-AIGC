@@ -39,7 +39,7 @@ async function listen(t: TestContext, service: RunService, settings: SavedSettin
   app.use((_request, response, next) => { if (identity) { response.locals.identity = identity; response.locals.authorizeAdmin = () => {}; } next(); });
   app.use(createRunRouter(service, async () => settings, resolveSubmitter));
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-    response.status(error instanceof HttpError ? error.status : 500).json({ error: String(error) });
+    response.status(error instanceof HttpError ? error.status : 500).json({ error: String(error), code: error instanceof HttpError ? error.code : "INTERNAL_ERROR" });
   });
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -166,6 +166,36 @@ test("游标分页以时间和 ID 稳定排序，支持筛选且无重复遗漏"
   assert.equal((await fetch(`${base}/api/v1/runs?limit=0`)).status, 400);
   assert.equal((await fetch(`${base}/api/v1/runs?status=invalid`)).status, 400);
   assert.equal((await fetch(`${base}/api/v1/runs/${id("missing")}/events`)).status, 404);
+});
+
+test("运行记录按关键字搜索，且游标绑定筛选条件", async (t) => {
+  const { service, store, settings } = await harness(t);
+  const seed = await service.submit(submission(id("search-seed")));
+  const rows = [
+    { runId: id("search-a"), runTitle: "棕色针织衫_首帧v7", workflowName: "gpt image流程", error: undefined },
+    { runId: id("search-b"), runTitle: "AZKi 抱枕 100%完成", workflowName: "二次元抱枕生图（单角色）", error: undefined },
+    { runId: id("search-c"), runTitle: "失败的批次", workflowName: "gpt image流程", error: "EPERM: operation not permitted, rename" },
+  ];
+  for (const row of rows) store.importRun(settings.projectDirectory, { ...seed, ...row, status: "completed", sceneId: "search-scene", createdAt: "2026-09-30T00:00:00.000Z" });
+  const base = await listen(t, service, settings);
+  const page = async (query: string) => fetch(`${base}/api/v1/runs?limit=50&sceneId=search-scene&${query}`).then((response) => response.json() as Promise<{ runs: Array<{ runId: string }>; nextCursor?: string }>);
+
+  assert.deepEqual((await page("q=" + encodeURIComponent("针织衫"))).runs.map((run) => run.runId), [id("search-a")], "按运行标题命中");
+  assert.deepEqual((await page("q=" + encodeURIComponent("抱枕"))).runs.map((run) => run.runId), [id("search-b")], "按流程名命中");
+  assert.deepEqual((await page("q=EPERM")).runs.map((run) => run.runId), [id("search-c")], "按错误命中");
+  assert.deepEqual((await page("q=" + encodeURIComponent("100%"))).runs.map((run) => run.runId), [id("search-b")], "% 按字面匹配而不是通配");
+  assert.deepEqual((await page("q=" + encodeURIComponent("%"))).runs.map((run) => run.runId), [id("search-b")], "单独的 % 只命中字面含 % 的记录，不匹配全部");
+  assert.deepEqual((await page("q=" + encodeURIComponent(id("search-a").slice(0, 8)))).runs.map((run) => run.runId), [id("search-a")], "按运行编号前缀命中");
+  assert.deepEqual((await page("q=" + encodeURIComponent("不存在"))).runs, []);
+  assert.equal((await fetch(`${base}/api/v1/runs?q=${"x".repeat(201)}`)).status, 400);
+
+  const first = await page("q=" + encodeURIComponent("gpt image"));
+  assert.equal(first.runs.length, 2);
+  // 游标绑定 q/status/sceneId：换关键字后沿用旧游标必须拒绝，而不是静默拼接两份结果。
+  const reused = await fetch(`${base}/api/v1/runs?sceneId=search-scene&q=${encodeURIComponent("抱枕")}&cursor=${encodeURIComponent(first.nextCursor ?? "")}`);
+  assert.equal(reused.status, 400);
+  assert.equal((await reused.json() as { code?: string }).code, "INVALID_RUN_CURSOR");
+  assert.equal((await fetch(`${base}/api/v1/runs?sceneId=search-scene&q=${encodeURIComponent("gpt")}&cursor=broken`)).status, 400);
 });
 
 

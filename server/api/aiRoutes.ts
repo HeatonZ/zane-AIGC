@@ -11,8 +11,7 @@ import { runOutputs, stepResult } from "../services/runResultService.js";
 import type * as z from "zod/v4";
 import { aiOperations, AI_CONTRACT_VERSION } from "../ai/operations.js";
 import { scenePreparation, sceneSubmission } from "../ai/schemas.js";
-import { AI_OPERATOR_GUIDE, PUBLIC_USER_OPERATOR_GUIDE } from "../ai/guide.js";
-import { AI_OPERATOR_CHANGELOG } from "../ai/guideChangelog.js";
+import { PUBLIC_USER_OPERATOR_GUIDE, aiGuideText } from "../ai/guide.js";
 import { CATALOGUE_SUMMARY_OMISSION, catalogueDetailQuery, catalogueFeatures, catalogueOperations } from "../ai/discovery.js";
 import { createAiOpenApi } from "../ai/openapi.js";
 import type { RunRecord, SavedSettings } from "../domain/types.js";
@@ -54,11 +53,12 @@ export function createAiRouter(scenes: AiSceneService, runs: RunService, loadSet
   router.get("/api/v1/ai/openapi.json", (_req, res) => res.json(createAiOpenApi({ userOnly: Boolean(res.locals.publicUserOnly) })));
   router.get("/api/v1/ai/guide", (req, res) => {
     if (res.locals.publicUserOnly) { res.type("text/markdown").send(PUBLIC_USER_OPERATOR_GUIDE); return; }
-    const detail = req.query.detail === undefined ? "handbook" : req.query.detail;
-    if (detail !== "handbook" && detail !== "changelog" && detail !== "full") throw new HttpError(400, "detail 必须是 handbook、changelog 或 full", "INVALID_AI_REQUEST");
-    // Default stays the session-level handbook; the historical version notes are opt-in so that
-    // reading the manual no longer costs the whole version history.
-    res.type("text/markdown").send(detail === "changelog" ? AI_OPERATOR_CHANGELOG : detail === "full" ? AI_OPERATOR_CHANGELOG + "\n\n" + AI_OPERATOR_GUIDE : AI_OPERATOR_GUIDE);
+    // 伞式目录：默认只返回目录（节号/标题/字节数/读取入口），正文按节号取；整本用 detail=full，
+    // 历史版本小节用 detail=changelog（可选读取，不随会话下发）。
+    const detail = req.query.detail === undefined ? "index" : String(req.query.detail);
+    const text = aiGuideText(detail);
+    if (text === undefined) throw new HttpError(400, "detail 必须是 index、handbook、full、changelog 或伞式目录里的节号（如 9、10.2）", "INVALID_AI_REQUEST");
+    res.type("text/markdown").send(text);
   });
   router.get("/api/workspace/status", async (_req, res) => res.json(await scenes.workspace.status()));
   // Read-only Hermes profile/model discovery. Same services as the web editor; no scene writes,

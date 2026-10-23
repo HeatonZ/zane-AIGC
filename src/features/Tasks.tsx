@@ -310,31 +310,35 @@ export default function Tasks({ onOpenRun }: { onOpenRun?: (runId: string) => vo
    * 提交前把本地已知的缺项按行标出并拦下：服务端报错是「第 N 项（label）：…」，
    * 但几十行时用户还得自己数行号；这里直接标在对应行上，也省掉一次服务器往返。
    * 只拦「本地能确定」的缺项——服务端仍会按发布快照复核，这里不替代服务端校验。
+   *
+   * requireInputs 区分两个动作：保存草稿只拦结构性缺项（没选场景、契约还没读出），
+   * 必填留到确认提交前才拦——「一个项目连续出几十张图」时先存进度、后补素材是常态，
+   * 存草稿不该因为还没挑图就被拦住。
    */
-  function localBlockers(): boolean {
+  function localBlockers(requireInputs: boolean, action: string): boolean {
     const found: Record<number, string> = {};
     rows.forEach((row, index) => {
       // 契约没读出来时 rowGaps 会是空的，看起来「不需要输入」；不能把读取失败当成没有必填项，
-      // 否则会拿一份用户根本没看过的输入去创建。这里明确拦下并要求重试。
+      // 否则会拿一份用户根本没看过的输入去保存。这里明确拦下并要求重试。
       const scene = scenes.find(candidate => candidate.sceneId === row.sceneId);
       const contract = scene ? contracts[contractKey(scene.sceneId, scene.versionId)] : undefined;
       if (scene && !contract) { found[index] = "正在读取该发布版的输入契约，请稍候再试。"; return; }
       if (contract?.error) { found[index] = "读取该发布版的输入契约失败：" + contract.error + "；请点「刷新任务」重试。"; return; }
-      const reason = rowBlockReason(row, rowGaps(row));
+      const reason = rowBlockReason(row, rowGaps(row), { requireInputs });
       if (reason) found[index] = reason;
     });
     setRowErrors(found);
     const blocked = Object.keys(found);
     if (blocked.length) {
       setNotice("");
-      setError("有 " + blocked.length + " 项还不能提交，已在对应行标出；补齐后再继续。");
+      setError("有 " + blocked.length + " 项还不能" + action + "，已在对应行标出；按行内提示处理后继续。");
       return true;
     }
     return false;
   }
 
   async function submitCreate() {
-    if (localBlockers()) return;
+    if (localBlockers(false, "保存")) return;
     await attempt(async () => {
       const task = await createTask({ taskId, name: name.trim(), ...(note.trim() ? { note: note.trim() } : {}), items: cleanedItems() });
       setTaskId(crypto.randomUUID());
@@ -348,13 +352,13 @@ export default function Tasks({ onOpenRun }: { onOpenRun?: (runId: string) => vo
       // 这次改动已经落库，且表格内容就是服务端快照；不清脏标记会误判成「有未保存修改」而拦住确认。
       setDirty(false);
       setSelected(task);
-      setNotice("任务已创建为待确认草稿；确认后才会批量提交运行。下面显示的是服务端已保存的 " + (task.itemCount || 0) + " 项输入。");
+      setNotice("任务已创建为待确认草稿（缺必填的项已一并保存，确认前补齐即可）；确认后才会批量提交运行。下面显示的是服务端已保存的 " + (task.itemCount || 0) + " 项输入。");
       await load();
     }, "任务创建失败");
   }
   async function saveEdit() {
     if (!selected) return;
-    if (localBlockers()) return;
+    if (localBlockers(false, "保存")) return;
     await attempt(async () => {
       // 用表单状态而不是 selected.name：输入框改的是本地状态，selected 还是打开时的旧快照。
       const task = await updateTask(selected.taskId, { revision: selected.revision, name: name.trim(), note: note.trim(), items: cleanedItems() });
@@ -370,6 +374,9 @@ export default function Tasks({ onOpenRun }: { onOpenRun?: (runId: string) => vo
       setError("有未保存的修改。确认提交的是服务端已保存的任务项，请先点「保存修改」，否则这些改动不会生效。");
       return;
     }
+    // 保存草稿不校验必填，确认必须校验：服务端同样会在冻结前整体判一次并拒绝，
+    // 这里先在对应行标出来，省掉一次往返。
+    if (editable && localBlockers(true, "确认提交")) return;
     await attempt(async () => {
       // 响应丢失时用同一 taskId 重新确认即可对账；alreadyConfirmed 说明没有重复提交。
       const result = await confirmTask(selected.taskId, selected.revision);
@@ -512,8 +519,8 @@ export default function Tasks({ onOpenRun }: { onOpenRun?: (runId: string) => vo
         <li><strong>1 添加项</strong>：点「添加一项」或「粘贴导入」（从表格里一次粘几十行）。</li>
         <li><strong>2 每项选场景</strong>：可在同一任务里混用多个场景，各选自己的发布版。</li>
         <li><strong>3 填输入</strong>：默认值已自动带出；媒体点「从素材库选择」选固定版本，没有示例可造素材。</li>
-        <li><strong>4 创建</strong>：只存草稿，不提交、不生成、不计费；缺必填会被拦下。</li>
-        <li><strong>5 确认</strong>：单向冻结并批量提交，之后按项跟踪进度，失败项可单独重跑。</li>
+        <li><strong>4 创建</strong>：只存草稿，不提交、不生成、不计费；缺必填也能先存，之后再补。</li>
+        <li><strong>5 确认</strong>：缺必填会被拦下并标在对应行；补齐后单向冻结并批量提交，之后按项跟踪进度，失败项可单独重跑。</li>
       </ol>
       {error && <p role="alert" className="access-error">{error}</p>}
       {notice && <p role="status" className="access-success">{notice}</p>}
@@ -596,11 +603,11 @@ export default function Tasks({ onOpenRun }: { onOpenRun?: (runId: string) => vo
               {itemsTable}
               <div className="access-inline">
                 <button className="button button-dark" onClick={() => void submitCreate()} disabled={busy || !name.trim() || !itemCount || rows.some(row => !row.sceneId || !row.versionId)}><ListChecks size={15} />创建任务（待确认）</button>
-                <small>创建只保存中间态草稿，不提交运行、不生成、不计费；确认后才批量提交。</small>
+                <small>创建只保存中间态草稿，不提交运行、不生成、不计费；缺必填可以先存，确认前补齐即可。</small>
               </div>
-              {/* 服务端在创建时就按发布快照校验必填（REQUIRED_INPUT_MISSING），不存在「先建空草稿」；
-                  这里如实说明，避免让人以为可以留空以后再补。 */}
-              {gapCount > 0 && <p className="access-error" role="alert">还有 {gapCount} 项缺必填输入；创建草稿时服务端就会按发布版校验，请先补齐（媒体从素材库选固定版本）。</p>}
+              {/* 缺必填不再是拦路虎：草稿就是用来先存进度、后补素材的。这里如实说明「存储不校验、确认才校验」，
+                  避免让人以为创建时会漏掉校验，或以为确认时也会放过。 */}
+              {gapCount > 0 && <p className="task-hint" role="status">还有 {gapCount} 项缺必填输入：现在可以创建草稿保存进度；确认并批量提交前必须补齐（媒体从素材库选固定版本）。</p>}
               <small>待创建ID：{taskId}</small>
             </>
           )}

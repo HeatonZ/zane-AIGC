@@ -14,6 +14,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { aiHarness } from "../testing/aiSupport.js";
 import { AccessService } from "../services/accessService.js";
 import { UserPortalService } from "../services/userPortalService.js";
+import { PackageService } from "../services/packageService.js";
 import { createAccessRouter, createAuthRouter } from "./accessRoutes.js";
 import { createAiRouter } from "./aiRoutes.js";
 import { createRunRouter } from "./runRoutes.js";
@@ -24,16 +25,16 @@ import { deferred, until } from "../testing/testSupport.js";
 import { accessPage, userCreate } from "../ai/accessSchemas.js";
 const password = "isolation-password-2026";
 async function harness(t:TestContext,review=false) {
-  const h=await aiHarness(t,{review});const access=new AccessService(h.store,h.workspace,"");const portal=new UserPortalService(access,h.scenes,h.service);
+  const h=await aiHarness(t,{review});const access=new AccessService(h.store,h.workspace,"");const portal=new UserPortalService(access,h.scenes,h.service);const packages=new PackageService(h.store,h.scenes,h.service,access);
   const resolveSubmitter=(userId:string)=>{const user=access.find(userId);return user ? {userId:user.id,username:user.username,displayName:user.displayName} : undefined;};
-  const app=express();app.use(express.json());app.use(createAuthRouter(access));app.use(access.middleware(async()=>h.settings.projectDirectory));app.use(createAccessRouter(access,portal));app.use(createAiRouter(h.scenes,h.service,async()=>h.settings,resolveSubmitter));app.use(createRunRouter(h.service,async()=>h.settings,resolveSubmitter));app.use(createRunMediaExportRouter(new RunMediaExportService(async()=>h.settings,(project,id)=>h.service.getRun(project,id))));app.use(createAssetRouter(h.assets));app.use(createMediaRouter(async()=>h.settings));
+  const app=express();app.use(express.json());app.use(createAuthRouter(access));app.use(access.middleware(async()=>h.settings.projectDirectory));app.use(createAccessRouter(access,portal,undefined,packages));app.use(createAiRouter(h.scenes,h.service,async()=>h.settings,resolveSubmitter));app.use(createRunRouter(h.service,async()=>h.settings,resolveSubmitter));app.use(createRunMediaExportRouter(new RunMediaExportService(async()=>h.settings,(project,id)=>h.service.getRun(project,id))));app.use(createAssetRouter(h.assets));app.use(createMediaRouter(async()=>h.settings));
   app.get("/api/workspace",async(_req,res)=>res.json({workspace:await h.workspace.get()}));
   app.use((error:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>res.status(error instanceof HttpError ? error.status : 500).json({error:(error as Error).message,code:error instanceof HttpError ? error.code : "INTERNAL_ERROR"}));
   const server=app.listen(0,"127.0.0.1");await new Promise<void>(resolve=>server.once("listening",resolve));t.after(()=>new Promise<void>(resolve=>{server.close(()=>resolve());server.closeAllConnections();}));
   const base="http://127.0.0.1:"+(server.address() as {port:number}).port;
   async function api(route:string,token="",body?:unknown,method=body===undefined ? "GET" : "POST") {const response=await fetch(base+route,{method,headers:{...(token ? {Authorization:"Bearer "+token} : {}),...(body===undefined ? {} : {"Content-Type":"application/json"})},body:body===undefined ? undefined : JSON.stringify(body)});const data=await response.json() as Record<string,any>;return {response,data};}
   const create = async (name:string,role:"admin"|"user"="user") => {const user=(await access.create({userId:randomUUID(),username:name,displayName:name,password,role})).user;const session=await access.login(name,password);return {user,token:session.token,identity:access.authenticate(session.token)};};
-  return {...h,access,portal,base,api,create};
+  return {...h,access,portal,packages,base,api,create};
 }
 test("身份：匿名不能读取业务；本机显式初始化首管理员，无默认账户且密码摘要不返回",async t=>{
   const h=await harness(t);assert.equal((await h.api("/api/workspace")).response.status,401);assert.equal((await h.api("/api/auth/status")).data.initialized,false);
@@ -169,6 +170,10 @@ test("本人执行：归属与发布快照在SQLite保存，响应丢失查原ID
   const read=(await h.api("/api/v1/self/runs/"+runId,a.token)).data;assert.equal(read.status,"completed");assert.ok(!("workflow" in read));assert.ok(!("artifacts" in read));
   assert.equal((await h.api("/api/v1/self/scenes/demo/runs",a.token,body)).data.code,"RUN_ALREADY_EXISTS");
   assert.equal((await h.api("/api/v1/self/runs/"+runId,b.token)).response.status,404);assert.deepEqual((await h.api("/api/v1/self/runs",b.token)).data.items,[]);
+  // 搜索只在本人的任务内生效：用同一运行编号前缀搜索，b 仍然看不到 a 的任务。
+  assert.equal((await h.api("/api/v1/self/runs?q="+runId.slice(0,8),a.token)).data.items.length,1);
+  assert.deepEqual((await h.api("/api/v1/self/runs?q="+runId.slice(0,8),b.token)).data.items,[]);
+  assert.deepEqual((await h.api("/api/v1/self/runs?q="+encodeURIComponent("不存在"),a.token)).data.items,[]);
   assert.equal((await h.api("/api/v1/self/runs/"+runId+"/outputs",a.token)).data.outputs[0].value,"ok");assert.equal((await h.api("/api/v1/self/runs/"+runId+"/outputs",b.token)).response.status,404);
   const media=await fetch(h.base+"/api/v1/runs/"+runId+"/media/missing.png",{method:"HEAD",headers:{Authorization:"Bearer "+b.token}});assert.equal(media.status,404);
   const legacy=await h.service.submit({runId:randomUUID(),workflow:record.workflow,inputValues:{flag:true}});assert.equal((await h.api("/api/v1/self/runs/"+legacy.runId,a.token)).response.status,404);
@@ -572,4 +577,71 @@ test("媒体打包：本人/管理员同一服务，他人/未归属历史不可
   const download = () => fetch(h.base + info.data.downloadUrl, { method: "HEAD", headers: { Authorization: "Bearer " + a.token } }); assert.equal((await download()).status, 200);
   await h.access.setScenes({ userId: a.user.id, revision: h.access.get(a.user.id).revision, sceneIds: [] }); assert.equal((await h.api(own, a.token)).response.status, 403); assert.equal((await download()).status, 403);
   run.ownerUserId = undefined; h.store.saveRun(h.settings.projectDirectory, run, []); assert.equal((await h.api(own, a.token)).response.status, 404); assert.equal((await h.api(own, admin.token)).response.status, 200);
+});
+
+test("服务运行原始输入真实stdio MCP闭环：固定快照经MCP可读、可带进新提交，他人404且不改来源运行", async t => {
+  const h = await harness(t), admin = await h.create("pkginputadmin", "admin"), a = await h.create("pkginputuser"), b = await h.create("pkginputother");
+  // 组件场景：一个必填文本 + 一个图片输入，覆盖「文本原样带过去、媒体只带固定引用」。
+  const scene = { id: "pkg-input-scene", title: "输入场景", summary: "", description: "", cover: "", accent: "green", stages: [] };
+  const workflow = {
+    sceneId: "pkg-input-scene", name: "in",
+    inputs: [{ key: "prompt", type: "text", required: true, label: "描述" }, { key: "images", type: "image_list", label: "参考图" }],
+    steps: [{ id: "run", name: "执行", kind: "fake", outputs: [{ key: "value", type: "text" }] }],
+    outputs: [{ key: "value", type: "text", sourceRef: "step.run.outputs.value" }],
+  };
+  await h.workspace.mutateScoped(current => ({ workspace: { ...current,
+    scenes: [...(current.scenes as unknown[]), scene],
+    workflows: { ...(current.workflows as Record<string, unknown>), "pkg-input-scene": workflow },
+    sceneVersions: { ...(current.sceneVersions as Record<string, unknown>), "pkg-input-scene": { publishedVersionId: "pv1", versions: [{ id: "pv1", version: "ffff6666", publishedAt: "2026-10-01T00:00:00.000Z", scene, workflow, optionPresets: [] }] } },
+  }, result: undefined }));
+  const created = await h.packages.createDraft({
+    id: "mcp-input-svc", title: "输入服务",
+    inputs: workflow.inputs.map(field => ({ ...field })),
+    items: [{ id: "only", name: "唯一项", sceneId: "pkg-input-scene", versionId: "pv1", inputs: workflow.inputs.map(field => ({ key: field.key, valueSource: "input", sourceRef: "input." + field.key })) }],
+  });
+  const published = await h.packages.publish("mcp-input-svc", { revision: created.package.revision, publicationId: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa" });
+  await h.access.setPackages({ userId: a.user.id, revision: h.access.get(a.user.id)!.revision, packageIds: ["mcp-input-svc"] }, new Set(["mcp-input-svc"]));
+  // 本人固定素材（用户面上传回执的形状）。
+  const assetId = randomUUID(), file = path.join(h.root, "pkg-ref.png"); await writeFile(file, "reference picture");
+  const user = await mcp(t, h.base, a.token), other = await mcp(t, h.base, b.token);
+  const uploaded = await user.call("upload_own_asset", { assetId, filePath: file, name: "参考图", kind: "image" }); assert.equal(uploaded.ok, true);
+  const packageRunId = randomUUID(), runId = randomUUID();
+  const submitted = await user.call("submit_own_package", { packageId: "mcp-input-svc", versionId: published.version.versionId, inputValues: { prompt: "一只橘猫", images: [uploaded.data.reference] }, runId, packageRunId });
+  assert.equal(submitted.ok, true, JSON.stringify(submitted.error));
+  // 子运行的 runId 由服务端新建；等包运行终态，再用管理员视图取内部子运行做对照。
+  await until(() => ["completed", "failed", "cancelled"].includes(h.store.getDocument<{ status: string }>(h.settings.projectDirectory, "packageRuns", packageRunId)?.status ?? ""));
+  assert.equal(h.store.getDocument<{ status: string }>(h.settings.projectDirectory, "packageRuns", packageRunId)?.status, "completed");
+
+  // 经 MCP 读取原始输入：字段来自发布快照，值来自提交快照，媒体只有固定引用。
+  const inputs = await user.call("get_own_package_run_inputs", { packageRunId, valueLimit: 3 });
+  assert.equal(inputs.ok, true, JSON.stringify(inputs.error));
+  assert.equal(inputs.data.packageId, "mcp-input-svc");
+  assert.equal(inputs.data.versionId, published.version.versionId);
+  assert.deepEqual(inputs.data.inputs.map((field: any) => field.key), ["prompt", "images"]);
+  // valueLimit 是码点分段，不是整段返回；第二段接着读完必须等于原值。
+  assert.equal(inputs.data.inputs[0].value, "一只橘");
+  assert.equal(inputs.data.inputs[0].valuePage.hasMore, true, "valueLimit 必须真的分段");
+  const rest = await user.call("get_own_package_run_inputs", { packageRunId, inputKey: "prompt", valueOffset: 3 });
+  assert.equal(rest.data.inputs[0].value, "猫");
+  assert.deepEqual(inputs.data.inputs[1].value, [{ assetId, assetVersion: 1, assetName: "参考图" }]);
+  assert.ok(!JSON.stringify(inputs.data).includes(h.settings.projectDirectory), "MCP 不得返回本机路径");
+
+  // 复用：把读到的值直接带进新一次提交（新的包运行ID），来源运行的输入快照不变。
+  const reuseValues = { prompt: "一只橘猫", images: inputs.data.inputs[1].value };
+  const prepared = await user.call("prepare_own_package", { packageId: "mcp-input-svc", versionId: published.version.versionId, inputValues: reuseValues });
+  assert.equal(prepared.ok, true, JSON.stringify(prepared.error));
+  const secondPackageRunId = randomUUID();
+  assert.equal((await user.call("submit_own_package", { packageId: "mcp-input-svc", versionId: published.version.versionId, inputValues: reuseValues, runId: randomUUID(), packageRunId: secondPackageRunId })).ok, true);
+  await until(() => ["completed", "failed", "cancelled"].includes(h.store.getDocument<{ status: string }>(h.settings.projectDirectory, "packageRuns", secondPackageRunId)?.status ?? ""));
+  const sourceRecord = h.store.getDocument<{ inputValues: Record<string, unknown> }>(h.settings.projectDirectory, "packageRuns", packageRunId)!;
+  assert.equal(sourceRecord.inputValues.prompt, "一只橘猫", "复用不得改写来源运行的输入快照");
+
+  // 他人读同一条服务运行一律 404；非法参数在 MCP 层就被拒绝（协议级 isError）。
+  assert.equal((await other.call("get_own_package_run_inputs", { packageRunId })).error?.code, "OBJECT_NOT_FOUND");
+  assert.equal((await user.client.callTool({ name: "get_own_package_run_inputs", arguments: { packageRunId, valueLimit: 9000 } })).isError, true);
+  assert.equal((await user.call("get_own_package_run_inputs", { packageRunId, inputKey: "missing" })).error?.code, "INPUT_NOT_AVAILABLE");
+  assert.equal((await user.client.callTool({ name: "get_own_package_run_inputs", arguments: { packageRunId: "not-a-uuid" } })).isError, true);
+  // 管理员工具不能提权读取用户的服务运行输入之外的内部数据。
+  assert.equal((await user.call("get_run", { runId })).error?.code, "ADMIN_REQUIRED");
+  assert.equal(admin.user.role, "admin");
 });

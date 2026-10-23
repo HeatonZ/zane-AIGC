@@ -1,0 +1,55 @@
+/*
+ * 登录 / 卡密入口：打开页面只做一件事。
+ * 与客户端工作台 (.zclient) 分开：入口页没有侧栏与导航，只有一张居中的卡片。
+ */
+.studio-app-centered {
+  /* 必须显式重置列定义，否则会继承 .studio-app 的侧栏两列布局，
+     单张卡片被塞进 216px 的第一列（线上实际出现过这个错位）。 */
+  display: grid; grid-template-columns: minmax(0, 1fr);
+  place-items: center; min-height: 100vh; padding: 24px;
+}
+.cdk-gate {
+  width: min(460px, 100%); display: grid; gap: 12px;
+  padding: 32px; background: #fff;
+  border: 1px solid #e6e6e1; border-radius: 20px;
+  box-shadow: 0 24px 60px rgba(28, 31, 28, .10);
+}
+.cdk-brand { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 620; color: #5c635c; }
+.cdk-brand-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: #2f6b4f; color: #fff; font-size: 12px; font-weight: 700; }
+.cdk-gate h1 { margin: 0; font-size: 26px; line-height: 1.2; letter-spacing: -.02em; font-weight: 660; }
+.cdk-gate form { display: grid; gap: 12px; margin-top: 8px; }
+.cdk-input {
+  width: 100%; padding: 15px 16px;
+  border: 1.5px solid #d5d6d0; border-radius: 12px;
+  background: #fff; color: #1c1f1c;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 17px; font-weight: 600; letter-spacing: .14em; text-align: center; text-transform: uppercase;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.cdk-input::placeholder { color: #8b918a; letter-spacing: .1em; font-weight: 500; }
+.cdk-input:focus { outline: 0; border-color: #2f6b4f; box-shadow: 0 0 0 4px #e8f1ec; }
+.cdk-submit { width: 100%; padding: 14px; font-size: 14.5px; }
+.cdk-back { width: 100%; }
+.cdk-field { display: grid; gap: 6px; }
+.cdk-field > span { color: #5c635c; font-size: 13px; font-weight: 550; }
+.cdk-hint { margin: 0; color: #8b918a; font-size: 12px; line-height: 1.6; }
+.cdk-admin { justify-self: start; padding: 0; border: 0; background: none; color: #8b918a; font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; }
+.cdk-admin:hover { color: #5c635c; }
+
+/* 入口页与旧管理端壳共用的最小控件（登录表单、卡密表单）。 */
+.svc-input {
+  width: 100%; padding: 11px 13px;
+  border: 1px solid #d5d6d0; border-radius: 10px;
+  background: #fff; color: #1c1f1c;
+  font: inherit; font-size: 14px; line-height: 1.5;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.svc-input:focus { outline: 0; border-color: #2f6b4f; box-shadow: 0 0 0 3px #e8f1ec; }
+.svc-cta {
+  padding: 12px 26px; border: 0; border-radius: 10px;
+  background: #2f6b4f; color: #fff;
+  font: inherit; font-size: 14px; font-weight: 620; cursor: pointer;
+  transition: filter .12s ease, transform .12s ease;
+}
+.svc-cta:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.svc-cta:disabled { opacity: .5; cursor: not-allowed; transform: none; }

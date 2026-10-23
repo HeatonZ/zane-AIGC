@@ -1,24 +1,36 @@
 export interface PendingSave<T> { base: T; desired: T }
 interface SaveQueueOptions<T> {
-  initial?: PendingSave<T>[];
   send(base: T, desired: T): Promise<T>;
-  persist(pending: PendingSave<T>[]): void;
   saved(value: T, remaining: number): void;
   failed(error: Error): void;
+  /**
+   * 在途请求的看门狗阈值。请求挂起（网络半开、服务端卡住、上传被中间设备吞掉）时，
+   * 队列既不失败也不完成，界面只能一直显示「待同步」。超过阈值就转成明确失败，
+   * 让用户拿到重试出口，而不是对着一个永远不动的状态等。
+   */
+  stallTimeoutMs?: number;
+  /** 看门狗触发时用于中断在途请求；省略则只是把队列转为可重试状态。 */
+  abortInFlight?(): void;
 }
 
-/** Retains failed edits and pauses dependent saves; retry never skips the failed base. */
+/**
+ * Serializes workspace edits to the server and never skips a failed base.
+ *
+ * 编辑只保存在内存里并立即提交服务端：浏览器不再保存待提交副本。工作区快照可达数 MB，
+ * 一条待提交记录同时带 base 与 desired，任何本地副本都会撞上浏览器配额；一旦副本写入
+ * 失败就当成暂停，管理端会永久卡在“请处理待确认编辑”，创作页也保存不了草稿。
+ * 刷新页面后未确认的编辑确实会丢失，界面用待同步计数与错误提示如实告知。
+ */
 export class RetainedSaveQueue<T> {
   private readonly entries: PendingSave<T>[];
   private running?: Promise<void>;
   private inFlight?: PendingSave<T>;
+  /** 每次发送的世代号：看门狗判死后，旧发送的迟到结果不再影响队列。 */
+  private generation = 0;
+  /** 发送失败/冲突后暂停：必须显式 retry 才继续，避免越过失败基线。 */
   private paused = false;
-  /** 暂停是否由本地存储写入失败造成：存储恢复正常后可以自动继续发送剩余编辑。 */
-  private pausedByStorage = false;
   constructor(private readonly options: SaveQueueOptions<T>) {
-    this.entries = options.initial ?? [];
-    // Reloaded intent is not authority and must never be sent without an explicit retry.
-    this.paused = this.entries.length > 0;
+    this.entries = [];
   }
   async waitForSaved() {
     await this.running;
@@ -31,51 +43,40 @@ export class RetainedSaveQueue<T> {
     // Coalesce only unsent edits. An in-flight snapshot must remain immutable.
     if (last && last !== this.inFlight) last.desired = desired;
     else this.entries.push({ base, desired });
-    if (!this.persist()) return;
     if (!this.paused) void this.drain();
   }
-  retry() { this.paused = false; this.pausedByStorage = false; if (!this.persist()) return Promise.resolve(); return this.drain(); }
-  /** Discard failed local saves after an explicit user choice. */
+  /**
+   * 用户显式重试：必须真的重发，而不是复用可能已经卡死的在途请求。
+   *
+   * 真实故障：上传被中间设备吞掉后 send() 永不返回，flush() 一直阻塞，
+   * running 始终是同一个 Promise；旧 retry() 只是把 paused 置回 false 再调 drain()，
+   * drain() 看到 running 存在就直接返回它——「配置待同步 · 重试」点了毫无反应。
+   * 重试是用户主动要求，所以这里一贯地中断在途上传并重新开始。
+   */
+  retry() {
+    this.paused = false;
+    if (this.inFlight !== undefined) {
+      this.options.abortInFlight?.();
+      this.generation++;
+      this.inFlight = undefined;
+      // 旧 flush 仍阻塞在那个永不返回的 send() 上，不能让它继续占用 running。
+      this.running = undefined;
+    }
+    return this.drain();
+  }
+  /** 放弃待提交内容（例如显式读取服务端权威配置）；在途请求不受影响。 */
   discard() {
     if (this.inFlight) return false;
-    const retained = this.entries.splice(0, this.entries.length);
-    this.paused = false;
-    this.pausedByStorage = false;
-    if (this.persist()) return true;
-    this.entries.push(...retained);
-    return false;
-  }
-  /**
-   * 每条记录都带完整快照，所以尚未发送的中间记录只保留了更旧的合并基线；
-   * 「首条基线 + 末条 desired」与逐条重放等价。outbox 写满时丢掉这些冗余快照，
-   * 避免队列因为体积超过 localStorage 配额而永久无法落盘。
-   */
-  private compact() {
-    // 正在发送的记录不能被替换；发送完成后它已经移出 entries，因此按身份判断而不是下标。
-    const start = this.entries[0] === this.inFlight ? 1 : 0;
-    const kept = this.entries.slice(0, start);
-    const tail = this.entries.slice(start);
-    const last = tail.at(-1);
-    if (!last || tail.length < 2) return false;
     this.entries.length = 0;
-    this.entries.push(...kept, { base: tail[0].base, desired: last.desired });
+    this.paused = false;
     return true;
   }
-  private persist() {
-    try { this.options.persist(this.entries); return true; }
-    catch (error) {
-      if (this.compact()) {
-        try { this.options.persist(this.entries); return true; }
-        catch { /* 缩容后仍然写不下：按存储失败处理 */ }
-      }
-      this.fail(error, true);
-      return false;
-    }
-  }
-  private fail(reason: unknown, storage = false) {
+  private fail(reason: unknown) {
     this.paused = true;
-    this.pausedByStorage = storage;
-    this.options.failed(reason instanceof Error ? reason : new Error("本机工作区同步失败"));
+    this.options.failed(reason instanceof Error ? reason : new Error("工作区同步失败"));
+  }
+  private stallMessage(stallTimeoutMs: number) {
+    return `保存超过 ${Math.round(stallTimeoutMs / 1000)} 秒仍未取得回执；请重试或读取服务端配置核对`;
   }
   private drain(): Promise<void> {
     if (this.running) return this.running;
@@ -87,17 +88,35 @@ export class RetainedSaveQueue<T> {
   private async flush() {
     while (this.entries.length && !this.paused) {
       const entry = this.entries[0];
+      const generation = ++this.generation;
       this.inFlight = entry;
+      const stallTimeoutMs = this.options.stallTimeoutMs ?? 0;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      // 超时必须参与竞速：只改标志位的话，flush 仍卡在永不返回的 send() 上，
+      // running 一直是同一个 Promise，retry() 拿到的还是它——按钮点了毫无反应。
+      const stall = stallTimeoutMs > 0
+        ? new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              this.options.abortInFlight?.();
+              reject(new Error(this.stallMessage(stallTimeoutMs)));
+            }, stallTimeoutMs);
+            if (typeof timer === "object" && "unref" in timer) (timer as { unref(): void }).unref();
+          })
+        : undefined;
       try {
-        const saved = await this.options.send(entry.base, entry.desired);
+        const send = this.options.send(entry.base, entry.desired);
+        const saved = await (stall ? Promise.race([send, stall]) : send);
+        // 看门狗已判死并推进了世代：这条迟到结果不能再改动队列。
+        if (this.generation !== generation) continue;
         this.entries.shift();
-        if (!this.persist()) return;
-        // 收据已经写回存储：如果之前只是因为存储写满而暂停，此刻已经恢复，
-        // 继续发送剩余编辑。发送失败/冲突造成的暂停不受影响，仍需显式 retry。
-        if (this.pausedByStorage) { this.pausedByStorage = false; this.paused = false; }
         this.options.saved(saved, this.entries.length);
-      } catch (error) { this.fail(error); }
-      finally { this.inFlight = undefined; }
+      } catch (error) {
+        if (this.generation === generation) this.fail(error);
+      }
+      finally {
+        if (timer !== undefined) clearTimeout(timer);
+        if (this.generation === generation) this.inFlight = undefined;
+      }
     }
   }
 }

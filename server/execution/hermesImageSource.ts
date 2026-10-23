@@ -10,6 +10,8 @@ export interface HermesImageSourceOptions {
   sourceLimitBytes: number;
   signal?: AbortSignal;
   readComfy(media: Record<string, unknown>): Promise<{ bytes: Buffer; contentType?: string }>;
+  /** 只影响失败文案里的服务名；默认保持既有 Hermes 文案不变。 */
+  label?: string;
 }
 
 /** Consume the already-authorized, normalized execution input, not previewUrl.
@@ -17,6 +19,7 @@ export interface HermesImageSourceOptions {
  * Both plain paths and that structured shape use the same bounded file reader. */
 export async function readHermesImageSource(value: unknown, options: HermesImageSourceOptions): Promise<HermesImageSource> {
   const { sourceLimitBytes, signal } = options;
+  const label = options.label ?? "Hermes";
   signal?.throwIfAborted();
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -24,7 +27,7 @@ export async function readHermesImageSource(value: unknown, options: HermesImage
       const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i.exec(trimmed);
       if (!match) return { kind: "url", url: trimmed }; // Preserve legacy data-URL semantics.
       const bytes = Buffer.from(match[2].replace(/\s/g, ""), "base64");
-      if (bytes.length > sourceLimitBytes) throw new Error("Hermes 图片原文件超过 100 MB 限制");
+      if (bytes.length > sourceLimitBytes) throw new Error(`${label} 图片原文件超过 100 MB 限制`);
       return { kind: "bytes", bytes, filename: `input${mediaContentTypeExtension(match[1])}`, contentType: match[1] };
     }
     if (/^https?:\/\//i.test(trimmed)) return { kind: "url", url: trimmed };
@@ -33,22 +36,22 @@ export async function readHermesImageSource(value: unknown, options: HermesImage
     const info = await stat(filename).catch(() => undefined);
     signal?.throwIfAborted();
     if (!info?.isFile()) throw new Error(`无法读取图片文件：${trimmed}`);
-    if (info.size > sourceLimitBytes) throw new Error("Hermes 图片原文件超过 100 MB 限制");
+    if (info.size > sourceLimitBytes) throw new Error(`${label} 图片原文件超过 100 MB 限制`);
     const bytes = await readFile(filename, { signal });
-    if (bytes.length > sourceLimitBytes) throw new Error("Hermes 图片原文件超过 100 MB 限制");
+    if (bytes.length > sourceLimitBytes) throw new Error(`${label} 图片原文件超过 100 MB 限制`);
     return { kind: "bytes", bytes, filename };
   }
   const media = asRecord(value);
-  if (!media) throw new Error("Hermes 图片输入格式无效");
+  if (!media) throw new Error(`${label} 图片输入格式无效`);
   // A resolved fixed asset's path is authoritative. Do not fetch its authenticated
   // display URL, or mistake display metadata for a ComfyUI attachment.
   if (typeof media.path === "string" && media.path.trim()) return readHermesImageSource(media.path, options);
   if (typeof media.filename === "string") {
     const source = await options.readComfy(media);
     signal?.throwIfAborted();
-    if (source.bytes.length > sourceLimitBytes) throw new Error("Hermes 图片原文件超过 100 MB 限制");
+    if (source.bytes.length > sourceLimitBytes) throw new Error(`${label} 图片原文件超过 100 MB 限制`);
     return { kind: "bytes", filename: media.filename, ...source };
   }
   if (typeof media.url === "string" && /^https?:\/\//i.test(media.url)) return { kind: "url", url: media.url };
-  throw new Error("Hermes 图片输入缺少可读取的文件或 URL");
+  throw new Error(`${label} 图片输入缺少可读取的文件或 URL`);
 }

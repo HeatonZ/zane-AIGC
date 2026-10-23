@@ -94,7 +94,13 @@ try {
   const badModelQuery = await client.callTool({ name: "list_hermes_models", arguments: { profile: "bad profile" } }); assert.equal(badModelQuery.isError, true); assert.equal(badModelQuery.structuredContent.error.code, "INVALID_HERMES_MODEL_QUERY");
   console.log("Hermes model discovery MCP acceptance passed: profile listing + unknown-profile 404 + invalid query rejection; no gateway, no credentials, no model calls.");
   assert.equal((await call("get_workbench")).contractVersion, AI_CONTRACT_VERSION); assert.equal((await call("list_scenes")).scenes[0].sceneId, scene.id);
-  await client.readResource({ uri: "zane://guide" }); const schema = await client.readResource({ uri: "zane://openapi" }); assert.equal(JSON.parse(schema.contents[0].text).openapi, "3.1.0");
+  // 伞式目录（真实 stdio）：会话级 zane://guide 只回目录，正文按节读取，未知节号是明确的资源不存在。
+  const guideIndex = await client.readResource({ uri: "zane://guide" }); const guideIndexText = String(guideIndex.contents[0].text);
+  assert.match(guideIndexText, /伞式目录/); assert.ok(Buffer.byteLength(guideIndexText, "utf8") < 12000, "默认读取必须只是目录"); assert.doesNotMatch(guideIndexText, /\n## [0-9]/, "目录不得夹带正文");
+  const guideSection = await client.readResource({ uri: "zane://guide/9" }); assert.match(String(guideSection.contents[0].text), /^## 9\. 响应丢失与冲突恢复/);
+  assert.equal(await client.readResource({ uri: "zane://guide/99" }).then(() => false, () => true), true, "未知节号必须报资源不存在");
+  console.log("Guide umbrella MCP acceptance passed: index-only session resource + on-demand section reads + explicit unknown-section error; no models called.");
+  const schema = await client.readResource({ uri: "zane://openapi" }); assert.equal(JSON.parse(schema.contents[0].text).openapi, "3.1.0");
   const selected = await call("get_scene", { sceneId: scene.id }); const preparation = await call("prepare_scene", { sceneId: scene.id, versionId: selected.versionId, inputValues: {} }); assert.equal(preparation.externalServicesChecked, false); assert.deepEqual(preparation.inputValues, { flag: true }); assert.deepEqual(preparation.boundaries.externalSteps, []);
   const runId = randomUUID(); const input = { sceneId: scene.id, versionId: selected.versionId, inputValues: {}, runId };
   await call("submit_scene", input); const waiting = await waitForPause(runId); assert.equal(waiting.status, "waiting"); assert.equal(waiting.nextAction, "review");

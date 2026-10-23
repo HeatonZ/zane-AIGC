@@ -1,0 +1,273 @@
+/*
+ * 客户端视觉：只作用于 .studio-app，不影响管理端。
+ * 设计取向：明亮、克制、有呼吸感（避免"终端/后台"观感）；层次靠明度与细边框，不靠重阴影。
+ * 规则：数值优先；说明文字降一级；不在主界面出现工程词。
+ */
+.studio-app {
+  /* 背景：暖白 + 两层浅灰，卡片靠白底与细边框浮起 */
+  --s-bg: #f7f7f5;
+  --s-bg-raised: #ffffff;
+  --s-bg-sunken: #f1f2ef;
+  --s-bg-input: #ffffff;
+  --s-line: #e6e6e1;
+  --s-line-strong: #d5d6d0;
+  --s-text: #1c1f1c;
+  --s-text-dim: #5c635c;
+  --s-text-faint: #8b918a;
+  --s-accent: #2f6b4f;
+  --s-accent-soft: #e8f1ec;
+  --s-accent-ink: #ffffff;
+  --s-good: #2f7d5b;
+  --s-good-soft: #e6f2ec;
+  --s-warn: #9a6b1f;
+  --s-warn-soft: #fbf1de;
+  --s-bad: #a63d2f;
+  --s-bad-soft: #fbeae6;
+
+  /* 字号：收敛到 5 档，正文 14px 是阅读最舒服的档 */
+  --s-fs-xs: 12px;
+  --s-fs-sm: 13px;
+  --s-fs-md: 14px;
+  --s-fs-lg: 17px;
+  --s-fs-xl: 24px;
+  --s-fs-2xl: 30px;
+  /* 间距：4 的倍数 */
+  --s-sp-1: 4px;
+  --s-sp-2: 8px;
+  --s-sp-3: 12px;
+  --s-sp-4: 16px;
+  --s-sp-5: 24px;
+  --s-sp-6: 32px;
+  --s-sp-7: 48px;
+  --s-r-sm: 8px;
+  --s-r-md: 12px;
+  --s-r-lg: 16px;
+  --s-shadow: 0 1px 2px rgba(28, 31, 28, .04), 0 8px 24px rgba(28, 31, 28, .04);
+
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  background: var(--s-bg);
+  color: var(--s-text);
+  font-size: var(--s-fs-md);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.studio-app * { box-sizing: border-box; }
+/* 管理端有 h1/h2/h3 的固定深色与字号；作用域内必须重置，否则浅底深字/字号错位。 */
+.studio-app h1, .studio-app h2, .studio-app h3, .studio-app h4, .studio-app p { margin: 0; color: inherit; }
+.studio-app h1 { font-size: var(--s-fs-xl); font-weight: 640; line-height: 1.25; letter-spacing: -.015em; }
+.studio-app h2 { font-size: var(--s-fs-lg); font-weight: 620; line-height: 1.35; letter-spacing: -.01em; }
+.studio-app h3 { font-size: var(--s-fs-md); font-weight: 600; }
+.studio-app small { color: var(--s-text-faint); font-size: var(--s-fs-xs); }
+.studio-app strong { font-weight: 620; }
+.studio-app a { color: var(--s-accent); }
+
+/* ── 侧栏：白底、细右边线、选中用浅色块而不是高饱和色 ── */
+.studio-nav {
+  position: sticky; top: 0; height: 100vh;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--s-sp-5) var(--s-sp-3);
+  background: var(--s-bg-raised);
+  border-right: 1px solid var(--s-line);
+}
+.studio-brand { display: flex; align-items: center; gap: 10px; padding: 0 var(--s-sp-3) var(--s-sp-6); }
+.studio-brand-mark {
+  display: grid; place-items: center; width: 28px; height: 28px; flex: none;
+  border-radius: 9px; background: var(--s-accent); color: var(--s-accent-ink);
+  font-size: var(--s-fs-sm); font-weight: 700; letter-spacing: -.02em;
+}
+.studio-brand-name { font-size: var(--s-fs-md); font-weight: 640; letter-spacing: -.01em; line-height: 1.2; }
+.studio-brand small { display: block; margin-top: 2px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.studio-nav button {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 9px var(--s-sp-3); border: 0; border-radius: var(--s-r-sm);
+  background: none; color: var(--s-text-dim);
+  font: inherit; font-size: var(--s-fs-sm); text-align: left; cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.studio-nav button:hover { background: var(--s-bg-sunken); color: var(--s-text); }
+.studio-nav button[aria-current="page"] { background: var(--s-accent-soft); color: var(--s-accent); font-weight: 600; }
+.studio-nav .studio-nav-foot { margin-top: auto; padding-top: var(--s-sp-3); border-top: 1px solid var(--s-line); }
+.studio-nav .studio-nav-foot button { color: var(--s-text-faint); font-size: var(--s-fs-xs); padding: 7px var(--s-sp-3); }
+
+/* ── 主区 ── */
+/* 宽屏时内容居中，避免整块贴左、右侧留出大片空白；窄屏仍占满。 */
+.studio-main { min-width: 0; width: 100%; max-width: 1080px; margin-inline: auto; padding: var(--s-sp-6) var(--s-sp-6) var(--s-sp-7); }
+.studio-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-sp-4); margin-bottom: var(--s-sp-5); }
+.studio-head p { margin-top: 6px; color: var(--s-text-dim); font-size: var(--s-fs-sm); }
+.studio-stack { display: grid; gap: var(--s-sp-4); }
+
+/* ── 卡片 ── */
+.studio-card {
+  padding: var(--s-sp-5);
+  background: var(--s-bg-raised);
+  border: 1px solid var(--s-line);
+  border-radius: var(--s-r-lg);
+  box-shadow: var(--s-shadow);
+}
+.studio-card h2 { margin-bottom: var(--s-sp-3); }
+.studio-card h3 { margin: var(--s-sp-6) 0 var(--s-sp-3); color: var(--s-text-dim); font-size: var(--s-fs-sm); font-weight: 600; letter-spacing: .01em; }
+.studio-card > form > h3:first-of-type { margin-top: var(--s-sp-5); }
+
+/* ── 指标：数字大、标签小，分隔用细线不用色块 ── */
+.studio-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 0; }
+.studio-metric { padding: var(--s-sp-3) var(--s-sp-4); border-left: 1px solid var(--s-line); }
+.studio-metric:first-child { border-left: 0; padding-left: 0; }
+.studio-metric strong { display: block; font-size: var(--s-fs-2xl); font-weight: 620; line-height: 1.15; font-variant-numeric: tabular-nums; letter-spacing: -.03em; }
+.studio-metric small { display: block; margin-top: 2px; font-size: var(--s-fs-xs); }
+
+/* ── 服务卡：横向信息密度，悬停只做边框与位移的微反馈 ── */
+.studio-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: var(--s-sp-3); }
+.studio-product {
+  display: grid; gap: 6px; padding: var(--s-sp-4) var(--s-sp-5);
+  background: var(--s-bg-raised); border: 1px solid var(--s-line); border-radius: var(--s-r-md);
+  color: inherit; text-align: left; cursor: pointer;
+  transition: border-color .14s ease, box-shadow .14s ease, transform .14s ease;
+}
+.studio-product:hover { border-color: var(--s-line-strong); box-shadow: var(--s-shadow); transform: translateY(-1px); }
+.studio-product h3 { margin: 0; font-size: var(--s-fs-md); font-weight: 620; color: var(--s-text); }
+.studio-product p { margin: 0; color: var(--s-text-dim); font-size: var(--s-fs-sm); line-height: 1.5; }
+.studio-product footer { display: flex; align-items: center; justify-content: space-between; margin-top: var(--s-sp-2); padding-top: var(--s-sp-2); border-top: 1px solid var(--s-line); color: var(--s-text-faint); font-size: var(--s-fs-xs); }
+
+/* ── 表单 ── */
+.studio-field { display: grid; gap: 6px; margin-bottom: var(--s-sp-4); }
+.studio-field > span { color: var(--s-text-dim); font-size: var(--s-fs-sm); font-weight: 550; }
+.studio-input, .studio-app textarea.studio-input, .studio-app select.studio-input {
+  width: 100%; padding: 10px var(--s-sp-3);
+  border: 1px solid var(--s-line-strong); border-radius: var(--s-r-sm);
+  background: var(--s-bg-input); color: var(--s-text); font: inherit; font-size: var(--s-fs-sm);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.studio-input::placeholder { color: var(--s-text-faint); }
+.studio-input:focus { outline: 0; border-color: var(--s-accent); box-shadow: 0 0 0 3px rgba(47, 107, 79, .12); }
+.studio-app textarea.studio-input { min-height: 92px; resize: vertical; line-height: 1.6; }
+
+/* ── 按钮 ── */
+.studio-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px var(--s-sp-4); border: 1px solid var(--s-line-strong); border-radius: var(--s-r-sm);
+  background: var(--s-bg-raised); color: var(--s-text);
+  font: inherit; font-size: var(--s-fs-sm); font-weight: 550; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, opacity .12s ease;
+}
+.studio-btn:hover { background: var(--s-bg-sunken); }
+.studio-btn:disabled { opacity: .45; cursor: not-allowed; }
+.studio-btn-primary { border-color: var(--s-accent); background: var(--s-accent); color: var(--s-accent-ink); }
+.studio-btn-primary:hover { background: #275a42; border-color: #275a42; }
+.studio-btn-ghost { border-color: transparent; background: none; color: var(--s-text-dim); }
+.studio-btn-ghost:hover { background: var(--s-bg-sunken); color: var(--s-text); }
+.studio-row { display: flex; align-items: center; gap: var(--s-sp-2); flex-wrap: wrap; }
+
+/* ── 状态 ── */
+.studio-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px; border-radius: 999px;
+  background: var(--s-bg-sunken); color: var(--s-text-dim);
+  font-size: var(--s-fs-xs); font-weight: 550; white-space: nowrap;
+}
+.studio-pill[data-tone="good"] { background: var(--s-good-soft); color: var(--s-good); }
+.studio-pill[data-tone="warn"] { background: var(--s-warn-soft); color: var(--s-warn); }
+.studio-pill[data-tone="bad"] { background: var(--s-bad-soft); color: var(--s-bad); }
+.studio-notice { padding: 10px var(--s-sp-3); border-radius: var(--s-r-sm); font-size: var(--s-fs-sm); }
+.studio-notice[data-tone="good"] { background: var(--s-good-soft); color: var(--s-good); }
+.studio-notice[data-tone="bad"] { background: var(--s-bad-soft); color: var(--s-bad); }
+/* 失败提示里带一个重试按钮：横向排布，按钮不抢文字。 */
+.studio-notice:has(> button) { display: flex; align-items: center; justify-content: space-between; gap: var(--s-sp-3); flex-wrap: wrap; }
+.studio-muted { color: var(--s-text-dim); font-size: var(--s-fs-sm); }
+
+/* ── 步骤：左侧细线串起来，像流程而不是列表 ── */
+.studio-steps { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.studio-step {
+  display: flex; align-items: center; gap: var(--s-sp-3);
+  padding: 11px 0; border-bottom: 1px solid var(--s-line);
+}
+.studio-step:last-child { border-bottom: 0; }
+.studio-step-index {
+  display: grid; place-items: center; flex: none;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--s-bg-sunken); color: var(--s-text-faint);
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.studio-step[data-state="done"] .studio-step-index { background: var(--s-good-soft); color: var(--s-good); }
+.studio-step[data-state="active"] .studio-step-index { background: var(--s-accent-soft); color: var(--s-accent); }
+.studio-step[data-state="wait"] .studio-step-index { background: var(--s-warn-soft); color: var(--s-warn); }
+/* 标题与编号上下排：编号是次要信息，但必须一眼能看到并可直接复制。 */
+.studio-step-main { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.studio-step-main > .studio-btn { padding: 0; height: auto; }
+
+/* 整行可点：命中区域覆盖整条记录，不用精确点中标题。 */
+.studio-step-button {
+  width: 100%; margin: 0; border: 0; border-bottom: 1px solid var(--s-line); border-radius: 0;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  padding: 11px var(--s-sp-2); margin-inline: calc(var(--s-sp-2) * -1);
+  transition: background .12s ease;
+}
+.studio-step-button:last-child { border-bottom: 0; }
+.studio-step-button:hover { background: var(--s-bg-sunken); }
+.studio-step-button:focus-visible { outline: 2px solid var(--s-accent); outline-offset: -2px; }
+.studio-step-button:disabled { cursor: default; opacity: .6; }
+.studio-step-title { font-size: var(--s-fs-md); font-weight: 600; }
+.studio-step-chevron { flex: none; color: var(--s-text-faint); font-size: 18px; line-height: 1; }
+/* 编号与复制控件是行内操作，点它们不应触发整行跳转。 */
+.studio-step-button .studio-id { margin-top: 0; }
+
+/* ── 任务编号：完整可见（对账与报障要用），复制只是省去手动选中 ── */
+.studio-id { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: var(--s-sp-2); }
+.studio-id-label { color: var(--s-text-faint); font-size: var(--s-fs-xs); }
+.studio-id code {
+  padding: 2px 7px; border: 1px solid var(--s-line); border-radius: var(--s-r-sm);
+  background: var(--s-bg-sunken); color: var(--s-text-dim);
+  font: 11px/1.5 Consolas, "DM Mono", monospace; overflow-wrap: anywhere;
+}
+.studio-id-compact { margin-top: 0; }
+.studio-id-compact code { padding: 1px 6px; font-size: 11px; }
+.studio-id-copy {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px;
+  border: 0; border-radius: var(--s-r-sm); background: none; color: var(--s-text-faint);
+  font: inherit; font-size: var(--s-fs-xs); cursor: pointer;
+}
+.studio-id-copy:hover { background: var(--s-bg-sunken); color: var(--s-text); }
+.studio-id-error { flex-basis: 100%; color: var(--s-bad); font-size: var(--s-fs-xs); }
+
+/* ── 空态：不要虚框，用留白与一句话 ── */
+.studio-empty { display: grid; gap: 4px; justify-items: center; padding: var(--s-sp-6) var(--s-sp-4); text-align: center; color: var(--s-text-dim); font-size: var(--s-fs-sm); }
+.studio-empty > :first-child { color: var(--s-text); font-weight: 550; }
+
+/* ── 产物网格 ── */
+.studio-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--s-sp-2); }
+.studio-shot { position: relative; overflow: hidden; aspect-ratio: 1; border-radius: var(--s-r-sm); background: var(--s-bg-sunken); }
+.studio-shot img, .studio-shot video { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+@media (max-width: 900px) {
+  .studio-app { grid-template-columns: 1fr; }
+  .studio-nav { position: static; height: auto; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--s-line); padding: var(--s-sp-2); }
+  .studio-brand, .studio-nav .studio-nav-foot { display: none; }
+  .studio-main { padding: var(--s-sp-4); }
+  .studio-metric { border-left: 0; padding-left: 0; }
+}
+
+/* 步骤清单在表单里紧贴左侧，避免序号圆点被卡片内边距推歪。 */
+.studio-steps-flush { margin: 0; }
+.studio-steps-flush .studio-step:first-child { padding-top: 0; }
+
+/* 首屏服务卡：带字母标，比列表更有辨识度；不用图片也能有视觉锚点。 */
+.studio-card-flush { padding-bottom: var(--s-sp-4); }
+.studio-product-tile { position: relative; padding-top: var(--s-sp-4); }
+.studio-product-glyph {
+  display: grid; place-items: center; width: 34px; height: 34px; margin-bottom: 2px;
+  border-radius: 10px; background: var(--s-accent-soft); color: var(--s-accent);
+  font-size: var(--s-fs-md); font-weight: 700;
+}
+.studio-product-tile footer span:last-child { color: var(--s-accent); font-weight: 600; }
+
+/* 产物缩略图：图铺满，说明压在底部渐变上。 */
+.studio-shot { margin: 0; border: 1px solid var(--s-line); }
+.studio-shot img, .studio-shot video { background: var(--s-bg-sunken); }
+.studio-shot-caption {
+  position: absolute; inset: auto 0 0 0; padding: 18px 10px 8px;
+  background: linear-gradient(to top, rgba(0, 0, 0, .55), transparent);
+  color: #fff; font-size: var(--s-fs-xs); line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.studio-shot-fallback { display: grid; place-items: center; width: 100%; height: 100%; padding: var(--s-sp-3); color: var(--s-text-faint); font-size: var(--s-fs-xs); text-align: center; cursor: pointer; }

@@ -11,12 +11,13 @@ import { runOutputs, stepResult } from "./runResultService.js";
 import { HttpError } from "../errors.js";
 import { businessRun, businessRunInputs, BUSINESS_EVENT_TYPES, scrubBusinessValue as scrub } from "./runDetailService.js";
 import type { RunInputQuery } from "../ai/accessSchemas.js";
+import type { CreditLedgerQuery } from "../domain/creditContracts.js";
 import { isRunId } from "../artifacts/runArtifacts.js";
 
 interface UserDraft { id: string; revision: number; userId: string; sceneId: string; versionId: string; title: string; runTitle?: string; inputValues: Record<string, JsonValue>; updatedAt: string; isFavorite?: boolean }
 export const userRun = businessRun;
 export class UserPortalService {
-  constructor(readonly access: AccessService, readonly scenes: AiSceneService, readonly runs: RunService) {}
+  constructor(readonly access: AccessService, readonly scenes: AiSceneService, readonly runs: RunService, readonly credits?: import("./creditService.js").CreditService) {}
   private async project() { return (await this.scenes.loadSettings()).projectDirectory; }
   async list(identity: Identity, query: { limit?: number; cursor?: string }) {
     const snapshot = await this.scenes.workspace.get(); const current = this.access.refresh(identity);
@@ -78,9 +79,11 @@ export class UserPortalService {
   }
   async prepare(identity: Identity, input: { sceneId: string; versionId: string; inputValues: Record<string, JsonValue> }) {
     const values = await this.safeInputs(identity, input.sceneId, input.versionId, input.inputValues);
-    await this.scenes.prepare(input.sceneId, input.versionId, values);
+    const prepared = await this.scenes.prepare(input.sceneId, input.versionId, values);
     this.checkSubmission(identity, input.sceneId, input.versionId);
-    return { valid: true, sceneId: input.sceneId, versionId: input.versionId, externalServicesChecked: false, nextAction: "confirm_then_submit_own_scene" };
+    // 上限价与余额一起返回：用户提交前就能判断够不够，而不是提交后才被拒。
+    const balance = this.credits?.balance(identity.id);
+    return { valid: true, sceneId: input.sceneId, versionId: input.versionId, externalServicesChecked: false, costPlan: prepared.costPlan, ...(balance ? { credits: balance } : {}), nextAction: "confirm_then_submit_own_scene" };
   }
   private checkSubmission(identity: Identity, sceneId: string, versionId?: string) {
     this.access.authorizeScene(identity, sceneId);
@@ -91,7 +94,15 @@ export class UserPortalService {
   }
   async submit(identity: Identity, input: { sceneId: string; versionId: string; inputValues: Record<string, JsonValue>; runId: string; runTitle?: string }) {
     const values = await this.safeInputs(identity, input.sceneId, input.versionId, input.inputValues); const prepared = await this.scenes.prepare(input.sceneId, input.versionId, values);
-    const run = await this.runs.submit({ workflow: prepared.workflow, inputValues: prepared.inputValues, runId: input.runId, runTitle: input.runTitle }, { ownerUserId: identity.id, submitter: runSubmitter(identity), authorize: () => this.checkSubmission(identity, input.sceneId, input.versionId) });
+    const run = await this.runs.submit(
+      { workflow: prepared.workflow, inputValues: prepared.inputValues, runId: input.runId, runTitle: input.runTitle },
+      {
+        ownerUserId: identity.id, submitter: runSubmitter(identity),
+        authorize: () => this.checkSubmission(identity, input.sceneId, input.versionId),
+        // 定价取本次用的发布快照，随运行固化；场景后续改价不影响已提交的运行。
+        ...(prepared.costPlan.total > 0 ? { credit: { userId: identity.id, plan: prepared.costPlan, ...(prepared.pricing ? { pricing: prepared.pricing } : {}) } } : {}),
+      },
+    );
     return this.viewRun(await this.project(), run);
   }
   async ownRun(identity: Identity, runId: string) {
@@ -123,12 +134,13 @@ export class UserPortalService {
     }));
     return { runId, projection: "business", events: items, nextSequence: items.at(-1)?.sequence ?? query.afterSequence, hasMore: events.length > query.limit, nextAction: "read_run_activity" };
   }
-  async listRuns(identity: Identity, query: { limit?: number; cursor?: string }) {
+  async listRuns(identity: Identity, query: { limit?: number; cursor?: string; q?: string }) {
     this.access.refresh(identity); let before: { createdAt: string; runId: string } | undefined;
-    if (query.cursor) { try { const page = JSON.parse(Buffer.from(query.cursor, "base64url").toString()); if (page.userId !== identity.id || !isRunId(page.runId) || typeof page.createdAt !== "string" || !Number.isFinite(Date.parse(page.createdAt))) throw new Error(); before = { runId: page.runId, createdAt: page.createdAt }; } catch { throw new HttpError(400, "任务分页游标无效", "INVALID_ACCESS_CURSOR"); } }
+    // 游标绑定筛选条件：换关键字后接着用旧游标会静默漏读/重读，直接要求从第一页重来。
+    if (query.cursor) { try { const page = JSON.parse(Buffer.from(query.cursor, "base64url").toString()); if (page.userId !== identity.id || !isRunId(page.runId) || typeof page.createdAt !== "string" || !Number.isFinite(Date.parse(page.createdAt)) || (page.q ?? "") !== (query.q ?? "")) throw new Error(); before = { runId: page.runId, createdAt: page.createdAt }; } catch { throw new HttpError(400, "任务分页游标无效", "INVALID_ACCESS_CURSOR"); } }
     const project = await this.project();
-    const page = await this.runs.listRuns(project, { ownerUserId: identity.id, limit: query.limit, before });
-    return { items: page.runs.map(run => this.viewRun(project, run)), hasMore: Boolean(page.nextCursor), ...(page.nextCursor ? { nextCursor: Buffer.from(JSON.stringify({ ...page.nextCursor, userId: identity.id })).toString("base64url") } : {}) };
+    const page = await this.runs.listRuns(project, { ownerUserId: identity.id, limit: query.limit, before, ...(query.q ? { q: query.q } : {}) });
+    return { items: page.runs.map(run => this.viewRun(project, run)), hasMore: Boolean(page.nextCursor), ...(page.nextCursor ? { nextCursor: Buffer.from(JSON.stringify({ ...page.nextCursor, userId: identity.id, ...(query.q ? { q: query.q } : {}) })).toString("base64url") } : {}) };
   }
   async outputs(identity: Identity, runId: string, query: ResultQuery, stepId?: string) {
     const run = await this.ownRun(identity, runId);
@@ -162,8 +174,30 @@ export class UserPortalService {
       const decision = ownReviewRequest.safeParse(input);
       if (!decision.success) throw new HttpError(400, "本人审核只允许确认或退回，不允许向Agent提交反馈；请使用系统反馈", "INVALID_ACCESS_REQUEST");
       await this.runs.review(project, runId, decision.data, () => this.checkSubmission(identity, run.sceneId), identity.id); return this.getRun(identity, runId); }
-    const resumed = await this.runs.submit({ workflow: run.workflow, inputValues: run.inputValues, resumeFromRunId: runId, runId: input.newRunId }, { ownerUserId: identity.id, submitter: runSubmitter(identity), authorize: () => this.checkSubmission(identity, run.sceneId) });
+    const resumed = await this.runs.submit({ workflow: run.workflow, inputValues: run.inputValues, resumeFromRunId: runId, runId: input.newRunId }, {
+      ownerUserId: identity.id, submitter: runSubmitter(identity),
+      authorize: () => this.checkSubmission(identity, run.sceneId),
+      // 续跑沿用来源运行固化的定价快照；已复用步骤在结算时不重复计费。
+      ...(run.credit?.plan ? { credit: { userId: identity.id, plan: run.credit.plan, ...(run.credit.pricing ? { pricing: run.credit.pricing } : {}) } } : {}),
+    });
     return this.viewRun(project, resumed);
+  }
+  /** 本人积分：余额、在跑占用与最近流水。 */
+  creditsSummary(identity: Identity) {
+    const current = this.access.refresh(identity);
+    const credits = this.credits;
+    if (!credits) throw new HttpError(503, "积分服务未启用", "CREDITS_DISABLED");
+    return { userId: current.id, ...credits.balance(current.id), nextAction: "list_own_credit_entries" };
+  }
+  creditsLedger(identity: Identity, query: CreditLedgerQuery) {
+    const current = this.access.refresh(identity);
+    if (!this.credits) throw new HttpError(503, "积分服务未启用", "CREDITS_DISABLED");
+    return { userId: current.id, ...this.credits.ledger(current.id, query) };
+  }
+  redeemCode(identity: Identity, code: string) {
+    const current = this.access.refresh(identity);
+    if (!this.credits) throw new HttpError(503, "积分服务未启用", "CREDITS_DISABLED");
+    return this.credits.redeem(current.id, code);
   }
   async saveDraft(identity: Identity, input: { draftId: string; revision: number; sceneId: string; versionId: string; title: string; runTitle?: string; inputValues: Record<string, JsonValue> }) {
     const runTitle = typeof input.runTitle === "string" ? input.runTitle.trim() : "";

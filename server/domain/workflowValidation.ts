@@ -2,8 +2,9 @@ import { validWorkflowMediaRole } from "./workflowMediaRoles.js";
 import { hermesModelSelectionError } from "./hermesModelSelection.js";
 import { HttpError } from "../errors.js";
 import { iterationCarrySchema } from "./iterationCarry.js";
+import { MAX_ITEM_RETRIES, MAX_ITEM_RETRY_DELAY_SECONDS } from "./iterationRetry.js";
 import { CONDITION_OPERATORS, conditionReferenceRoots } from "./startCondition.js";
-import { asRecord, splitWorkflowReference, parseWorkflowJsonPath } from "./workflowValues.js";
+import { asRecord, isMediaWorkflowType, splitWorkflowReference, parseWorkflowJsonPath } from "./workflowValues.js";
 
 /** Validate nested execution contracts before normalization or side effects. */
 export function validateWorkflowShape(value: Record<string, unknown>) {
@@ -30,6 +31,30 @@ export function validateWorkflowShape(value: Record<string, unknown>) {
     if (config.mode !== undefined && !["once", "for_each"].includes(String(config.mode))) invalid("执行模式");
     if (config.onError !== undefined && !["continue", "stop"].includes(String(config.onError))) invalid("错误处理");
     if (config.maxConcurrency !== undefined && (typeof config.maxConcurrency !== "number" || !Number.isSafeInteger(config.maxConcurrency) || config.maxConcurrency < 1 || config.maxConcurrency > 32)) invalid("最大并行数");
+    if (config.reviewAfterItems !== undefined) {
+      if (typeof config.reviewAfterItems !== "number" || !Number.isSafeInteger(config.reviewAfterItems) || config.reviewAfterItems < 1 || config.reviewAfterItems > 1000) invalid("循环内审核点");
+      if (!step || config.mode !== "for_each") invalid("循环内审核点仅支持步骤级for_each");
+    }
+    if (config.itemRetries !== undefined) {
+      // Reject instead of silently falling back: a misconfigured retry count would change cost.
+      if (typeof config.itemRetries !== "number" || !Number.isSafeInteger(config.itemRetries) || config.itemRetries < 0 || config.itemRetries > MAX_ITEM_RETRIES) invalid("逐项重试次数");
+      if (!step || config.mode !== "for_each") invalid("逐项重试仅支持步骤级for_each");
+    }
+    if (config.itemRetryDelaySeconds !== undefined) {
+      if (typeof config.itemRetryDelaySeconds !== "number" || !Number.isSafeInteger(config.itemRetryDelaySeconds) || config.itemRetryDelaySeconds < 0 || config.itemRetryDelaySeconds > MAX_ITEM_RETRY_DELAY_SECONDS) invalid("逐项重试等待秒数");
+      if (!step || config.mode !== "for_each") invalid("逐项重试等待秒数仅支持步骤级for_each");
+    }
+    if (config.maxConcurrencyRef !== undefined) {
+      if (!step || config.mode !== "for_each") invalid("并发引用仅支持步骤级for_each");
+      if (config.maxConcurrency !== undefined) invalid("静态最大并行数与并发引用不能同时配置");
+      if (config.carry !== undefined) invalid("状态传递必须串行执行，不能同时配置并发引用");
+      if (typeof config.maxConcurrencyRef !== "string" || !config.maxConcurrencyRef.trim()) invalid("并发引用必须是本场景已声明的数字输入，例如 input.concurrency");
+      const reference = String(config.maxConcurrencyRef).trim();
+      const parsedReference = splitWorkflowReference(reference);
+      const inputMatch = /^input\.([a-zA-Z0-9_]+)$/.exec(parsedReference?.root ?? "");
+      if (!parsedReference || !inputMatch || parsedReference.path) invalid("并发引用必须是本场景已声明的数字输入，例如 input.concurrency");
+      if (!numberInputKeys.has(inputMatch![1])) invalid("并发引用必须指向已声明的数字输入");
+    }
     text(config.sourceRef, "逐项执行来源", true);
     if (config.carry !== undefined) {
       const parsed = iterationCarrySchema.safeParse(config.carry);
@@ -57,9 +82,12 @@ export function validateWorkflowShape(value: Record<string, unknown>) {
       if (keys.has(String(field.key))) invalid(`${label}重复键`);
       keys.add(String(field.key));
       if (field.options !== undefined && list(field.options, "字段选项").some((option) => typeof option !== "string")) invalid("字段选项");
-      if ((field.minimum !== undefined || field.maximum !== undefined) && (output || field.type !== "number")) invalid("数字输入范围类型");
+      // 输入字段：数字用 minimum/maximum 表示取值范围，媒体用 maximum 表示数量上限；输出不接受范围。
+      if ((field.minimum !== undefined || field.maximum !== undefined) && (output || !(field.type === "number" || isMediaWorkflowType(String(field.type))))) invalid("数字输入范围类型");
       if (field.minimum !== undefined && (typeof field.minimum !== "number" || !Number.isFinite(field.minimum))) invalid("数字最小值");
       if (field.maximum !== undefined && (typeof field.maximum !== "number" || !Number.isFinite(field.maximum))) invalid("数字最大值");
+      // 媒体数量上限必须是正整数：0.5 张没有意义。
+      if (isMediaWorkflowType(String(field.type)) && typeof field.maximum === "number" && (!Number.isSafeInteger(field.maximum) || field.maximum < 1)) invalid("媒体数量上限");
       if (typeof field.minimum === "number" && typeof field.maximum === "number" && field.minimum > field.maximum) invalid("数字最小值不能大于最大值");
       if (field.required !== undefined && typeof field.required !== "boolean") invalid("必填配置");
       if (field.hidden !== undefined && typeof field.hidden !== "boolean") invalid("输入表单隐藏配置");
@@ -89,6 +117,10 @@ export function validateWorkflowShape(value: Record<string, unknown>) {
   };
   fields(list(value.inputs, "场景输入"), "场景输入");
   fields(list(value.outputs, "最终输出"), "最终输出", true);
+  const numberInputKeys = new Set(list(value.inputs, "场景输入")
+    .map(raw => asRecord(raw))
+    .filter(field => field?.type === "number")
+    .map(field => String(field!.key)));
   execution(value.execution);
   for (const raw of list(value.outputs, "最终输出")) if (/^iteration\.(previous|hasPrevious|index)(?:$|[.[])/.test(String(asRecord(raw)?.sourceRef))) invalid("状态引用仅在当前逐项步骤内有效");
   for (const item of list(value.steps, "流程步骤")) {

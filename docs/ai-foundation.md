@@ -1,10 +1,68 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.5.36。当前 105 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.7.12。当前 150 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
 
 每个功能列出它使用的操作名与副作用。HTTP 方法与路径不再在这里重复：见 ai-tools.md 与 ai-openapi.json，也可用 get_workbench 的 features[].operations 或 list_capabilities 实时读取。
+
+### scene-packages
+
+场景包=用户面的产品单元，场景降级为包内部件。包草稿声明包级输入 + 有序组件项（每项固定 sceneId+versionId + 输入绑定），绑定三态：input（取包输入）、literal（固定值）、previous（取前序项产出 <项ID>.<输出键>，可用 selection all/item 取值）。创建/更新校验：项ID唯一、只能引用更早项、组件必须已发布、组件必填输入必须被绑定或被默认值覆盖。发布时把组件发布版**内嵌**成自包含快照（scene/workflow/optionPresets），因此组件场景之后改版或删除都不会让已发布的包悬空；发布用 publicationId 对账，重复调用不重复发布。运行：一次预扣全部上限价（包级资金，子运行不各自扣费），随后逐项串行提交为普通运行——复用现有队列、审核、续跑、归档与媒体权限，不新建状态机；遇失败/取消即停。confirmAfter 项完成后包运行进入 waiting_confirm：approve 复用该项继续剩余项，redo 重跑本项并再次等待；已确认的前段不重复生成。包级结算按已完成项计费并退还差额。**服务页面**：包草稿的 presentation 随发布快照固化，决定用户打开这个包时看到的页面；layout=page（默认，介绍型整页，page 区块 hero/features/gallery/steps/text/form/results/faq/cta 有序组合，form 最多 1 个）或 layout=workspace（工具型工作台：左控制栏+右结果画布，结果常驻、提交后原地出结果；高频出图/改图类优先用它，此时不能再配 form/results 区块，文案在 workspace 里给）。未知 type、重复 form、布局冲突与非法链接在保存/发布时拒绝；省略 page 时合成默认页。presentation 只影响展示；字段与校验见手册 §13。原始输入见 get_own_package_run_inputs。授权单元是 packageIds；管理员不受限。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `list_available_packages` | read |
+| `get_available_package` | read |
+| `prepare_own_package` | read |
+| `submit_own_package` | execute |
+| `list_own_package_runs` | read |
+| `get_own_package_run` | read |
+| `get_own_package_run_inputs` | read |
+| `get_own_package_outputs` | read |
+| `confirm_own_package_item` | execute |
+| `cancel_own_package_run` | write |
+| `list_package_drafts` | read |
+| `get_package_draft` | read |
+| `create_package_draft` | write |
+| `update_package_draft` | write |
+| `publish_package` | write |
+| `set_user_package_access` | write |
+| `get_own_credits` | read |
+| `redeem_own_code` | write |
+| `list_own_runs` | read |
+| `get_own_run` | read |
+
+### credits-and-redeem
+
+积分与卡密（SaaS 计费单位，不是上游成本镜像）。定价写在场景草稿 scene.pricing 并随发布快照固化；只能给会调外部服务的步骤定价（hermes / comfyui 非纯拼接 / core.http_request / core.llm）。per_call 按次、per_item 按成功项，前序来源必须声明 maxItems 作为上限。时序：prepare 返回 costPlan 与余额 → submit 按上限预扣（402 CREDIT_INSUFFICIENT 不入队）→ 终态按成功产出结算并退差额，charged 不超过预扣、永不补扣；复用项不重复计费。账本 append-only，幂等键 run_reserve:<runId>/run_settle:<runId>，丢回执按同一 runId 对账。单账户在跑上限 ZANE_MAX_ACTIVE_RUNS_PER_USER 超出 429 USER_RUN_LIMIT_REACHED。卡密明文保存在本机 SQLite，`create_redeem_batch` 幂等（同 batchId 重复提交返回原批次与明文，created=false），`list_redeem_codes` 可随时逐张回读完整卡密与状态（仅管理员，不进用户端/日志/运行记录），旧批次 recoverable=false 只有末四位；作废有单张 `void_redeem_code` 与整批 `void_redeem_batch`：已兑换的码也可以作废（退款场景），默认 reclaim=true 按面值从兑换人账户收回并写 cdk_refund 负向流水（幂等键 cdk_refund:<codeId>）；余额不足不阻止作废，扣到余额为 0 为止，未收回的差额在 shortfall（单张）与 shortfall/partial（整批）返回，永不产生负余额；reclaim=false 只作废不退分，includeRedeemed=false 退回「只作废未使用的」旧行为；卡即身份，兑换人失去最后一枚有效卡时账户自动停用（suspendedUsers 返回）并让既有会话/AI 凭证立即失效，兑换新卡即恢复，多卡用户不受单张作废影响；他人已用/不存在/作废统一 REDEEM_CODE_INVALID 防枚举。自助注册默认关闭（ZANE_SELF_SIGNUP），新账号空场景授权。口径与时序细节见手册 §12 与 x-credits 契约。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `get_own_credits` | read |
+| `list_own_credit_entries` | read |
+| `redeem_own_code` | write |
+| `list_redeem_batches` | read |
+| `list_redeem_codes` | read |
+| `create_redeem_batch` | write |
+| `void_redeem_code` | write |
+| `void_redeem_batch` | write |
+| `adjust_user_credits` | write |
+| `get_credit_reconciliation` | read |
+| `prepare_own_scene` | read |
+| `submit_own_scene` | execute |
+| `resume_own_run` | execute |
+| `get_scene` | read |
+| `get_scene_draft` | read |
+| `update_scene_draft` | write |
+| `publish_scene` | write |
+| `get_current_user` | read |
+| `list_users` | read |
+| `get_user` | read |
+| `create_user` | write |
+| `set_user_scene_access` | write |
+| `get_own_run` | read |
+| `list_available_scenes` | read |
 
 ### generic-start-condition
 
@@ -36,6 +94,36 @@
 | 工具 | 副作用 |
 | --- | --- |
 | `list_capabilities` | read |
+| `create_scene` | write |
+| `get_scene_draft` | read |
+| `update_scene_draft` | write |
+| `validate_scene_draft` | read |
+| `publish_scene` | write |
+| `get_scene` | read |
+| `prepare_scene` | read |
+| `submit_scene` | execute |
+| `get_step_result` | read |
+| `resume_run` | execute |
+| `rerun` | execute |
+| `submit_own_scene` | execute |
+| `get_own_step_result` | read |
+| `resume_own_run` | execute |
+
+### llm-step
+
+通用大模型调用基础步骤core.llm：默认走已启用的 Hermes Profile（可用 list_hermes_profiles/list_hermes_models 查真实目录），把 capabilityConfig.systemPrompt 作为独立 system 消息、把 promptTemplate+步骤输入作为 user 消息发送；系统指令还可来自 capabilityConfig.skillRef（引用 input.<key> 或 step.<id>.outputs.<key>，可带 JSON 路径，多个引用按换行/逗号分隔），用于把 core.code 用 fileAccess 读出的 SKILL.md 等技能正文或本步骤文本输入作为系统指令，原样发送不剥 frontmatter/不裁剪，与 systemPrompt 同时填写时固定文本在前、技能文本在后，引用写法非法在校验/预检阶段失败、执行期引用不存在或指向媒体在请求前失败、解析为空记录步骤警告；声明为 image_list/video_list 的步骤输入会作为多模态附件一并发送，沿用与 core.hermes 相同的抽帧、压缩与 10MB 内联上限（图片压缩缓存对续跑/重做复用，不重复编码）。输出模式 capabilityConfig.outputMode 两种：json（默认）要求模型只返回一个 JSON 对象且字段与声明输出端口完全一致，缺失或多余字段都判为失败，沿用同一套严格解析与单一家族修复（不截断、不自动重投模型）；text 要求恰好声明一个 text 输出端口，并把模型回复原文（不解析 JSON、不裁剪首尾空白）作为该输出返回，用于「直接产出提示词正文」这类场景。请求级 provider/model 覆盖沿用 hermesProvider/hermesModel（仅非直连路径）。capabilityConfig.direct（boolean，默认 false）开启第二条执行路径，它**完全脱离 Hermes**：不读 Hermes Profile、不解析网关地址、不使用网关密钥。选中 capabilityConfig.providerId（list_direct_llm_providers 返回的稳定 ID）+ 可选 capabilityConfig.model，worker 按该提供商的 protocol 直接请求：openai-chat 为 POST <baseUrl>/chat/completions（Authorization: Bearer <环境变量值>），anthropic 为 POST <baseUrl>/messages（x-api-key + anthropic-version 2023-06-01，system 作为顶层字段，图片用 base64 source 块）。省略 providerId 时用保留的默认提供商（1.5.39 单例或环境默认值 ZANE_DIRECT_LLM_BASE_URL/ZANE_DIRECT_LLM_API_KEY_ENV/ZANE_DIRECT_LLM_MODEL），因此升级前的已发布快照继续可用；省略 model 时用提供商的第一个模型，都没有则在发出任何请求之前明确失败。密钥优先用提供商里保存的明文 apiKey（**明文保存在本机 SQLite，用户明确选择的存储方式；请自行保护数据目录、数据库副本与备份**），为空时回退 apiKeyEnv 指向的工作台服务进程环境变量。读写分离：list/get 永不回显明文，只给 credential.configured/source/apiKeyMasked（末尾 4 位）与 hasApiKey；明文不进日志与进程内日志缓冲（observability/logRedaction 对 apiKey/secret 整值替换）、不进运行记录与运行输入归档、不进步骤结果与错误消息（上游原样回显的密钥会被显式抹掉）、不进场景发布快照（快照只有步骤的 providerId/model）与任何导出清单。update 的密钥字段是三态：省略=保持已保存的密钥（只改名称或地址不会清空）、显式空串=清除、非空=替换。可用模型用 query_direct_llm_models 向该提供商 GET <baseUrl>/models 拉取并缓存（与手填模型合并去重，失败明确报错、不伪装空列表、不调用模型）。两条路径共用完全相同的附件构造与 JSON 契约，因此切换模式只改变「谁被调用」，不改变发出去的内容；直连失败在步骤结果里明确说明是直连而非 Hermes，且与 Hermes 路径一样一次请求不自动重试（补全非幂等，重发可能重复计费）。这是真实模型调用，可能计费；配置、预检与查询模型都不调用模型，发布快照固定后提交执行才发出请求，取消即中断。机器契约 x-llm-step v1 与 x-direct-llm v2。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `list_capabilities` | read |
+| `list_hermes_profiles` | read |
+| `list_hermes_models` | read |
+| `list_direct_llm_providers` | read |
+| `get_direct_llm_provider` | read |
+| `create_direct_llm_provider` | write |
+| `update_direct_llm_provider` | write |
+| `delete_direct_llm_provider` | write |
+| `query_direct_llm_models` | write |
 | `create_scene` | write |
 | `get_scene_draft` | read |
 | `update_scene_draft` | write |
@@ -124,6 +212,56 @@ UI格式ComfyUI图在同一转换服务解析前端Reroute链与扇出，保留�
 | `get_own_step_result` | read |
 | `resume_own_run` | execute |
 
+### for-each-checkpoint-and-concurrency
+
+for_each 步骤的两个通用可选配置，仍然只用基础步骤组合、不新增场景专用执行器。①execution.reviewAfterItems=N（仅mode=for_each）：第N项完成后暂停一次等待人工确认，用于「先出2张确认、再出剩余」而不必把批次拆成两个步骤。它是调度屏障——第N项完成前不派发第N项及其后的项，因此pendingReview（scope=batch_items、afterItems=N）出现时恰好完成N项，并发不会越过该点；该步骤保持running而非completed。approve复用已完成的前N项继续剩余项且不再在该点暂停；redo只重做截至该点的那一段并再次暂停（新reviewId）；两种动作都不重复生成已确认的前段，也不支持outputs编辑（逐项步骤仍只能退回重做）。它与步骤结尾的review.enabled相互独立、可同时配置，确认说明沿用review.instruction；N不小于遍历项数时不触发并在步骤warnings记录「审核点第N项未触发」；onError=stop或carry出现失败时按原失败路径处理，不伪装成确认点。②execution.maxConcurrencyRef=input.<key>：并发取自本场景已声明的number输入，与静态maxConcurrency互斥、与carry互斥（carry恒串行）。留空=不限制（取32，仍受ComfyUI全局并发预算ZANE_COMFYUI_MAX_CONCURRENCY与任务级ZANE_MAX_ACTIVE_RUNS约束）；0、负数、小数、超过32或非数字在validate_scene_draft/prepare_scene/submit_scene返回400 INVALID_ITERATION_CONCURRENCY，不在运行中途静默回退成串行。生效并发恒取min(解析值,本次遍历项数)。未声明这两个字段的for_each、已发布快照与历史运行行为逐字节不变；配置、预检与发布都不调用模型、不生成、不计费。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `create_scene` | write |
+| `get_scene_draft` | read |
+| `update_scene_draft` | write |
+| `validate_scene_draft` | read |
+| `publish_scene` | write |
+| `get_scene` | read |
+| `prepare_scene` | read |
+| `submit_scene` | execute |
+| `get_run` | read |
+| `wait_run` | read |
+| `get_step_result` | read |
+| `review_run` | execute |
+| `resume_run` | execute |
+| `preview_rerun` | read |
+| `rerun` | execute |
+| `submit_own_scene` | execute |
+| `get_own_run` | read |
+| `wait_own_run` | read |
+| `get_own_step_result` | read |
+| `review_own_run` | execute |
+| `resume_own_run` | execute |
+
+### for-each-item-retry
+
+for_each 步骤的可选逐项瞬时重试，仍然只用基础步骤组合、不新增场景专用执行器。execution.itemRetries=0–3（默认0=与历史逐字节一致只执行一次）与可选 execution.itemRetryDelaySeconds=0–60（默认5，指数退避、上限60）只对瞬时类失败生效：Hermes HTTP 408/429/5xx、网络/套接字中断、请求超时，以及上游半途断流导致的输出解析失败（HermesTransientError 与带 transient 标记的 HermesOutputParseError，按错误类型判类而非匹配文案）；鉴权401/403、参数/校验、schema/契约不符、业务4xx、取消、直连模型与 ComfyUI 失败一律不重试。重试发生在单项内部，项序、reviewAfterItems 调度屏障与 carry 连续完成前缀复用边界都不改变；每次重试在该项 warnings 追加一条（第几项第几次尝试、原因、等待秒数、重试会再次调用模型并可能计费），等待用可中断延时，取消运行立即停止且不再发起下一次尝试；重试耗尽后按原 onError=stop/carry 失败路径处理，错误取最后一次。负数、小数、超过上限、非数字或用于非 for_each 步骤在 validate_scene_draft/prepare_scene/submit_scene 返回 400 INVALID_WORKFLOW，不静默回退。未声明这两个字段的 for_each、已发布快照与历史运行行为逐字节不变；配置与预检不调用模型、不生成、不计费。机器契约 x-for-each-item-retry v1。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `create_scene` | write |
+| `get_scene_draft` | read |
+| `update_scene_draft` | write |
+| `validate_scene_draft` | read |
+| `publish_scene` | write |
+| `get_scene` | read |
+| `prepare_scene` | read |
+| `submit_scene` | execute |
+| `get_step_result` | read |
+| `resume_run` | execute |
+| `preview_rerun` | read |
+| `rerun` | execute |
+| `submit_own_scene` | execute |
+| `get_own_step_result` | read |
+| `resume_own_run` | execute |
+
 ### public-user-security
 
 可选用户专用监听入口，复用同一服务/SQLite；显式用户操作与本人媒体白名单，管理初始化/旧管理API/管理员凭证不可达；get_workbench发现入口和登录策略，进程内有界账户/可信来源窗口与并行密码校验限流，429可操作重试时间；公网/生产错误脱敏保留code/requestId/revision。管理入口默认回环；开启用户入口时把管理入口绑到非回环需显式ZANE_ALLOW_LAN_INGRESS=true（缺省fail closed，只改监听绑定，不放宽白名单/角色/初始化，仍须防火墙限制来源），用户入口自身用ZANE_PUBLIC_USER_HOST=0.0.0.0直接开放。TLS代理、额度、上传与Agent隔离不在本轮。
@@ -188,6 +326,40 @@ core.code 可选本地文件读取：capabilityConfig.fileAccess={enabled:true} 
 | `get_task_concurrency` | read |
 | `update_task_concurrency` | write |
 
+### notification-relay
+
+**入站转发**：别的系统把一条文本 POST 给工作台，工作台按已配置适配器转发到管理员指定的目标 Webhook——工作台是中间层，调用方不需要工作台账号。端点 POST /api/v1/hooks/relay，鉴权用管理员生成的 relay token（Bearer，24–200 位，常量时间比较），**不挂管理员身份中间件**；未启用 404 RELAY_NOT_ENABLED（不暴露路径存在性），凭证错误 401 RELAY_TOKEN_INVALID。体 {text（1–4000字）, title?（≤200，首行加粗）, source?（≤80，仅日志）}，**不能指定目标或平台**——两者只来自服务端配置，因此不是开放转发代理。与运行事件不同：不聚合不排队，同步返回回执 {relayed,status,target,chars,truncated,error?}；正文按平台上限截断并标记，超 4000 字 400。管理员也可用 relay_notification 发同样内容，不需 relay token。启用要求目标地址已配置；relayToken 三态（省略=保持、空串=清除并关闭、非空=替换）。目标拒绝返回 relayed:false 而非抛错；统计进 delivery.relayedMessages/relayedFailed。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `get_notification_webhook` | read |
+| `update_notification_webhook` | write |
+| `relay_notification` | write |
+
+### run-event-webhook
+
+管理员配置运行事件聚合通知（UI/HTTP/MCP同一SQLite单例，revision保护）：白名单事件（run.queued/started/waiting/completed/failed/cancelled/stale、step.failed、step.completed_with_errors、review.approve/redo）按 aggregateSeconds（5–300秒）合并后投递。中间层把「聚合」与「平台适配」分开：聚合层只产出统一文本与事件数组，平台差异集中在 domain/notificationFormats.ts 的适配器——discord 发 {content,allowed_mentions:{parse:[]}}（不触发@everyone，上限1900）、slack 发 {text,unfurl_links:false,unfurl_media:false}（2900）、feishu 发 {msg_type:text,content:{text}}（3500）、generic 发 {source,text,events[]}（1900）；换平台只改配置，不动事件与窗口。投递是运行状态机旁路：同步入队、异步发送，失败只计入 failedMessages/droppedEvents/lastError，不阻塞或改变运行、审核、结算与归档；429 按 Retry-After 头或响应体 retry_after 退避（上限5秒）后重试一次，失败不重排队，队列上限200，重启后未发送事件丢失（不落库）。地址通常含 token，明文存本机 SQLite，读接口只回 urlMasked（末4位），明文不进日志、运行记录、运行输入、发布快照或导出清单。url三态（省略=保持、空串=清除、非空=替换）；启用要求已有地址且至少1个事件，清空地址同时关闭转发。保存/启用/读取都不发送、不调用模型、不计费；只有 test_notification_webhook 会立即出网一次（失败返回 sent:false 而非抛错）。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `get_notification_webhook` | read |
+| `update_notification_webhook` | write |
+| `test_notification_webhook` | write |
+
+### local-media-view
+
+查看运行结果里已记录的本机媒体文件（仅管理员）：GET /api/v1/runs/{runId}/local-media，按 (stepId,itemIndex,outputKey,mediaIndex) 坐标定位，浏览器据此把 core.code fileAccess 写进 text/json 输出的角色图、参考图等直接显示。此前这类值既解析不出可预览地址、也不被 output-media 接受（它只服务声明为媒体类型的输出），所以界面上完全看不到图。客户端只提交坐标、不提交路径：服务端从运行记录重新解析该值，并要求它落在管理员配置的 local-export 根目录内部（越界与符号链接逃逸都拒绝，未配置根目录报 FILE_ACCESS_DISABLED，文件缺失 404）。因此它不是任意文件读取代理，可读范围与 core.code fileAccess 完全相同，也不进入用户专用入口。支持 HEAD/Range 与 w 显示缩放（图片返回 WebP 派生图，非图片或缩放失败回退原字节）。只读：不写文件、不生成媒体、不调用模型、不计费。机器契约 x-local-media v1。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `get_local_export` | read |
+| `update_local_export` | write |
+| `get_step_result` | read |
+| `get_run_outputs` | read |
+| `get_run` | read |
+| `list_runs` | read |
+| `list_capabilities` | read |
+
 ### workbench-metrics
 
 管理员只读运行时指标快照：进程内存/运行时长与运行队列（maxActiveRuns、queued/active/preparing、accepting/ready、未完成状态计数），diagnostics=1 时附带 SQLite PRAGMA quick_check。只读、不分页、不暴露场景内容、运行明细或凭据，不执行任何变更；供监控面板与 AI 巡检使用。
@@ -195,6 +367,15 @@ core.code 可选本地文件读取：capabilityConfig.fileAccess={enabled:true} 
 | 工具 | 副作用 |
 | --- | --- |
 | `get_system_metrics` | read |
+
+### system-logs
+
+管理员只读日志查看，两个来源分离且都不接受调用方路径：进程内结构化日志窗口由现有log()采集点写入有界环形缓冲（ZANE_LOG_BUFFER_ENTRIES，默认2000，范围100–20000；重启即清零、不落库、不新增SQLite表，与RunMetricsTracker同构），最近优先返回sequence/time/level/event/已脱敏fields，支持按level最低等级、event前缀、q关键字（事件名与字段JSON）、runId（含sourceRunId/newRunId祖先）与sceneId筛选，游标是按sequence定位的keyset锚点，因此追加安全：读取本日志本身会写入http.request条目，续页不会因此在翻页中途失效，也不重不漏；游标绑定筛选条件、换筛选复用返回400 INVALID_LOG_CURSOR，只有更早条目被容量挤出（最旧保留边界前移）才返回409 LOG_PAGE_CHANGED（带currentRevision/retainedFromSequence）要求重读第一页，buffer.dropped>0表示更早日志已被容量挤出而不是未产生；运维日志文件尾部只读取APP_DATA_DIR下白名单成员（watchdog.log、watchdog-server.log、server.stdout.log、server.stderr.log、zane-server.stdout.log、zane-server.stderr.log），默认末尾200行（最大2000），明确返回available/missing/complete/scannedWholeFile/scannedBytes/truncated，超过4MB字节上限时只扫描尾部窗口并声明totalLines/lineNumber只相对该窗口——因此它不是任意文件读取代理。两个来源都对凭证/密钥键值、URL查询串与内联Bearer/密钥赋值脱敏（保留密钥字段名与引号，脱敏后该行仍是合法JSON），超长字段裁剪并置truncated=true（不静默截断），运维日志首行的UTF-8 BOM会被剥离以便按JSON读取；仍会包含本机地址与项目路径（这正是诊断价值），但不含提示词、模型对话、运行输入全文或任何密钥明文。只读：不写文件、不轮转、不删除、不生成、不执行、不分页外变更；普通用户入口不提供该能力。1.7.9起管理端逐行显示中文事件名、分类与摘要，展开为字段表（展示层派生）；运维日志JSON行结构化、非JSON行留原文。步骤生命周期（step.*与step.item.*）也写入同一缓冲，runId过滤可见逐步过程，但不参与状态机。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `get_system_logs` | read |
+| `get_ops_log` | read |
 
 ### ai-commerce-basic-composition
 
@@ -307,7 +488,7 @@ H3生成前用通用段落标题归一化处理英文大小写/水平缩进与�
 
 ### user-scene-operation
 
-本人授权且已发布场景的业务目录与输入契约；服务端构造执行快照和归属，允许额外输入键透传且仍校验已声明字段，禁止任意流程与本机路径；本人输入草稿/运行/结果分页；按身份读取本人素材并选择固定版本；版本变化显式冲突，审核/续跑遵守真实状态
+本人授权且已发布场景的业务目录与输入契约；服务端构造执行快照和归属，允许额外输入键透传且仍校验已声明字段，禁止任意流程与本机路径；本人输入草稿/运行/结果分页；按身份读取本人素材目录（客户端不提供素材库页面或选择入口，媒体输入只上传本次文件）；版本变化显式冲突，审核/续跑遵守真实状态
 
 | 工具 | 副作用 |
 | --- | --- |
@@ -367,7 +548,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### discovery
 
-实时工作台、项目和能力发现；统一能力目录的适用范围与旧版兼容边界，目录revision绑定分页；core.code的新场景数据处理契约；媒体选择与合并、图片画布与排版等旧能力的兼容边界与值schema。发现负载分级：get_workbench的detail（默认summary）只返回路由、副作用与权限事实并显式标记省略的说明文本，detail=full返回完整说明；zane://guide默认只返回当前生效契约，历史版本小节在zane://guide/changelog。分级不改变业务语义。
+实时工作台、项目和能力发现；统一能力目录的适用范围与旧版兼容边界，目录revision绑定分页；core.code的新场景数据处理契约；媒体选择与合并、图片画布与排版等旧能力的兼容边界与值schema。发现负载分级：get_workbench的detail（默认summary）只返回路由、副作用与权限事实并显式标记省略的说明文本，detail=full返回完整说明；zane://guide默认只下发伞式目录（节号、标题、子节、字节数与最小铁律），正文按节读取zane://guide/<节号>（HTTP /api/v1/ai/guide?detail=<节号>，父节正文已含子节），整本走detail=full，历史版本小节在zane://guide/changelog；每节是独立资源，可单独列出与读取，目录本身不夹带正文。分级不改变业务语义。
 
 | 工具 | 副作用 |
 | --- | --- |
@@ -464,7 +645,7 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### runs
 
-固定发布版执行、管理员分页历史/详情含服务端验证并记录的提交人身份快照；步骤和for_each各项保存startedAt/durationMs；get_run保存已执行Hermes步骤实际发送提示词agentPrompt，解析或输出校验失败时保存完整未trim原始回复agentResponse，for_each按item.agentPrompt/agentResponse保存；get_step_result可分页读逐项用时与原始回复；有界等待、事件、取消和恢复
+固定发布版执行、管理员分页历史/详情含服务端验证并记录的提交人身份快照；list_runs与list_own_runs可用q按字面搜索标题/流程/场景/编号/错误/提交人，游标绑定筛选条件（换q或status/sceneId须重读第一页，管理端400 INVALID_RUN_CURSOR、本人端400 INVALID_ACCESS_CURSOR）；步骤和for_each各项保存startedAt/durationMs；get_run保存已执行Hermes步骤实际发送提示词agentPrompt，解析或输出校验失败时保存完整未trim原始回复agentResponse，for_each按item.agentPrompt/agentResponse保存；get_step_result可分页读逐项用时与原始回复；有界等待、事件、取消和恢复
 
 | 工具 | 副作用 |
 | --- | --- |
@@ -487,13 +668,14 @@ UI/HTTP/MCP同源业务详情：固定运行快照的步骤进度、未执行步
 
 ### revision-and-review
 
-修订反馈、局部重做预览和执行、显式审核
+修订反馈、局部重做预览和执行、显式审核。request_step_agent_feedback 是其中**不重做**的一条：把反馈连同执行期上下文（真实重建的步骤输入、上游结果、逐项来源项、原结果与步骤级 Profile/provider/model）交给该步骤原本调用的 Agent 一次并返回修订结果，不排队、不新建运行、不写运行记录、不发布、不生成媒体；要采纳仍必须显式走重做链路（review_run redo 带 feedback，或 preview_rerun/rerun 的 changes.feedback），两条路共用同一份反馈校验与长度上限。
 
 | 工具 | 副作用 |
 | --- | --- |
 | `preview_rerun` | read |
 | `rerun` | execute |
 | `review_run` | execute |
+| `request_step_agent_feedback` | execute |
 
 ### asset-execution-access
 
@@ -513,7 +695,7 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 
 ### assets
 
-管理员素材库：本地上传/运行收藏、说明/分组/标签检索与筛选、快照分页、固定版本引用、版本分页与生成参数分段、revision写入和稳定createId对账；普通用户另有按身份隔离的本人素材分页目录，可在自己的任务输入中选择固定版本
+管理员素材库：本地上传/运行收藏、说明/分组/标签检索与筛选、快照分页、固定版本引用、版本分页与生成参数分段、revision写入和稳定createId对账；普通用户另有按身份隔离的本人素材分页目录（客户端不开放素材库，仅 AI/HTTP 读取与上传）
 
 | 工具 | 副作用 |
 | --- | --- |
@@ -541,7 +723,7 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 
 ### tasks
 
-任务=批量执行容器：一个任务含最多200个任务项，每项独立固定「已发布场景+versionId+输入」，因此一个任务可以跨场景/跨发布版，用于「一个项目连续出几十张图」而不必建几十条互不相关的运行记录。中间态草稿可反复编辑（items为完整替换、按位置保留itemId），逐项按发布快照校验输入与固定素材版本；确认是单向冻结：先为每项预分配稳定runId落库再逐项提交，响应丢失用同一批runId对账、重复确认不会重复提交或重复计费（alreadyConfirmed）。单项提交失败不阻断整批，失败项可单独重跑（旧runId保留在previousRunIds），等待人工确认的项拒绝重跑、不能绕过审核。进度与状态完全由各项运行状态投影，复用现有运行队列的并发上限、排队、审核与重启恢复，不新建调度器、不新建旁路任务库。取消尽力取消在途项并保留已完成结果；删除任务不删除历史运行、媒体或素材
+任务=批量执行容器：一个任务含最多200个任务项，每项独立固定「已发布场景+versionId+输入」，因此一个任务可以跨场景/跨发布版，用于「一个项目连续出几十张图」而不必建几十条互不相关的运行记录。中间态草稿可反复编辑（items为完整替换、按位置保留itemId），逐项按发布快照校验输入类型/选项与固定素材版本，但保存草稿不校验必填（可以边填边存）；确认前整体判一次必填，缺项返回400 TASK_ITEMS_INCOMPLETE且不冻结、不提交、不计费；确认是单向冻结：先为每项预分配稳定runId落库再逐项提交，响应丢失用同一批runId对账、重复确认不会重复提交或重复计费（alreadyConfirmed）。单项提交失败不阻断整批，失败项可单独重跑（旧runId保留在previousRunIds），等待人工确认的项拒绝重跑、不能绕过审核。进度与状态完全由各项运行状态投影，复用现有运行队列的并发上限、排队、审核与重启恢复，不新建调度器、不新建旁路任务库。取消尽力取消在途项并保留已完成结果；删除任务不删除历史运行、媒体或素材
 
 | 工具 | 副作用 |
 | --- | --- |
@@ -554,14 +736,28 @@ UI/HTTP/MCP复用权威素材服务；assetId+assetVersion固定版本解析为�
 | `cancel_task` | write |
 | `delete_task` | write |
 
+### run-quality-audit
+
+仅管理员的任务质检通道（第三方质检员），不新增执行器、不改运行状态机、不进用户入口。get_run_audit 给出有界证据包（逐步状态/用时/警告/输出元数据 + 实际发出的提示词与解析失败时的原始回复；按 promptLimit 截断、for_each 只抽样前 itemSample 项、省略项显式标记），输出值一律不内联——值走 get_step_result/get_run_outputs，提示词全文走 get_run。submit/get/update/list_run_critique 在服务端 SQLite（run-critiques，revision 保护）保存结构化结论：verdict/score/summary/findings/recommendations/reviewer/source；critiqueId 预生成、重复409，状态机 open→accepted|dismissed、accepted→fixed|dismissed、dismissed|fixed→open，非法跳转与revision冲突都是409，列表只给索引。audit_run_with_hermes 直连已启用的 Hermes Profile 评审（可能计费、一次请求不自动重试）：固定输出契约严格校验，不符即502且不写入记录，响应丢失用同一 critiqueId 对账。质检意见不注入Agent、不自动重跑、不发布、不代表用户反馈（用户问题走 submit_system_feedback）；按建议改流程仍必须 preview_rerun→rerun。机器契约 x-run-quality v1。
+
+| 工具 | 副作用 |
+| --- | --- |
+| `get_run_audit` | read |
+| `submit_run_critique` | write |
+| `list_run_critiques` | read |
+| `get_run_critique` | read |
+| `update_run_critique` | write |
+| `audit_run_with_hermes` | execute |
+
 ## 最小使用闭环
 
 - 已有场景：get_workbench → list_scenes → get_scene（固定版本的输入schema/默认值/示例）→ prepare_scene → submit_scene（先保存UUID runId）→ wait_run → get_run_outputs/get_step_result。
-- 能力选型：list_capabilities 读取统一目录，能力不分基础/专用等级；新场景的数据传递、模板拼装和结构化控制使用core.code本地沙箱执行（不联网、不计费，契约x-code-step）；已授权媒体直接绑定到模型或ComfyUI步骤；逐项计划/素材/提示词的对齐、数量与唯一ID校验用core.code。需要真实文件时用core.code的两个可选开关：localExport提交写盘计划（x-local-export）、fileAccess只读列出授权根目录内的文件名与元数据（x-local-file-access），两者都以管理员配置的local-export根目录为唯一边界、各自独立开关，沙箱本身始终没有文件系统权限。media.select_references、media.image_layout、text.template、core.manual、core.condition、data.select、data.zip、comfyui.h3_long_video、comfyui.long_text_video、comfyui.commerce_pack均标记compatibilityOnly:true，仅保留已有发布快照与历史运行，不再作为新步骤推荐。分支跳过用任意步骤的startCondition开始条件（被跳过步骤输出为null，不再需要条件判断/条件选择步骤）；精确JSON值schema随目录返回。不再新增场景专用步骤；能力缺口先补强或拆出可复用能力，场景特有的数据编排用core.code表达。
+- 能力选型：list_capabilities 读取统一目录，能力不分基础/专用等级；数据传递、模板拼装与结构化控制用core.code本地沙箱（不联网、不计费，契约x-code-step），已授权媒体直接绑定到模型或ComfyUI步骤，逐项计划/素材/提示词的对齐与唯一ID校验也用core.code。core.code可选 localExport（写盘计划，x-local-export）与 fileAccess（只读列目录，x-local-file-access），都以管理员配置的local-export根目录为唯一边界，沙箱本身没有文件系统权限。media.select_references、media.image_layout、text.template、core.manual、core.condition、data.select、data.zip、comfyui.h3_long_video、comfyui.long_text_video、comfyui.commerce_pack 均为 compatibilityOnly（仅兼容旧快照与历史运行）分支跳过用任意步骤的startCondition开始条件（被跳过步骤输出为null）；精确JSON值schema随目录返回。不再新增场景专用步骤；场景特有的数据编排用core.code表达。
 - 新业务：create_scene（先保存scene.id）→ get_scene_draft → update_scene_draft（当前revision）→ validate_scene_draft → publish_scene（先保存UUID publicationId）→ get_scene读取真实发布版；发布不执行生成。
+- 服务（包）运行：prepare_own_package → 保存packageRunId → submit_own_package → get_own_package_run/outputs；原始输入用 get_own_package_run_inputs 读取，可直接作为新提交的 inputValues。
 - 共享选项：list_option_presets查看revision/使用场景 → save_option_preset；恢复旧发布版时共享选项冲突会克隆，已发布快照不变。
 - 局部修订：preview_rerun确认影响范围 → rerun（先保存新runId）；审核用最新reviewId，不绕过waiting。
-- 结果：摘要看状态，输出按key/stepId/itemIndex读取；目录/镜头cursor分页，数组值分段；valueOmitted和valuePage.complete必须检查。媒体返回HTTP地址和稳定source，不塞二进制；终态媒体打包用get_run_media_export/get_own_run_media_export核对revision和下载地址，不生成或下载远程媒体。
+- 结果：摘要看状态，输出按key/stepId/itemIndex读取；目录/镜头cursor分页，数组值分段；valueOmitted和valuePage.complete必须检查。媒体返回HTTP地址和稳定source，不塞二进制；终态媒体打包用get_run_media_export核对revision与下载地址。
 
 ## 一致性与恢复
 

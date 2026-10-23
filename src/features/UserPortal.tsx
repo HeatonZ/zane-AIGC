@@ -1,67 +1,106 @@
 import SystemFeedback from "./SystemFeedback";
 import { useConfirmDialog } from "../components/ConfirmDialog";
-import { sortOwnDrafts } from "../lib/drafts";
-import { getOwnDraft, setOwnDraftFavorite } from "../lib/taskDraftApi";
-import { OwnDraftSaveQueue, sameDraftSnapshot, type OwnDraftSaveSession } from "../lib/userDraftAutosave";
-import { Star } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { LogOut, MessageCircle, Settings2 } from "lucide-react";
 import UserMediaInput, { type UserMediaKind } from "../components/UserMediaInput";
-import ObjectArrayInput from "../components/ObjectArrayInput";
-import { visibleInputFields } from "../lib/workflowInputVisibility";
-import { DraftFavoriteUnconfirmedError, writeDraftFavorite } from "../lib/draftFavoriteWrite";
-import { useEffect, useRef, useState, type FocusEvent } from "react";
 import {
   AccessApiError, accessApi, jsonBody, type Account, type AccessPage,
-  type AvailableScene, type UserScene, type OwnRun, type OwnDraft,
+  type OwnRun,
 } from "../lib/accessApi";
-import {
-  isDefiniteRunRejection, mediaKindByType, mediaKindLabel, uploadedBatchNotice, uploadedInput, uploadFailureMessage,
-} from "../lib/userPortal";
+import { isDefiniteRunRejection, mediaKindByType, mediaKindLabel, uploadedBatchNotice, uploadedInput, uploadFailureMessage } from "../lib/userPortal";
 import UserRunDetail from "../components/UserRunDetail";
-import { runDate, runStatusLabels } from "../lib/runDetails";
-import { parseObjectArrayFormValue } from "../lib/objectArrayInput";
-import type { WorkflowInputField } from "../types";
+import PackageRunInputs from "../components/PackageRunInputs";
+import type { ReusableInputs } from "../lib/packageRunInputs";
+import { reusableInputs } from "../lib/packageRunInputs";
+import CopyableId from "../components/CopyableId";
+import { RecentShot } from "../components/RecentShot";
+import { ServicePage, ServiceCard, ServiceQuickStarts, ServiceActionBar, serviceThemeStyle, useBlockAnchor, useScrolled, type ServicePresentation, type ServicePageAction } from "../components/ServicePage";
+import { ServiceWorkspace } from "../components/ServiceWorkspace";
+import { formatPoints } from "../../server/domain/creditUnits.js";
+import "../styles/client.css";
+import "../styles/service-page.css";
 
-type PendingUpload = { id: string; key: string; type: string; sceneId: string };
+type PendingUpload = { id: string; key: string; type: string };
+/**
+ * 用户面的服务运行视图：只包含「做到哪一步、要不要确认、出了什么结果」。
+ * 组件名、步骤名、子运行ID、内部错误原文属于实现细节，服务端不会下发，这里也不预留字段。
+ */
+type ServiceRunSummary = {
+  packageRunId: string; title: string; status: string; stage?: "running" | "waiting_confirm" | "completed" | "failed" | "cancelled";
+  createdAt: string; progress?: { total: number; completed: number; current: number };
+  /** 列表投影可能不带；详情一定带，用于「再做一次」回到同一服务。 */
+  packageId?: string;
+};
+type ServiceRunDetail = ServiceRunSummary & {
+  packageId?: string;
+  confirmation?: { step: number; total: number; itemId: string; actions: string[] };
+  retry?: { step: number; total: number; itemId: string; action: "retry" };
+  credit?: { total: number; settlement?: { charged: number; refunded: number } };
+};
+type ServicePackage = {
+  packageId: string; versionId: string; version: string; title: string; summary?: string;
+  itemCount: number; headline?: string; accent?: string; showcase?: Array<{ url: string; caption?: string }>;
+};
+type ActivePackage = ServicePackage & {
+  description?: string;
+  fields: Array<{ key: string; label: string; type: string; required: boolean; hidden: boolean; options?: string[]; defaultValue?: unknown; minimum?: number; maximum?: number }>;
+  inputDefaults: Record<string, unknown>;
+  steps: Array<{ itemId: string; name: string; confirmAfter?: boolean }>;
+  presentation?: ServicePresentation;
+};
+type ClientPage = "services" | "results" | "account" | "feedback";
+type Shot = { key: string; label: string; kind: "image" | "video"; url: string };
 
-export default function UserPortal({ user, onLogout, onAdmin }: {
-  user: Account; onLogout: () => void; onAdmin?: () => void;
+/** 用户面状态只说人话：不出现 queued/running 这类内部词。 */
+function serviceStageLabel(stage?: string) {
+  if (stage === "waiting_confirm") return "等你确认";
+  if (stage === "completed") return "已完成";
+  if (stage === "failed") return "没成功";
+  if (stage === "cancelled") return "已取消";
+  return "进行中";
+}
+/** 状态颜色与文案同一处定义，避免详情卡和列表各写一套导致颜色缺失。 */
+function serviceStageTone(stage?: string): "good" | "warn" | "bad" | undefined {
+  if (stage === "completed") return "good";
+  if (stage === "waiting_confirm") return "warn";
+  if (stage === "failed") return "bad";
+  return undefined;
+}
+
+// 没有独立首页：打开客户端直接落在服务页，服务就是产品本身。
+const navItems: Array<[ClientPage, string]> = [["services", "服务"], ["results", "作品"]];
+
+export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: {
+  user: Account; /** 卡密绑定的服务：有值时直接进入该服务，跳过目录。 */ entryPackageId?: string; onLogout: () => void; onAdmin?: () => void;
 }) {
   const api = <T,>(path: string, options?: RequestInit) => accessApi<T>(path, options, user.id);
-  const [page, setPage] = useState<"scenes" | "drafts" | "runs" | "feedback">("scenes");
+  const [page, setPage] = useState<ClientPage>("services");
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
-  const [scenes, setScenes] = useState<AvailableScene[]>([]);
-  const [sceneCursor, setSceneCursor] = useState<string>();
-  const [scene, setScene] = useState<UserScene>();
-  const [values, setValues] = useState<Record<string, unknown>>({});
-  const [runTitle, setRunTitle] = useState("");
-  const valuesRef = useRef(values);
-  valuesRef.current = values;
   const [busy, setBusy] = useState(false);
-  const [uploadingKey, setUploadingKey] = useState("");
-  const [draftSaving, setDraftSaving] = useState(false);
-  const [draftAutoSaveStatus, setDraftAutoSaveStatus] = useState<"idle" | "pending" | "saving" | "saved" | "error" | "reconcile" | "review">("idle");
-  const draftSaveCountRef = useRef(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [drafts, setDrafts] = useState<OwnDraft[]>([]);
-  const [draftCursor, setDraftCursor] = useState<string>();
-  const [favoriteBusy, setFavoriteBusy] = useState(false);
-  const favoriteBusyRef = useRef(false);
-  const [favoriteUnknownId, setFavoriteUnknownId] = useState("");
-  const draftReadSequence = useRef(0);
-  const [draftId, setDraftId] = useState<string>(() => crypto.randomUUID());
-  const [draftRevision, setDraftRevision] = useState(0);
-  const [draftUnknown, setDraftUnknown] = useState(false);
-  const draftSessionRef = useRef<OwnDraftSaveSession | null>(null);
-  const draftSaveQueueRef = useRef<OwnDraftSaveQueue | null>(null);
-  if (!draftSaveQueueRef.current) {
-    draftSaveQueueRef.current = new OwnDraftSaveQueue(request => api<{ draft: OwnDraft }>("/api/v1/self/drafts", jsonBody(request)));
-  }
-  const [runs, setRuns] = useState<OwnRun[]>([]);
-  const [runCursor, setRunCursor] = useState<string>();
+  // 用户面不再渲染单场景运行列表；保留加载是为了让既有详情入口仍能工作。
+  const [, setRuns] = useState<OwnRun[]>([]);
+  const [, setRunCursor] = useState<string>();
   const [run, setRun] = useState<OwnRun>();
+  const [packages, setPackages] = useState<ServicePackage[]>([]);
+  const [activePackage, setActivePackage] = useState<ActivePackage>();
+  const [packageValues, setPackageValues] = useState<Record<string, unknown>>({});
+  const [estimatedCost, setEstimatedCost] = useState<number | null>(null);
+  const [packageRuns, setPackageRuns] = useState<ServiceRunSummary[]>([]);
+  const [packageRun, setPackageRun] = useState<ServiceRunDetail>();
+  const [credits, setCredits] = useState<{ balance: number; reserved: number; available: number } | null>(null);
   const [uploadUnknown, setUploadUnknown] = useState<PendingUpload[]>([]);
+  const [uploadingKey, setUploadingKey] = useState("");
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number }>();
+  const [ledger, setLedger] = useState<Array<{ entryId: string; delta: number; balanceAfter: number; kind: string; note?: string; createdAt: string }>>([]);
+  const [pageAction, setPageAction] = useState<ServicePageAction>();
+  /** 工作台里刚提交的那一次：用来在右侧原地轮询到结果，而不是跳到「作品」页。 */
+  const [startedAt, setStartedAt] = useState<string>();
+  /** 正在读取哪一次运行的参数（按钮显示 loading，避免连点重复读取）。 */
+  const [reuseBusy, setReuseBusy] = useState("");
+  /** 「再做一次」带过来的参数：打开服务页时覆盖默认值，并在页面上说明带了什么。 */
+  const [prefill, setPrefill] = useState<{ packageId: string; values: Record<string, unknown>; notice: ReusableInputs }>();
   const pendingKey = "zane-studio:run-intent:v1:" + user.id;
   const [pendingRun, setPendingRun] = useState(() => {
     try { return localStorage.getItem(pendingKey) ?? ""; } catch { return ""; }
@@ -70,78 +109,233 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
   runRef.current = run;
   const readSequence = useRef(0);
   const selectingRun = useRef(false);
+  /** 只被授权一个服务时自动进入一次；之后点「服务」仍能回到目录。 */
+  const autoOpenedOnce = useRef(false);
+  const { formRef, resultsRef } = useBlockAnchor(pageAction);
+  const scrolled = useScrolled();
 
-  async function loadScenes(cursor?: string) {
-    const data = await api<AccessPage<AvailableScene>>("/api/v1/self/scenes" + (cursor ? "?cursor=" + encodeURIComponent(cursor) : ""));
-    setScenes(current => cursor ? [...current, ...data.items] : data.items);
-    setSceneCursor(data.nextCursor);
-  }
-  async function loadDrafts(cursor?: string) {
-    const sequence = ++draftReadSequence.current;
-    const data = await api<AccessPage<OwnDraft>>("/api/v1/self/drafts" + (cursor ? "?cursor=" + encodeURIComponent(cursor) : ""));
-    if (sequence !== draftReadSequence.current) return;
-    setDrafts(current => cursor ? [...current, ...data.items] : data.items);
-    setDraftCursor(data.nextCursor);
-  }
-  async function reconcileFavorites() {
-    if (favoriteUnknownId) await api<{ draft: OwnDraft }>("/api/v1/self/drafts/" + encodeURIComponent(favoriteUnknownId));
-    await loadDrafts(); setFavoriteUnknownId("");
-  }
-  async function favoriteDraft(draft: OwnDraft) {
-    if (favoriteBusyRef.current || favoriteUnknownId) return;
-    favoriteBusyRef.current = true; setFavoriteBusy(true); ++draftReadSequence.current;
-    try {
-      const result = await writeDraftFavorite({
-        isFavorite: !draft.isFavorite,
-        write: () => setOwnDraftFavorite(draft.id, { revision: draft.revision, isFavorite: !draft.isFavorite }, user.id),
-        read: () => getOwnDraft(draft.id, user.id),
-        favorite: snapshot => snapshot.draft.isFavorite === true,
-      });
-      setDrafts(current => sortOwnDrafts(current.map(item => item.id === draft.id ? result.snapshot.draft : item)));
-      setDraftCursor(undefined); // The old page cursor cannot be used after reordering.
-      if (result.outcome === "saved" && draftId === draft.id && draftRevision === draft.revision) setDraftRevision(result.snapshot.draft.revision);
-      await loadDrafts();
-      if (result.error) throw new Error(result.error.message + "；已读取服务端状态，请核对后再操作。");
-    } catch (error) {
-      if (error instanceof DraftFavoriteUnconfirmedError) setFavoriteUnknownId(draft.id);
-      throw error;
-    } finally { favoriteBusyRef.current = false; setFavoriteBusy(false); }
-  }
   async function loadRuns(cursor?: string) {
     const data = await api<AccessPage<OwnRun>>("/api/v1/self/runs" + (cursor ? "?cursor=" + encodeURIComponent(cursor) : ""));
     setRuns(current => cursor ? [...current, ...data.items] : data.items);
     setRunCursor(data.nextCursor);
   }
-  async function attempt(action: () => Promise<void>) {
+  async function loadPackages() {
+    const data = await api<{ packages: ServicePackage[] }>("/api/v1/self/packages");
+    setPackages(data.packages);
+    return data.packages;
+  }
+  async function openPackage(packageId: string, options: { silentMissing?: boolean; carried?: typeof prefill } = {}) {
+    const detail = await api<ActivePackage>("/api/v1/self/packages/" + encodeURIComponent(packageId))
+      .catch(error => { if (options.silentMissing) return undefined; throw error; });
+    if (!detail) return;
+    // 预填值显式传入，不读 state：调用方刚 setPrefill 就打开服务时，闭包里还是上一次的渲染值。
+    const carried = options.carried?.packageId === packageId ? options.carried : undefined;
+    const values = { ...detail.inputDefaults, ...carried?.values };
+    setActivePackage(detail);
+    setPackageValues(values);
+    setEstimatedCost(null);
+    setPage("services");
+    setPageAction(undefined);
+    if (carried) setNotice(carried.notice.notice);
+    else setPrefill(undefined);
+    // 预检只读、不计费：打开服务就先算一次上限价，用户填表时能看到「这次要花多少」。
+    try {
+      const prepared = await api<{ costPlan: { total: number }; credits?: typeof credits }>("/api/v1/self/packages/" + encodeURIComponent(packageId) + "/prepare", jsonBody({ versionId: detail.versionId, inputValues: values }));
+      setEstimatedCost(prepared.costPlan?.total ?? 0);
+      if (prepared.credits) setCredits(prepared.credits);
+    } catch { /* 预检失败不阻断打开服务；提交时仍会再算一次 */ }
+  }
+  /** 用历史运行的原始输入重开创建页：仍是新的一次运行，照常预检、确认与计费。 */
+  async function reusePackageInputs(packageId: string, values: Record<string, unknown>, notice: ReusableInputs) {
+    if (!packageId) { setError("无法确定这条运行属于哪个服务，请从服务目录重新打开。"); return; }
+    const carried = { packageId, values, notice };
+    setPrefill(carried);
+    setError("");
+    await openPackage(packageId, { carried });
+  }
+  /** 输入变化后重新预估（防抖），让价格跟着参数走。 */
+  async function refreshEstimate(nextValues: Record<string, unknown>) {
+    if (!activePackage) return;
+    try {
+      const prepared = await api<{ costPlan: { total: number } }>("/api/v1/self/packages/" + encodeURIComponent(activePackage.packageId) + "/prepare", jsonBody({ versionId: activePackage.versionId, inputValues: nextValues }));
+      setEstimatedCost(prepared.costPlan?.total ?? 0);
+    } catch { /* 输入还不完整时预检会失败，保持上一次的估算 */ }
+  }
+  function updatePackageValue(key: string, value: unknown) {
+    const next = { ...packageValues, [key]: value };
+    setPackageValues(next);
+    void refreshEstimate(next);
+  }
+
+  /**
+   * 工作台内「用这组参数」：把那次运行的原始输入填回左侧表单，就地改或直接再生成。
+   * 不跳页、不重开服务——客户在结果旁边就能接着调。
+   * 只填当前发布版仍然声明且合法的字段（媒体复用固定素材引用），丢弃的字段会说明原因。
+   */
+  async function applyRunInputs(packageRunId: string) {
+    if (!activePackage) return;
+    setReuseBusy(packageRunId); setError(""); setNotice("");
+    try {
+      const page = await api<{ inputs: Array<{ key: string; present: boolean; value?: unknown; valueOmitted?: boolean }> }>(
+        "/api/v1/self/package-runs/" + encodeURIComponent(packageRunId) + "/inputs?limit=50&valueLimit=8000",
+      );
+      const reusable = reusableInputs(page.inputs as never, activePackage.fields as never);
+      if (!Object.keys(reusable.values).length) { setNotice(reusable.notice); return; }
+      // 与默认值合并：这次没填的可选字段保持默认，不会被历史空值覆盖。
+      const next = { ...activePackage.inputDefaults, ...reusable.values };
+      setPackageValues(next);
+      void refreshEstimate(next);
+      setNotice(reusable.notice);
+    } catch (e) { setError((e as Error).message); } finally { setReuseBusy(""); }
+  }
+  async function loadPackageRuns() {
+    const data = await api<{ items: ServiceRunSummary[] }>("/api/v1/self/package-runs");
+    setPackageRuns(data.items);
+    return data.items;
+  }
+  async function submitPackage() {
+    if (!activePackage) return;
+    const inWorkspace = activePackage.presentation?.layout === "workspace";
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const prepared = await api<{ costPlan: { total: number }; credits?: typeof credits }>("/api/v1/self/packages/" + encodeURIComponent(activePackage.packageId) + "/prepare", jsonBody({ versionId: activePackage.versionId, inputValues: packageValues }));
+      if (prepared.credits) setCredits(prepared.credits);
+      const total = prepared.costPlan?.total ?? 0;
+      if (!(await confirm({ message: total > 0 ? "本次最多消耗 " + formatPoints(total) + " 积分，跑完按成功项结算并退还差额。确认提交？" : "确认提交这个服务？", confirmLabel: "确认提交" }))) return;
+      const result = await api<{ packageRun: ServiceRunDetail }>("/api/v1/self/packages/" + encodeURIComponent(activePackage.packageId) + "/runs", jsonBody({ versionId: activePackage.versionId, inputValues: packageValues, packageRunId: crypto.randomUUID() }));
+      setPackageRun(result.packageRun);
+      if (inWorkspace) {
+        // 工作台：留在当前页，结果在右侧原地出现；输入不清空，方便改一句再生成。
+        setStartedAt(new Date().toISOString());
+        await loadPackageRuns();
+      } else {
+        setActivePackage(undefined);
+        setPage("results");
+        setPageAction(undefined);
+        await loadPackageRuns();
+      }
+      await loadCredits();
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
+  async function confirmPackageItem(itemId: string, action: "approve" | "redo" | "retry") {
+    if (!packageRun) return;
+    setBusy(true); setError("");
+    try {
+      const result = await api<{ packageRun: ServiceRunDetail }>("/api/v1/self/package-runs/" + encodeURIComponent(packageRun.packageRunId) + "/items/" + encodeURIComponent(itemId) + "/confirm", jsonBody({ packageRunId: packageRun.packageRunId, itemId, action }));
+      setPackageRun(result.packageRun);
+      await loadPackageRuns();
+      await loadCredits();
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
+  async function loadCredits() {
+    const data = await api<{ balance: number; reserved: number; available: number }>("/api/v1/self/credits");
+    setCredits(data);
+    return data;
+  }
+  async function loadLedger() {
+    const data = await api<{ items: typeof ledger }>("/api/v1/self/credits/entries?limit=20");
+    setLedger(data.items);
+  }
+  /**
+   * 媒体上传：一次选择多个文件时逐个上传，每个文件一个 assetId；
+   * 网络中断的批次保留待核验清单，绝不合并或丢弃回执。
+   */
+  async function upload(key: string, type: string, files: File[]) {
+    if (files.length === 0) return;
+    const kind = mediaKindByType(type), label = mediaKindLabel(kind);
+    setBusy(true); setUploadingKey(key); setError(""); setUploadProgress({ completed: 0, total: files.length });
+    const pending: PendingUpload[] = [], failures: string[] = [];
+    let uploaded = 0, settled = 0;
+    for (const file of files) {
+      const id = crypto.randomUUID();
+      try {
+        const data = await api<{ reference: unknown }>("/api/v1/self/assets/upload?" + new URLSearchParams({ assetId: id, name: file.name, kind }), {
+          method: "POST", body: file, headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
+        });
+        setPackageValues(current => ({ ...current, [key]: uploadedInput(current[key], type, data.reference) }));
+        uploaded += 1;
+      } catch (e) {
+        if (e instanceof AccessApiError && e.status === 0) pending.push({ id, key, type });
+        failures.push((e as Error).message + " 素材ID：" + id);
+      } finally { settled += 1; setUploadProgress({ completed: settled, total: files.length }); }
+    }
+    if (pending.length) setUploadUnknown(current => [...current, ...pending]);
+    if (uploaded) setNotice(uploadedBatchNotice(uploaded, label));
+    if (failures.length) setError(uploadFailureMessage(failures, label));
+    setBusy(false); setUploadingKey(""); setUploadProgress(undefined);
+  }
+  async function reconcileUploads() {
+    if (!uploadUnknown.length) return;
+    const remaining: PendingUpload[] = []; let reconciled = 0;
+    for (const item of uploadUnknown) {
+      try {
+        const data = await api<{ reference: unknown }>("/api/v1/self/assets/" + encodeURIComponent(item.id));
+        setPackageValues(current => ({ ...current, [item.key]: uploadedInput(current[item.key], item.type, data.reference) }));
+        reconciled += 1;
+      } catch { remaining.push(item); }
+    }
+    setUploadUnknown(remaining);
+    setNotice(remaining.length ? `已核验 ${reconciled} 个原素材ID，未重复上传；${remaining.length} 个回执仍待核验` : "已核验原素材ID，未重复上传");
+  }
+
+  // 返回值会被忽略，但允许调用方传回数据的加载函数（如 loadPackages 返回目录）。
+  async function attempt(action: () => Promise<unknown>) {
     setError("");
     try { await action(); } catch (e) { setError((e as Error).message); }
   }
-  useEffect(() => { void attempt(() => loadScenes()); }, []);
+
+  useEffect(() => { void attempt(() => loadPackages()); }, []);
+  // 卡密绑定了服务：登录后直接进那个服务，用户不需要在目录里挑。
   useEffect(() => {
-    if (page === "drafts") void attempt(() => loadDrafts());
-    if (page === "runs") void attempt(() => loadRuns());
+    const bound = entryPackageId ?? (/(?:^#|&)service=([^&]+)/.exec(window.location.hash)?.[1]
+      ? decodeURIComponent(/(?:^#|&)service=([^&]+)/.exec(window.location.hash)![1]) : undefined);
+    if (!bound) return;
+    void attempt(async () => {
+      await openPackage(bound, { silentMissing: true });
+      setPage("services");
+    });
+  }, [entryPackageId]);
+  useEffect(() => { void attempt(async () => { await loadCredits(); }); }, []);
+  useEffect(() => {
+    if (page === "results") void attempt(() => loadRuns());
+    if (page === "account") void attempt(async () => { await loadCredits(); await loadLedger(); });
+    if (page === "services") void attempt(async () => {
+      const list = await loadPackages();
+      await loadPackageRuns(); await loadCredits(); await loadRuns();
+      // 只被授权一个服务时直接进那个服务：客户不需要先看一屏只有一张卡的目录。
+      // 点顶部「服务」仍可回到目录（那时 activePackage 已被清掉，但 users.length 仍是 1，
+      // 所以用 autoOpenedOnce 保证只自动进一次，不让用户退不出来）。
+      if (!activePackage && list.length === 1 && !autoOpenedOnce.current) {
+        autoOpenedOnce.current = true;
+        await openPackage(list[0].packageId, { silentMissing: true });
+      }
+    });
   }, [page]);
+  // 工作台：提交后原地轮询那一次服务运行，结果一到就替换右侧画布，不跳页。
   useEffect(() => {
-    const flushWhenHidden = () => {
-      if (document.visibilityState === "hidden") void flushDraftAutosave().catch(reason => setError((reason as Error).message));
+    if (!startedAt || !packageRun) return;
+    if (!["queued", "running", "waiting_confirm"].includes(packageRun.status)) return;
+    let stopped = false;
+    let timer: number | undefined;
+    let delayMs = 2000;
+    const id = packageRun.packageRunId;
+    const tick = () => {
+      if (stopped) return;
+      if (document.hidden) { timer = window.setTimeout(tick, delayMs); return; }
+      void api<ServiceRunDetail>("/api/v1/self/package-runs/" + encodeURIComponent(id))
+        .then(value => {
+          if (stopped) return;
+          const changed = value.stage !== packageRun.stage || value.progress?.completed !== packageRun.progress?.completed;
+          delayMs = changed ? 2000 : Math.min(delayMs * 1.5, 8000);
+          setPackageRun(value);
+          if (!["queued", "running", "waiting_confirm"].includes(value.status)) void loadPackageRuns();
+        })
+        .catch(() => { delayMs = Math.min(delayMs * 1.5, 8000); })
+        .finally(() => { if (!stopped) timer = window.setTimeout(tick, delayMs); });
     };
-    document.addEventListener("visibilitychange", flushWhenHidden);
-    window.addEventListener("pagehide", flushWhenHidden);
-    return () => {
-      document.removeEventListener("visibilitychange", flushWhenHidden);
-      window.removeEventListener("pagehide", flushWhenHidden);
-    };
-  }, [page, scene, values, draftId]);
-  useEffect(() => {
-    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
-      const session = draftSessionRef.current;
-      if (!session || session.editVersion <= session.savedEditVersion) return;
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", warnBeforeUnload);
-    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [scene, values, draftId]);
+    timer = window.setTimeout(tick, delayMs);
+    return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [startedAt, packageRun?.packageRunId, packageRun?.status, packageRun?.stage, packageRun?.progress?.completed]);
   useEffect(() => {
     if (!run || busy || !["queued", "running", "cancelling", "waiting"].includes(run.status)) return;
     let stopped = false;
@@ -174,182 +368,12 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
   }, [run?.runId, run?.status, busy]);
 
-  async function openScene(id: string, draft?: OwnDraft) {
-    const previous = draftSessionRef.current;
-    if (previous?.reviewRequired && previous.editVersion > previous.savedEditVersion
-      && !(await confirm({ message: "本页输入与服务端草稿不同。继续打开另一份草稿会放弃本页输入，确定继续吗？", tone: "danger" }))) return;
-    await flushDraftAutosave();
-    const selected = await api<UserScene>("/api/v1/self/scenes/" + encodeURIComponent(id));
-    if (draft && draft.versionId !== selected.versionId) {
-      setError("草稿绑定的发布版已变化。原草稿仍在服务端，请核对新表单后再修改和保存。");
-    }
-    const nextDraftId = draft?.id ?? crypto.randomUUID();
-    const nextValues = draft?.inputValues ?? selected.inputDefaults;
-    draftSessionRef.current = {
-      id: nextDraftId, revision: draft?.revision ?? 0, sceneId: selected.sceneId, versionId: selected.versionId, title: selected.title, runTitle: draft?.runTitle, hasServerDraft: Boolean(draft),
-      editVersion: 0, savedEditVersion: 0, enqueuedEditVersion: 0, reconcileRequired: false, reviewRequired: false,
-    };
-    setScene(selected);
-    valuesRef.current = nextValues;
-    setValues(nextValues);
-    setDraftId(nextDraftId);
-    setRunTitle(draft?.runTitle ?? "");
-    setDraftRevision(draft?.revision ?? 0);
-    setDraftUnknown(false);
-    setDraftAutoSaveStatus(draft ? "saved" : "idle");
-    setNotice("");
-    setPage("scenes");
-  }
-  function updateValues(update: (current: Record<string, unknown>) => Record<string, unknown>) {
-    const session = draftSessionRef.current;
-    if (session) { session.editVersion += 1; session.reviewRequired = false; }
-    setDraftAutoSaveStatus(session ? "pending" : "idle");
-    setError("");
-    setNotice("");
-    const next = update(valuesRef.current);
-    valuesRef.current = next;
-    setValues(next);
-  }
-  function updateRunTitle(next: string) {
-    const session = draftSessionRef.current;
-    if (session) { session.runTitle = next; session.editVersion += 1; session.reviewRequired = false; }
-    setDraftAutoSaveStatus(session ? "pending" : "idle");
-    setError("");
-    setNotice("");
-    setRunTitle(next);
-  }
-  function autosaveDraftOnBlur() {
-    void flushDraftAutosave().catch(() => undefined);
-  }
-  function handleDraftFieldBlur(event: FocusEvent<HTMLElement>) {
-    const relatedTarget = event.relatedTarget;
-    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
-    if (relatedTarget instanceof HTMLButtonElement) return;
-    autosaveDraftOnBlur();
-  }
-  function inputs(sourceValues = values, sourceScene = scene, validateRequired = false) {
-    const result = { ...sourceValues };
-    for (const field of sourceScene?.fields ?? []) {
-      const value = result[field.key];
-      if (field.type === "number" && typeof value === "string" && value.trim()) {
-        const number = Number(value);
-        if (!Number.isFinite(number)) throw new Error(field.label + "需要有效数字");
-        if (validateRequired && field.minimum !== undefined && number < field.minimum) throw new Error(field.label + "不能小于 " + field.minimum);
-        if (validateRequired && field.maximum !== undefined && number > field.maximum) throw new Error(field.label + "不能大于 " + field.maximum);
-        result[field.key] = number;
-      }
-      if (field.type === "json" && typeof value === "string" && value.trim()) {
-        try { result[field.key] = JSON.parse(value); } catch { throw new Error(field.label + "需要有效JSON"); }
-      }
-      if (field.type === "json" && field.inputMode === "object_array") result[field.key] = parseObjectArrayFormValue({ ...field, type: "json" } as WorkflowInputField, value, validateRequired);
-    }
-    return result;
-  }
-  async function saveDraftSnapshot(session: OwnDraftSaveSession, inputValues: Record<string, unknown>, editVersion: number, force = false) {
-    if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
-    try {
-      if (session.pendingWrite && session.enqueuedEditVersion >= editVersion) {
-        if (draftSessionRef.current === session) setDraftAutoSaveStatus("saving");
-        await session.pendingWrite;
-      } else if (session.savedEditVersion < editVersion || (force && !session.hasServerDraft)) {
-        draftSaveCountRef.current += 1;
-        if (draftSessionRef.current === session) setDraftAutoSaveStatus("saving");
-        setDraftSaving(true);
-        try {
-          await draftSaveQueueRef.current!.save(session, inputValues, editVersion);
-        } finally {
-          draftSaveCountRef.current = Math.max(0, draftSaveCountRef.current - 1);
-          setDraftSaving(draftSaveCountRef.current > 0);
-        }
-      }
-    } catch (error) {
-      if (draftSessionRef.current === session) {
-        if (session.reconcileRequired) setDraftUnknown(true);
-        setDraftAutoSaveStatus(session.reconcileRequired ? "reconcile" : "error");
-        setError((error as Error).message + " 草稿ID：" + session.id);
-      }
-      throw error;
-    }
-    if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
-    if (draftSessionRef.current === session) {
-      setDraftRevision(session.revision);
-      setDraftUnknown(false);
-      setDraftAutoSaveStatus(session.reviewRequired ? "review" : session.editVersion > session.savedEditVersion ? "pending" : "saved");
-    }
-    return session.revision;
-  }
-  async function flushDraftAutosave() {
-    const session = draftSessionRef.current;
-    if (!session) return;
-    if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
-    if (session.reviewRequired) return;
-    if (session.pendingWrite) await session.pendingWrite;
-    if (session.reconcileRequired) throw new Error("草稿写入回执待核对，请先读取原草稿ID。");
-    if (session.editVersion <= session.savedEditVersion) return;
-    if (!scene) throw new Error("当前草稿表单尚未就绪，未自动保存");
-    let inputValues: Record<string, unknown>;
-    try { inputValues = inputs(valuesRef.current, scene); }
-    catch (reason) {
-      setDraftAutoSaveStatus("error");
-      setError(reason instanceof Error ? reason.message : "草稿输入暂时无法自动保存");
-      throw reason;
-    }
-    await saveDraftSnapshot(session, inputValues, session.editVersion);
-  }
-  async function navigateToPage(nextPage: typeof page) {
-    if (page === "scenes" && scene && nextPage !== "scenes") await flushDraftAutosave();
+  async function navigateToPage(nextPage: ClientPage) {
     setPage(nextPage);
+    setPageAction(undefined);
+    // 点顶部「服务」= 回到服务目录；否则已打开的服务页会一直占着，导航看起来没反应。
+    if (nextPage === "services") setActivePackage(undefined);
     setError("");
-  }
-  async function save() {
-    if (!scene) return;
-    const session = draftSessionRef.current;
-    if (!session) { setError("当前草稿表单尚未就绪"); return; }
-    if (session.reviewRequired && !(await confirm({ message: "服务端草稿与本页输入不同。确定用本页内容覆盖服务端当前版本吗？" }))) return;
-    session.reviewRequired = false;
-    setBusy(true); setError(""); setNotice("");
-    try {
-      const revision = await saveDraftSnapshot(session, inputs(), session.editVersion, true);
-      setNotice("服务端已保存 · r" + revision);
-    } catch (e) {
-      if (session.reconcileRequired) setDraftUnknown(true);
-      setDraftAutoSaveStatus(session.reconcileRequired ? "reconcile" : "error");
-      setError((e as Error).message + " 草稿ID：" + session.id);
-    } finally { setBusy(false); }
-  }
-  async function reconcileDraft() {
-    const session = draftSessionRef.current;
-    if (!session) throw new Error("当前草稿表单尚未就绪");
-    const data = await api<{ draft: OwnDraft }>("/api/v1/self/drafts/" + encodeURIComponent(session.id));
-    const failed = session.failedWrite;
-    const matchesFailed = Boolean(failed && sameDraftSnapshot(data.draft, failed));
-    const matchesLastSaved = Boolean(session.lastSaved && sameDraftSnapshot(data.draft, session.lastSaved));
-    session.revision = data.draft.revision;
-    session.reconcileRequired = false;
-    session.enqueuedEditVersion = session.savedEditVersion;
-    setDraftRevision(data.draft.revision);
-    setDraftUnknown(false);
-    if (matchesFailed && failed) {
-      session.savedEditVersion = Math.max(session.savedEditVersion, failed.editVersion);
-      session.enqueuedEditVersion = session.savedEditVersion;
-      session.lastSaved = failed;
-      session.failedWrite = undefined;
-      session.reviewRequired = false;
-      setNotice("已确认原草稿ID的保存回执 · r" + data.draft.revision);
-      setDraftAutoSaveStatus(session.editVersion > session.savedEditVersion ? "pending" : "saved");
-    } else if (matchesLastSaved && session.lastSaved) {
-      session.savedEditVersion = Math.max(session.savedEditVersion, session.lastSaved.editVersion);
-      session.enqueuedEditVersion = session.savedEditVersion;
-      session.failedWrite = undefined;
-      session.reviewRequired = false;
-      setNotice("已读取原草稿ID并确认服务端基线 · r" + data.draft.revision);
-      setDraftAutoSaveStatus(session.editVersion > session.savedEditVersion ? "pending" : "saved");
-    } else {
-      session.failedWrite = undefined;
-      session.reviewRequired = true;
-      setNotice("服务端草稿内容已变化；本页输入已保留。核对后可手动保存，或重新打开服务端草稿。");
-      setDraftAutoSaveStatus("review");
-    }
   }
   function retainRunId(id: string) {
     // Save before the request. If browser storage is unavailable, do not submit.
@@ -360,30 +384,9 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
     localStorage.removeItem(pendingKey);
     setPendingRun("");
   }
-  async function submit() {
-    if (!scene || pendingRun) return;
-    setBusy(true); setError(""); setNotice("");
-    let id = "";
-    try {
-      await flushDraftAutosave();
-      const inputValues = inputs(values, scene, true);
-      await api("/api/v1/self/scenes/" + scene.sceneId + "/prepare", jsonBody({ versionId: scene.versionId, inputValues }));
-      if (!(await confirm({ message: "确认提交？此场景可能调用外部模型并产生费用，后续审核也可能继续生成。", confirmLabel: "确认提交" }))) return;
-      id = crypto.randomUUID();
-      retainRunId(id);
-      const accepted = await api<OwnRun>("/api/v1/self/scenes/" + scene.sceneId + "/runs", jsonBody({
-        versionId: scene.versionId, inputValues, runId: id, runTitle: runTitle.trim() || scene.title,
-      }));
-      clearRunId(); setRun(accepted); setPage("runs");
-      await loadRuns();
-    } catch (e) {
-      if (id && isDefiniteRunRejection(e)) clearRunId();
-      setError((e as Error).message);
-    } finally { setBusy(false); }
-  }
   async function reconcileRun() {
     const current = await api<OwnRun>("/api/v1/self/runs/" + pendingRun);
-    setRun(current); clearRunId(); setPage("runs");
+    setRun(current); clearRunId(); setPage("results");
     setNotice("已确认原任务，无需重复提交");
   }
   async function selectRun(id: string) {
@@ -408,215 +411,422 @@ export default function UserPortal({ user, onLogout, onAdmin }: {
         : kind === "resume" ? { newRunId } : {};
       const updated = await api<OwnRun>("/api/v1/self/runs/" + run.runId + "/" + kind, jsonBody(body));
       if (newRunId) clearRunId();
-      setRun(updated); 
+      setRun(updated);
       await loadRuns();
     } catch (e) {
       if (newRunId && isDefiniteRunRejection(e)) clearRunId();
       setError((e as Error).message + "；请先刷新任务状态或按原提交ID对账。");
     } finally { setBusy(false); }
   }
-  async function upload(key: string, type: string, files: File[]) {
-    if (!scene || files.length === 0) return;
-    const kind = mediaKindByType(type), label = mediaKindLabel(kind);
-    setBusy(true); setUploadingKey(key); setError(""); setUploadProgress({ completed: 0, total: files.length });
-    const pending: PendingUpload[] = [], failures: string[] = [];
-    let uploaded = 0, settled = 0;
-    // One selected file is one asset upload with its own assetId; a batch never merges or drops receipts.
-    for (const file of files) {
-      const id = crypto.randomUUID();
-      try {
-        const data = await api<{ reference: unknown }>("/api/v1/self/assets/upload?" + new URLSearchParams({ assetId: id, name: file.name, kind }), {
-          method: "POST", body: file, headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
-        });
-        updateValues(current => ({ ...current, [key]: uploadedInput(current[key], type, data.reference) }));
-        uploaded += 1;
-      } catch (e) {
-        if (e instanceof AccessApiError && e.status === 0) pending.push({ id, key, type, sceneId: scene.sceneId });
-        failures.push((e as Error).message + " 素材ID：" + id);
-      } finally { settled += 1; setUploadProgress({ completed: settled, total: files.length }); }
-    }
-    if (pending.length) setUploadUnknown(current => [...current, ...pending]);
-    if (uploaded) setNotice(uploadedBatchNotice(uploaded, label));
-    if (failures.length) setError(uploadFailureMessage(failures, label));
-    setBusy(false); setUploadingKey(""); setUploadProgress(undefined);
-  }
-  async function reconcileUploads() {
-    if (!uploadUnknown.length) return;
-    const remaining: PendingUpload[] = []; let reconciled = 0;
-    for (const item of uploadUnknown) {
-      try {
-        const data = await api<{ reference: unknown }>("/api/v1/self/assets/" + encodeURIComponent(item.id));
-        if (scene?.sceneId === item.sceneId) {
-          updateValues(current => ({ ...current, [item.key]: uploadedInput(current[item.key], item.type, data.reference) }));
-        }
-        reconciled += 1;
-      } catch { remaining.push(item); }
-    }
-    setUploadUnknown(remaining);
-    setNotice(remaining.length ? `已核验 ${reconciled} 个原素材ID，未重复上传；${remaining.length} 个回执仍待核验` : "已核验原素材ID，未重复上传");
-  }
-  async function backToSceneList() {
-    const session = draftSessionRef.current;
-    if (session?.reviewRequired && session.editVersion > session.savedEditVersion
-      && !(await confirm({ message: "服务端草稿与本页输入不同。返回场景列表会放弃本页输入，确定继续吗？", tone: "danger" }))) return;
-    await flushDraftAutosave();
-    draftSessionRef.current = null;
-    setScene(undefined);
-    setDraftAutoSaveStatus("idle");
-  }
-  async function logout() {
-    const session = draftSessionRef.current;
-    if (session?.reviewRequired && session.editVersion > session.savedEditVersion
-      && !(await confirm({ message: "服务端草稿与本页输入不同。退出会放弃本页输入，确定继续吗？", tone: "danger" }))) return;
-    await flushDraftAutosave();
-    onLogout();
-  }
-  async function returnToAdmin() {
-    const session = draftSessionRef.current;
-    if (session?.reviewRequired && session.editVersion > session.savedEditVersion
-      && !(await confirm({ message: "服务端草稿与本页输入不同。返回管理端会放弃本页输入，确定继续吗？", tone: "danger" }))) return;
-    await flushDraftAutosave();
-    onAdmin?.();
-  }
-  const lockedForm = busy || draftSaving || draftUnknown || uploadUnknown.length > 0;
+  function logout() { onLogout(); }
+  function returnToAdmin() { onAdmin?.(); }
 
-  return <div className="access-shell">
-    <aside className="access-sidebar">
-      <h2>Zane Studio</h2><p>创作中心</p><strong>{user.displayName}</strong>
-      {([['scenes', '可用场景'], ['drafts', '我的草稿'], ['runs', '我的任务'], ['feedback', '系统反馈']] as const).map(([id, label]) =>
-        <button key={id} disabled={busy || draftSaving || draftUnknown} className={page === id ? "active" : ""} onClick={() => void attempt(() => navigateToPage(id))}>{label}</button>)}
-      {onAdmin && <button disabled={busy || draftSaving || draftUnknown} onClick={() => void attempt(returnToAdmin)}>返回管理后台</button>}
-      <button disabled={busy || draftSaving || draftUnknown} onClick={() => void attempt(logout)}>退出登录</button>
-    </aside>
-    <main className="access-main">
-      <header className="access-heading"><div>
-        <h1>{page === "scenes" ? "可用场景" : page === "drafts" ? "我的草稿" : page === "runs" ? "我的任务" : "系统反馈"}</h1>
-        <p>{page === "feedback" ? "提交使用问题或改进建议，由管理员处理；不会自动影响 Agent。" : page === "runs" ? "跟踪任务进度、核对原始输入、查看结果；历史与详情以服务端运行快照为准。" : page === "drafts" ? "收藏常用输入草稿并置顶，快速继续填写和复用；所有确认保存的数据都在服务端。" : scene ? "输入框失焦后会自动保存到服务端，离开表单前也会先保存。" : "只展示你可以使用的已发布场景；所有已保存数据以服务端为准。"}</p>
-      </div></header>
-      {error && <p className="access-error" role="alert">{error}</p>}
-      {notice && <p className="access-success" role="status">{notice}</p>}
-      {pendingRun && <section className="access-card">
-        <strong>有一条提交等待核验</strong><p>任务ID：{pendingRun}。不要重复提交。</p>
-        <button className="button button-outline" onClick={() => void attempt(reconcileRun)}>查询原任务ID</button>
-      </section>}
-      {uploadUnknown.length > 0 && <section className="access-card">
-        <p>媒体上传回执待核验（{uploadUnknown.length}）：{uploadUnknown.map(item => item.id).join("、")}</p>
-        <button className="button button-outline" onClick={() => void attempt(reconcileUploads)}>读取原素材ID</button>
-      </section>}
-      {page === "scenes" && <>
-        <div className="access-inline">
-          <button className="button button-outline" onClick={() => void attempt(async () => { if (scene) await flushDraftAutosave(); await loadScenes(); })}>刷新可用场景</button>
-          {scene && <button className="button button-outline" disabled={lockedForm} onClick={() => void attempt(backToSceneList)}>返回场景列表</button>}
-        </div>
-        {!scene && <div className="access-grid">
-          {scenes.map(item => <button className="access-card access-scene" key={item.sceneId} disabled={lockedForm} onClick={() => void attempt(() => openScene(item.sceneId))}>
-            <h2>{item.title}</h2><p>{item.summary}</p><small>发布版 {item.version}</small>
-          </button>)}
-          {!scenes.length && <section className="access-card"><h2>暂无可用场景</h2><p>请联系管理员授权并发布场景。</p></section>}
-        </div>}
-        {!scene && sceneCursor && <button className="button button-outline" onClick={() => void attempt(() => loadScenes(sceneCursor))}>加载更多场景</button>}
-        {scene && <section className="access-card">
-          <h2>{scene.title}</h2><p>{scene.description || scene.summary}</p><small>固定发布版：{scene.version} · {scene.versionId}</small>
-          <form noValidate onSubmit={e => { e.preventDefault(); void save(); }}>
-            <label className="access-run-title-field" onBlur={handleDraftFieldBlur}>任务标题（可选）
-              <input className="text-input" type="text" maxLength={120} value={runTitle}
-                onChange={event => updateRunTitle(event.target.value)}
-                placeholder="留空则任务记录使用场景标题" aria-label="任务标题（可选）" />
-              <small className="access-muted">最多120个字符；保存在本场景的输入草稿中，提交时作为任务标题。</small>
-            </label>
-            {visibleInputFields(scene.fields).map(field => field.inputMode === "object_array" ? <div className="access-media-field" key={field.key} onBlur={handleDraftFieldBlur}>
-              <div className="access-media-field-label">{field.label}{field.required && <span> *</span>}</div>
-              <ObjectArrayInput field={{ ...field, type: "json" } as WorkflowInputField} value={values[field.key]} disabled={lockedForm} onChange={rows => updateValues(current => ({ ...current, [field.key]: rows }))} />
-            </div> : /image|video|audio/.test(field.type) ? <div className="access-media-field" key={field.key} onBlur={handleDraftFieldBlur}>
-              <div className="access-media-field-label">{field.label}{field.required && <span> *</span>}</div>
-              <UserMediaInput
-                label={field.label}
-                kind={(/audio/.test(field.type) ? "audio" : /video/.test(field.type) ? "video" : "image") as UserMediaKind}
-                multiple={/\[\]|_list|images|videos|audios/.test(field.type)}
-                value={values[field.key]}
-                userId={user.id}
-                disabled={lockedForm}
-                uploading={uploadingKey === field.key}
-                uploadProgress={uploadingKey === field.key ? uploadProgress : undefined}
-                onUpload={files => void upload(field.key, field.type, files)}
-                onSelect={reference => {
-                  updateValues(current => ({ ...current, [field.key]: uploadedInput(current[field.key], field.type, reference) }));
-                  setNotice("已从我的素材库选择素材");
-                }}
-                onMove={(index, offset) => updateValues(current => {
-                  const currentValue = current[field.key];
-                  const items = Array.isArray(currentValue) ? currentValue : currentValue === undefined || currentValue === null || currentValue === "" ? [] : [currentValue];
-                  const target = index + offset;
-                  if (index < 0 || index >= items.length || target < 0 || target >= items.length) return current;
-                  const next = [...items];
-                  [next[index], next[target]] = [next[target], next[index]];
-                  return { ...current, [field.key]: next };
-                })}
-                onRemove={index => updateValues(current => {
-                  const currentValue = current[field.key];
-                  const items = Array.isArray(currentValue) ? currentValue : currentValue === undefined || currentValue === null || currentValue === "" ? [] : [currentValue];
-                  return { ...current, [field.key]: /\[\]|_list|images|videos|audios/.test(field.type) ? items.filter((_item, itemIndex) => itemIndex !== index) : "" };
-                })}
-                onClear={() => updateValues(current => ({ ...current, [field.key]: "" }))}
-              />
-            </div> : <label key={field.key} onBlur={handleDraftFieldBlur}>{field.label}{field.required && <span> *</span>}
-              {field.type === "number" && <small className="access-muted">{field.minimum !== undefined || field.maximum !== undefined ? `范围：${field.minimum ?? "不限"}–${field.maximum ?? "不限"}` : "数字输入"}{!field.required ? " · 可不填" : ""}</small>}
-              {field.type === "boolean" ? <input type="checkbox" disabled={lockedForm} checked={values[field.key] === true} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.checked }))} />
-                : field.type === "select" ? <select className="text-input" disabled={lockedForm} value={String(values[field.key] ?? "")} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))}>
-                  <option value="">请选择</option>{field.options?.map(option => <option key={option}>{option}</option>)}
-                </select> : field.type === "number" ? <input className="text-input" type="number" step="any" min={field.minimum} max={field.maximum} disabled={lockedForm} value={values[field.key] === undefined || values[field.key] === null ? "" : String(values[field.key])} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))} placeholder={field.placeholder} />
-                : <textarea className="text-input" rows={3} disabled={lockedForm} value={typeof values[field.key] === "string" ? values[field.key] as string
-                  : values[field.key] === undefined || values[field.key] === null ? "" : field.type === "json" ? JSON.stringify(values[field.key], null, 2) : String(values[field.key])}
-                  placeholder={field.placeholder} onChange={e => updateValues(current => ({ ...current, [field.key]: e.target.value }))} />}
-            </label>)}
-            <div className="access-inline">
-              <button className="button button-outline" type="submit" disabled={lockedForm}>保存我的草稿</button>
-              <button className="button button-dark" type="button" disabled={lockedForm || !!pendingRun} onClick={() => void submit()}>{busy ? "处理中…" : "提交任务"}</button>
-              <small>草稿 {draftId} · r{draftRevision}</small>
-              <small className="access-muted" role="status" aria-live="polite">{draftAutoSaveStatus === "pending" ? "输入已修改，失焦后自动保存" : draftAutoSaveStatus === "saving" ? "正在自动保存到服务端…" : draftAutoSaveStatus === "saved" ? "已自动保存到服务端" : draftAutoSaveStatus === "error" ? "自动保存未完成；修正输入并失焦后会重试" : draftAutoSaveStatus === "reconcile" ? "保存回执待核对" : draftAutoSaveStatus === "review" ? "服务端内容已变化，请核对后手动保存" : ""}</small>
-            </div>
-            {draftUnknown && <button type="button" className="button button-outline" onClick={() => void attempt(reconcileDraft)}>读取原草稿ID对账</button>}
-            <p className="access-muted">配置、保存草稿和预检不会调用模型。提交及后续审核可能产生费用。</p>
-          </form>
-        </section>}
-      </>}
-      {page === "drafts" && <section className="access-card">
-        <div className="user-run-history-heading"><h2>我的草稿</h2><button className="run-icon-button" disabled={favoriteBusy} onClick={() => void attempt(reconcileFavorites)}>{favoriteUnknownId ? "读取原草稿ID对账" : "刷新草稿"}</button></div>
-        <p className="access-muted">收藏置顶 · 同组最近保存优先</p>
-        <ul className="access-list">{drafts.map(draft => <li key={draft.id}>
-          <span>{draft.runTitle || draft.title}<small>{draft.id} · r{draft.revision}{draft.runTitle ? " · " + draft.title : ""}</small></span>
-          <div className="draft-row-actions">
-            <button className={`draft-favorite-button${draft.isFavorite ? " is-favorite" : ""}`} type="button" aria-pressed={Boolean(draft.isFavorite)} aria-label={`${draft.isFavorite ? "取消收藏" : "收藏"}：${draft.title}`} title={draft.isFavorite ? "取消收藏" : "收藏并置顶"} disabled={favoriteBusy || Boolean(favoriteUnknownId) || lockedForm} onClick={() => void attempt(() => favoriteDraft(draft))}><Star size={15} fill={draft.isFavorite ? "currentColor" : "none"} /><span>{draft.isFavorite ? "已收藏" : "收藏"}</span></button>
-            <button className="button button-outline" disabled={lockedForm || favoriteBusy} onClick={() => void attempt(async () => {
-              const data = await api<{ draft: OwnDraft }>("/api/v1/self/drafts/" + draft.id); await openScene(data.draft.sceneId, data.draft);
-            })}>继续填写</button>
+  const activeRuns = packageRuns.filter(item => ["queued", "running", "waiting_confirm"].includes(item.status));
+  // 服务页主题：优先用详情（草稿期刚改过），回退到目录摘要里的配色。
+  const themeStyle = serviceThemeStyle(activePackage?.presentation);
+
+  /** 结果画廊：结果区块与「作品」页共用，避免两处渲染逻辑不一致。 */
+  function resultGallery(packageRunId: string, emptyHint?: string) {
+    return <ServiceResultGallery packageRunId={packageRunId} emptyHint={emptyHint} />;
+  }
+
+  return <div className="zclient">
+    <header className="zclient-topbar" data-scrolled={scrolled}>
+      <div className="zclient-brand">
+        <span className="zclient-brand-mark">Z</span>
+        <span className="zclient-brand-name">Zane Studio</span>
+      </div>
+      <nav className="zclient-tabs" aria-label="主导航">
+        {navItems.map(([id, label]) => <button key={id} aria-current={page === id || (page === "services" && id === "services") ? "page" : undefined} disabled={busy} onClick={() => void attempt(() => navigateToPage(id))}>{label}</button>)}
+      </nav>
+      <div className="zclient-topbar-right">
+        <span className="zclient-credit" title="可用积分 · 进行中占用 · 总余额">
+          {credits ? formatPoints(credits.available) : "—"}<small>积分</small>
+        </span>
+        <button type="button" className="zclient-icon-button" aria-label="账户" title="账户" onClick={() => void attempt(() => navigateToPage("account"))}><Settings2 size={18} /></button>
+        <button type="button" className="zclient-icon-button" aria-label="帮助与反馈" title="帮助与反馈" onClick={() => void attempt(() => navigateToPage("feedback"))}><MessageCircle size={18} /></button>
+      </div>
+    </header>
+
+    <main className="zclient-main">
+      {page === "services" && activePackage && activePackage.presentation?.layout === "workspace"
+        ? <div style={themeStyle}>
+            {notice && <p className="zclient-notice" data-tone="good" role="status">{notice}</p>}
+            {error && <p className="zclient-notice" data-tone="bad" role="alert">{error}</p>}
+            <ServiceWorkspace
+              presentation={activePackage.presentation}
+              title={activePackage.title}
+              summary={activePackage.summary}
+              credits={credits?.available}
+              cost={estimatedCost}
+              busy={busy}
+              onSubmit={() => void submitPackage()}
+              onBack={() => { setActivePackage(undefined); setPageAction(undefined); }}
+              form={serviceFields()}
+              result={workspaceResult()}
+              history={workspaceHistory()}
+              resultActions={workspaceResultActions()}
+            />
           </div>
-        </li>)}</ul>
-        {!drafts.length && <p>暂无本人草稿。</p>}
-        {draftCursor && <button className="button button-outline" disabled={favoriteBusy || Boolean(favoriteUnknownId)} onClick={() => void attempt(() => loadDrafts(draftCursor))}>加载更多</button>}
-      </section>}
-      {page === "runs" && <>
-        <div className="user-runs-layout">
-          <section className="access-card user-run-history" aria-label="本人任务列表">
-            <div className="user-run-history-heading"><h2>最近任务</h2><button className="run-icon-button" onClick={() => void attempt(() => loadRuns())}>刷新</button></div>
-            <ul className="user-run-history-items">{runs.map(item => <li key={item.runId}>
-              <button className={run?.runId === item.runId ? "active" : ""} onClick={() => void attempt(() => selectRun(item.runId))}>
-                <span className={`business-status ${item.status}`}>{runStatusLabels[item.status]}</span>
-                <strong>{item.runTitle || item.workflowName || item.sceneId}</strong><small>{runDate(item.createdAt)}</small>
-                <small>{item.progress.completed + item.progress.partial} / {item.progress.total} 步完成 · {item.outputCount} 个最终产物</small>
-              </button>
-            </li>)}</ul>
-            {!runs.length && <p>暂无本人任务。</p>}
-            {runCursor && <button className="button button-outline" onClick={() => void attempt(() => loadRuns(runCursor))}>加载更多</button>}
-          </section>
-          {run ? <UserRunDetail key={run.runId} run={run} userId={user.id} busy={busy} submissionPending={!!pendingRun}
-            onRefresh={() => selectRun(run.runId)} onCancel={() => void action("cancel")} onResume={() => void action("resume")}
-            onReview={decision => void action("review", decision)} />
-            : <section className="access-card run-empty-state"><h2>运行详情</h2><p>选择一条任务，查看步骤进度、输入和结果。</p></section>}
-        </div>
-      </>}
-      {page === "feedback" && <SystemFeedback key={user.id} userId={user.id} />}
+        : page === "services" && activePackage
+        ? <div className="zclient-shell is-wide" style={themeStyle}>
+            {notice && <p className="zclient-notice" data-tone="good" role="status">{notice}</p>}
+            {error && <p className="zclient-notice" data-tone="bad" role="alert">{error}</p>}
+            <ServicePage
+              presentation={activePackage.presentation}
+              title={activePackage.title}
+              summary={activePackage.summary}
+              activeAction={pageAction}
+              onAction={setPageAction}
+              onBack={() => { setActivePackage(undefined); setPageAction(undefined); }}
+              formRef={formRef}
+              resultsRef={resultsRef}
+              results={latestResult()}
+              form={<form noValidate className="zclient-form" onSubmit={event => { event.preventDefault(); void submitPackage(); }}>
+                {serviceFields()}
+                {activePackage.steps.length > 1 && <details className="zclient-steps">
+                  <summary>执行过程（{activePackage.steps.length} 步）</summary>
+                  <ol>{activePackage.steps.map(step => <li key={step.itemId}>{step.name}{step.confirmAfter ? "（完成后等你确认）" : ""}</li>)}</ol>
+                </details>}
+                <ServiceActionBar
+                  cost={estimatedCost}
+                  available={credits?.available}
+                  busy={busy}
+                  cta={activePackage.presentation?.resultLabels?.cta}
+                  onSubmit={() => void submitPackage()}
+                />
+              </form>}
+            />
+          </div>
+        : <div className="zclient-shell">
+            <div className="zclient-stack">
+              {error && <p className="zclient-notice" data-tone="bad" role="alert">{error}</p>}
+              {notice && <p className="zclient-notice" data-tone="good" role="status">{notice}</p>}
+
+              {(pendingRun || uploadUnknown.length > 0) && <section className="zclient-card">
+                <h2>待核验</h2>
+                {pendingRun && <p className="zclient-muted">有一条提交尚未取得回执，请不要重复提交。<button className="zclient-btn zclient-btn-ghost" onClick={() => void attempt(reconcileRun)}>查询原任务</button></p>}
+                {uploadUnknown.length > 0 && <p className="zclient-muted">有 {uploadUnknown.length} 个上传待核验。<button className="zclient-btn zclient-btn-ghost" onClick={() => void attempt(reconcileUploads)}>核对上传</button></p>}
+              </section>}
+
+              {page === "services" && <>
+                <div className="zclient-heading">
+                  <div>
+                    <span className="zclient-eyebrow">服务</span>
+                    <h1>全部服务</h1>
+                    <p>每个服务有自己的页面与流程，打开就能用。</p>
+                  </div>
+                </div>
+                {activeRuns.length > 0 && <section className="zclient-section">
+                  <div className="zclient-section-head"><h2>进行中</h2></div>
+                  <div className="zclient-card zclient-card-flat">
+                    <ul className="zclient-list">{activeRuns.map(item => <li key={item.packageRunId}>
+                      <div className="zclient-list-item" role="button" tabIndex={busy ? -1 : 0}
+                        aria-label={`查看 ${item.title}`}
+                        onClick={() => { if (!busy) { setPackageRun(item); setPage("results"); } }}
+                        onKeyDown={event => { if (!busy && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setPackageRun(item); setPage("results"); } }}>
+                        <span className="zclient-list-main">
+                          <strong className="zclient-list-title">{item.title}</strong>
+                          <CopyableId id={item.packageRunId} label="编号" compact />
+                        </span>
+                        <span className="zclient-pill" data-tone={serviceStageTone(item.stage)}>{serviceStageLabel(item.stage)}</span>
+                        <span className="zclient-list-chevron" aria-hidden="true">›</span>
+                      </div>
+                    </li>)}</ul>
+                  </div>
+                </section>}
+
+                <div className="zclient-services">
+                  {packages.map(item => <ServiceCard key={item.packageId}
+                    title={item.headline ?? item.title}
+                    summary={item.summary}
+                    accent={item.accent}
+                    cover={item.showcase?.[0]?.url}
+                    itemCount={item.itemCount}
+                    disabled={busy}
+                    onOpen={() => void attempt(() => openPackage(item.packageId))} />)}
+                </div>
+                {!packages.length && <div className="zclient-card zclient-empty"><div>暂无可用的服务</div><div>请联系管理员开通并发布。</div></div>}
+              </>}
+
+              {page === "results" && <>
+                <div className="zclient-heading">
+                  <div>
+                    <span className="zclient-eyebrow">我的作品</span>
+                    <h1>作品</h1>
+                    <p>每次任务的产出都在这里，按任务分组。</p>
+                  </div>
+                </div>
+
+                {packageRun && <section className="zclient-card">
+                  <div className="zclient-row" style={{ justifyContent: "space-between" }}>
+                    <h2 style={{ margin: 0 }}>{packageRun.title}</h2>
+                    <div className="zclient-row">
+                      <span className="zclient-pill" data-tone={serviceStageTone(packageRun.stage)}>{serviceStageLabel(packageRun.stage)}</span>
+                      <button className="zclient-btn zclient-btn-ghost" onClick={() => void attempt(async () => { const latest = await api<ServiceRunDetail>("/api/v1/self/package-runs/" + encodeURIComponent(packageRun.packageRunId)); setPackageRun(latest); })}>刷新</button>
+                    </div>
+                  </div>
+                  <CopyableId id={packageRun.packageRunId} />
+                  {packageRun.progress && packageRun.progress.completed > 0 && resultGallery(packageRun.packageRunId)}
+                  {packageRun.progress && packageRun.progress.total > 1 && <p className="zclient-muted">已完成 {packageRun.progress.completed} / {packageRun.progress.total} 步</p>}
+                  {packageRun.stage === "failed" && <div className="zclient-notice" data-tone="bad">
+                    <span>这一步没有成功。已消耗的积分会自动退回。</span>
+                    {packageRun.retry && <button className="zclient-btn zclient-btn-primary" disabled={busy} onClick={() => void confirmPackageItem(packageRun.retry!.itemId, "retry")}>重试</button>}
+                  </div>}
+                  {packageRun.confirmation && <div className="zclient-row">
+                    <span className="zclient-muted">第 {packageRun.confirmation.step} 步已完成，满意就继续。</span>
+                    <button className="zclient-btn zclient-btn-primary" disabled={busy} onClick={() => void confirmPackageItem(packageRun.confirmation!.itemId, "approve")}>满意，继续</button>
+                    <button className="zclient-btn" disabled={busy} onClick={() => void confirmPackageItem(packageRun.confirmation!.itemId, "redo")}>重做这一步</button>
+                  </div>}
+                  <details className="zclient-steps">
+                    <summary>本次提交的原始输入</summary>
+                    <PackageRunInputs packageRunId={packageRun.packageRunId} userId={user.id} busy={busy}
+                      onReuse={(values, reusable) => void attempt(() => reusePackageInputs(packageRun.packageId ?? "", values, reusable))} />
+                  </details>
+                </section>}
+
+                <section className="zclient-card">
+                  <h2>任务记录</h2>
+                  {!packageRuns.length && <div className="zclient-empty"><div>还没有任务</div><div>从「服务」开始第一个。</div></div>}
+                  {/* 用户面只列服务运行：单场景运行是服务的内部实现，不在这里单独出现。 */}
+                  <ul className="zclient-list">
+                    {packageRuns.map(item => <li key={item.packageRunId}>
+                      {/* 整行可点：用可聚焦容器而不是 <button>，因为行内有「复制」按钮，按钮不能嵌套。 */}
+                      <div className="zclient-list-item" role="button" tabIndex={busy ? -1 : 0}
+                        aria-label={`查看 ${item.title} 的结果`}
+                        aria-disabled={busy || undefined}
+                        onClick={() => { if (!busy) setPackageRun(item); }}
+                        onKeyDown={event => { if (!busy && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setPackageRun(item); } }}>
+                        <span className="zclient-list-main">
+                          <strong className="zclient-list-title">{item.title}</strong>
+                          <CopyableId id={item.packageRunId} />
+                        </span>
+                        <span className="zclient-pill" data-tone={serviceStageTone(item.stage)}>{serviceStageLabel(item.stage)}{item.progress && item.progress.total > 1 ? ` · ${item.progress.completed}/${item.progress.total}` : ""}</span>
+                        <span className="zclient-list-chevron" aria-hidden="true">›</span>
+                      </div>
+                    </li>)}
+                  </ul>
+                </section>
+
+                {run && <UserRunDetail key={run.runId} run={run} userId={user.id} busy={busy} submissionPending={!!pendingRun}
+                  onRefresh={() => selectRun(run.runId)} onCancel={() => void action("cancel")} onResume={() => void action("resume")}
+                  onReview={decision => void action("review", decision)} />}
+              </>}
+
+              {page === "account" && <>
+                <div className="zclient-heading">
+                  <div>
+                    <span className="zclient-eyebrow">账户</span>
+                    <h1>{user.displayName}</h1>
+                    <p>{user.username}</p>
+                  </div>
+                  <div className="zclient-row">
+                    <button className="zclient-btn" onClick={() => void attempt(async () => logout())}><LogOut size={15} />退出登录</button>
+                    {onAdmin && <button className="zclient-btn zclient-btn-ghost" onClick={() => void attempt(async () => returnToAdmin())}>返回管理后台</button>}
+                  </div>
+                </div>
+
+                <section className="zclient-card">
+                  <h2>积分</h2>
+                  <div className="zclient-metrics">
+                    <div className="zclient-metric"><strong>{credits ? formatPoints(credits.available) : "—"}</strong><small>可用</small></div>
+                    <div className="zclient-metric"><strong>{credits ? formatPoints(credits.reserved) : "—"}</strong><small>进行中占用</small></div>
+                    <div className="zclient-metric"><strong>{credits ? formatPoints(credits.balance) : "—"}</strong><small>总余额</small></div>
+                  </div>
+                  <p className="zclient-muted">按上限预扣、按成功产出结算；失败、跳过与取消的部分自动退回，不会事后补扣。</p>
+                </section>
+
+                {ledger.length > 0 && <section className="zclient-card">
+                  <h2>积分记录</h2>
+                  <ul className="zclient-list">{ledger.map(entry => <li key={entry.entryId} className="zclient-list-item" style={{ cursor: "default" }}>
+                    <span className="zclient-list-main">
+                      <strong className="zclient-list-title">{entry.note || ledgerKindLabel(entry.kind)}</strong>
+                      <small>{new Date(entry.createdAt).toLocaleString("zh-CN")}</small>
+                    </span>
+                    <span className="zclient-pill" data-tone={entry.delta >= 0 ? "good" : undefined}>{entry.delta >= 0 ? "+" : ""}{formatPoints(entry.delta)}</span>
+                  </li>)}</ul>
+                </section>}
+              </>}
+
+              {page === "feedback" && <SystemFeedback key={user.id} userId={user.id} />}
+            </div>
+          </div>}
     </main>
     {confirmDialog}
   </div>;
+
+  /** 服务页里的结果区块：最近一次已完成任务的产出；没有就显示空提示。 */
+  function latestResult() {
+    const latest = packageRuns.find(item => item.stage === "completed");
+    if (!latest) return <div className="zclient-empty"><div>还没有产出</div><div>填好输入点「生成」，结果会出现在这里。</div></div>;
+    // 已完成但没读到媒体：说清楚是「这次没有图片」，不要写成「还在生成」——那是另一个状态。
+    return resultGallery(latest.packageRunId, "这次已完成，但没有产出图片。换一组输入再试一次。");
+  }
+
+  /** 工作台右侧：当前这次运行的实时状态与产出；没有在跑就显示最近一次完成的结果。 */
+  function workspaceResult() {
+    if (packageRun && packageRun.stage !== "completed") {
+      return <div className="zclient-empty">
+        <div>{serviceStageLabel(packageRun.stage)}</div>
+        <div>{packageRun.stage === "running" && packageRun.progress ? `已完成 ${packageRun.progress.completed} / ${packageRun.progress.total} 步` : "结果生成后会自动出现在这里。"}</div>
+        {packageRun.stage === "failed" && packageRun.retry && <button type="button" className="zclient-btn zclient-btn-primary" disabled={busy} onClick={() => void confirmPackageItem(packageRun.retry!.itemId, "retry")}>重试</button>}
+        {packageRun.confirmation && <div className="zclient-row">
+          <button type="button" className="zclient-btn zclient-btn-primary" disabled={busy} onClick={() => void confirmPackageItem(packageRun.confirmation!.itemId, "approve")}>满意，继续</button>
+          <button type="button" className="zclient-btn" disabled={busy} onClick={() => void confirmPackageItem(packageRun.confirmation!.itemId, "redo")}>重做这一步</button>
+        </div>}
+      </div>;
+    }
+    // 已完成但没有产出（例如本次输入没带参考图）不能说「还在生成」——那是假的状态。
+    if (packageRun?.stage === "completed") return resultGallery(packageRun.packageRunId, "这次已完成，但没有产出图片。换一组输入再试一次。");
+    return latestResult();
+  }
+
+  /**
+   * 工作台底部历史条：出图工具的历史要能一眼看到图，所以用缩略图而不是文字列表。
+   * 点一张切到那次的结果，「套用」则把那次的参数填回左侧表单。
+   */
+  function workspaceHistory() {
+    const completed = packageRuns.filter(item => item.stage === "completed").slice(0, 8);
+    if (!completed.length) return <p className="sws-history-empty">还没有历史；生成过的图片会按时间排在这里。</p>;
+    return <ul className="sws-history-strip">{completed.map(item => <li key={item.packageRunId}>
+      <button type="button" className={`sws-history-item${packageRun?.packageRunId === item.packageRunId ? " is-active" : ""}`}
+        onClick={() => { setPackageRun(item); setStartedAt(undefined); }}
+        title={new Date(item.createdAt).toLocaleString("zh-CN")}>
+        <HistoryThumb packageRunId={item.packageRunId} label={item.title} />
+        <span>{new Date(item.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+      </button>
+      <button type="button" className="sws-history-reuse" disabled={Boolean(reuseBusy)}
+        onClick={() => void applyRunInputs(item.packageRunId)}
+        title="把这一组的参数填回左侧表单">
+        {reuseBusy === item.packageRunId ? "读取中…" : "套用"}
+      </button>
+    </li>)}</ul>;
+  }
+
+  /** 结果区右上角：就地套用这次（或当前查看的这次）运行的参数，不用跳页重开服务。 */
+  function workspaceResultActions() {
+    const target = packageRun ?? packageRuns.find(item => item.stage === "completed");
+    if (!target) return undefined;
+    const busyThis = reuseBusy === target.packageRunId;
+    return <button type="button" className="sws-reuse" disabled={Boolean(reuseBusy)} onClick={() => void applyRunInputs(target.packageRunId)}
+      title="把这次生成用的参数填回左侧表单，改一改就能再生成">
+      {busyThis ? "读取参数中…" : "用这组参数"}
+    </button>;
+  }
+
+  /** 表单字段：两种布局共用同一份渲染，避免工作台与营销页各写一套。 */
+  function serviceFields() {
+    if (!activePackage) return null;
+    return <>
+      <ServiceQuickStarts
+        presentation={activePackage.presentation}
+        onApplyPrompt={(value, inputKey) => {
+          const target = inputKey ?? activePackage.fields.find(field => field.type === "textarea" || field.type === "text")?.key;
+          if (target) updatePackageValue(target, value);
+        }}
+        onApplyPreset={values => {
+          const next = { ...packageValues, ...values };
+          setPackageValues(next);
+          void refreshEstimate(next);
+        }}
+      />
+      {activePackage.fields.filter(field => !field.hidden).map(field => <label className="zclient-field" key={field.key}>
+        <span className="zclient-field-label">{field.label}{field.required ? <em>必填</em> : null}</span>
+        {/image|video|audio/.test(field.type) ? <UserMediaInput
+          label={field.label}
+          kind={(/audio/.test(field.type) ? "audio" : /video/.test(field.type) ? "video" : "image") as UserMediaKind}
+          multiple={/\[\]|_list|images|videos|audios/.test(field.type)}
+          value={packageValues[field.key]}
+          userId={user.id}
+          disabled={busy}
+          uploading={uploadingKey === field.key}
+          uploadProgress={uploadingKey === field.key ? uploadProgress : undefined}
+          onUpload={files => void upload(field.key, field.type, files)}
+          onMove={(index, offset) => {
+            const current = packageValues[field.key];
+            const items = Array.isArray(current) ? [...current] : current === undefined || current === null || current === "" ? [] : [current];
+            const target = index + offset;
+            if (index < 0 || index >= items.length || target < 0 || target >= items.length) return;
+            [items[index], items[target]] = [items[target], items[index]];
+            updatePackageValue(field.key, items);
+          }}
+          onRemove={index => {
+            const current = packageValues[field.key];
+            const items = Array.isArray(current) ? current : current === undefined || current === null || current === "" ? [] : [current];
+            updatePackageValue(field.key, /\[\]|_list|images|videos|audios/.test(field.type) ? items.filter((_item, position) => position !== index) : "");
+          }}
+          onClear={() => updatePackageValue(field.key, "")}
+        />
+        : field.type === "select" ? <select className="zclient-input" value={String(packageValues[field.key] ?? "")} onChange={event => updatePackageValue(field.key, event.target.value)}>
+          <option value="">请选择</option>{field.options?.map(option => <option key={option}>{option}</option>)}
+        </select> : field.type === "boolean" ? <input type="checkbox" checked={packageValues[field.key] === true} onChange={event => updatePackageValue(field.key, event.target.checked)} />
+          : field.type === "number" ? <input className="zclient-input" type="number" step="any" value={packageValues[field.key] === undefined ? "" : String(packageValues[field.key])} onChange={event => updatePackageValue(field.key, event.target.value)} />
+            : field.type === "textarea" || field.type === "json" ? <textarea className="zclient-input zclient-textarea" rows={5} placeholder={String((field as { placeholder?: string }).placeholder ?? "")} value={typeof packageValues[field.key] === "string" ? packageValues[field.key] as string : packageValues[field.key] === undefined ? "" : JSON.stringify(packageValues[field.key], null, 2)} onChange={event => updatePackageValue(field.key, event.target.value)} />
+              : <input className="zclient-input" type="text" placeholder={String((field as { placeholder?: string }).placeholder ?? "")} value={typeof packageValues[field.key] === "string" ? packageValues[field.key] as string : packageValues[field.key] === undefined ? "" : String(packageValues[field.key])} onChange={event => updatePackageValue(field.key, event.target.value)} />}
+      </label>)}
+    </>;
+  }
+}
+
+function ledgerKindLabel(kind: string) {
+  if (kind === "cdk_redeem") return "卡密兑换";
+  if (kind === "admin_grant") return "管理员赠送";
+  if (kind === "admin_adjust") return "积分调整";
+  if (kind === "run_reserve") return "任务预扣";
+  if (kind === "run_settle") return "任务结算";
+  if (kind === "run_refund") return "任务退款";
+  if (kind === "cdk_refund") return "卡密退回";
+  return "积分变动";
+}
+
+/**
+ * 历史缩略图：只取该次运行的第一张图，用于底部历史条。
+ * 复用结果接口但不整页渲染，避免历史条把每次运行的产出全拉一遍。
+ */
+function HistoryThumb({ packageRunId, label }: { packageRunId: string; label: string }) {
+  const [url, setUrl] = useState("");
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let stopped = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/v1/self/package-runs/" + encodeURIComponent(packageRunId) + "/outputs", { credentials: "same-origin" });
+        if (!response.ok) { if (!stopped) setFailed(true); return; }
+        const data = await response.json() as { items?: Array<{ media: Array<{ url: string; kind: string }> }> };
+        const first = (data.items ?? []).flatMap(item => item.media).find(media => media.kind === "image" || media.kind === "video");
+        if (!stopped) { if (first) setUrl(first.url); else setFailed(true); }
+      } catch { if (!stopped) setFailed(true); }
+    })();
+    return () => { stopped = true; };
+  }, [packageRunId]);
+  if (failed) return <span className="sws-history-placeholder" aria-hidden="true">·</span>;
+  if (!url) return <span className="sws-history-placeholder" aria-hidden="true">…</span>;
+  return <RecentShot url={url} kind="image" label={label} className="zclient-shot" zoomable />;
+}
+
+/**
+ * 结果画廊：读服务级产出（服务端已按包内顺序聚合各步媒体，不暴露子运行）。
+ * 与「作品」页共用同一份读取逻辑，避免两处渲染不一致。
+ */
+function ServiceResultGallery({ packageRunId, emptyHint }: { packageRunId: string; emptyHint?: string }) {
+  const [shots, setShots] = useState<Shot[]>([]);
+  const [error, setError] = useState("");
+  const loaded = useRef("");
+  useEffect(() => {
+    if (loaded.current === packageRunId) return;
+    loaded.current = packageRunId;
+    void (async () => {
+      try {
+        const response = await fetch("/api/v1/self/package-runs/" + encodeURIComponent(packageRunId) + "/outputs", { credentials: "same-origin" });
+        if (!response.ok) { setError("结果暂时读取不到"); return; }
+        const data = await response.json() as { items?: Array<{ index: number; media: Array<{ url: string; kind: "image" | "video" | "audio" }> }> };
+        setShots((data.items ?? []).flatMap(item => item.media.filter(media => media.kind !== "audio").map((media, index) => ({
+          key: item.index + ":" + index, url: media.url, kind: media.kind as "image" | "video", label: "产出",
+        }))));
+      } catch { setError("结果暂时读取不到"); }
+    })();
+  }, [packageRunId]);
+  if (error) return <div className="zclient-empty"><div>{error}</div></div>;
+  if (!shots.length) return <div className="zclient-empty"><div>{emptyHint ?? "还在生成中，稍后刷新"}</div></div>;
+  return <div className="zclient-gallery">{shots.map(shot => <RecentShot key={shot.key} url={shot.url} kind={shot.kind} label={shot.label} className="zclient-shot" zoomable />)}</div>;
 }

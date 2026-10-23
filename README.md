@@ -185,7 +185,7 @@ AI文生视频、AI参考生视频、文生无设计版使用 `Zane/video_双采
 
 - [AI 基础能力](docs/ai-foundation.md)：当前业务操作面、身份边界与最小闭环。
 - [AI 开发规范](docs/ai-development.md)：以后业务功能必须同步提供AI配套，根AGENTS.md与PR检查表共同约束。
-- [AI 操作手册](docs/ai-operator.md)：完整操作顺序、请求/响应示例、状态机与提交结果未知时的恢复规则。
+- [AI 操作手册](docs/ai-operator.md)：伞式目录 + 全部正文。MCP `zane://guide` 默认只下发目录（节号/标题/字节数/入口），正文按 `zane://guide/<节号>` 读取，HTTP 用 `?detail=<节号>`、整本用 `?detail=full`；含完整操作顺序、请求/响应示例、状态机与提交结果未知时的恢复规则。
 - [AI 工具目录](docs/ai-tools.md)：当前工具与参数 schema 同源，含管理员和当前用户操作。
 - [OpenAPI 3.1 契约](docs/ai-openapi.json)：机器可读的 AI 操作面、媒体与高级 HTTP 提交入口。
 - [接管验收与启用](docs/ai-handover.md)：上线前检查、部署边界与当前限制。
@@ -201,7 +201,7 @@ $env:ZANE_API_TOKEN = "<从本人账户创建并妥善保管的API凭证>"
 npm run ai:doctor
 ~~~
 
-HTTP 发现入口为 GET /api/v1/ai，在线契约为 GET /api/v1/ai/openapi.json，在线手册为 GET /api/v1/ai/guide。
+HTTP 发现入口为 GET /api/v1/ai，在线契约为 GET /api/v1/ai/openapi.json，在线手册为 GET /api/v1/ai/guide（默认只回伞式目录，`?detail=<节号>` 取正文、`?detail=full` 取整本、`?detail=changelog` 取历史小节）。
 MCP 客户端直接运行 node dist-server/mcp/index.js；它只访问 ZANE_BASE_URL，不启动或重启后台。开发环境改用8798，避免误连正式环境。
 
 新增发布场景查询 /api/v1/scenes、场景预检 /api/v1/scenes/:sceneId/prepare 与固定版本提交 /api/v1/scenes/:sceneId/runs。

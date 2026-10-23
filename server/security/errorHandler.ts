@@ -28,12 +28,22 @@ export function errorResponse(error: unknown, redact: boolean, requestId?: strin
   return { status, retryAfterSeconds: retry && Number.isSafeInteger(retry) && retry >= 1 && retry <= 86400 ? retry : undefined,
     body: { error: message, code, ...(requestId ? { requestId } : {}), ...(visible && domainError && error.details ? { details: redact ? redactDetails(error.details) : error.details } : {}) } };
 }
-export function createErrorHandler(production: boolean, report?: (error: unknown, status: number, requestId?: string) => void): ErrorRequestHandler {
-  return (error: unknown, _req, res, next) => {
+export interface ErrorReportContext {
+  requestId?: string;
+  method?: string;
+  path?: string;
+  /** Domain code (e.g. RESOURCE_REVISION_CONFLICT) — the same code the client received. */
+  code: string;
+}
+
+export function createErrorHandler(production: boolean, report?: (error: unknown, status: number, context: ErrorReportContext) => void): ErrorRequestHandler {
+  return (error: unknown, req, res, next) => {
     if (res.headersSent) { next(error); return; }
     const requestId = res.get("X-Request-ID");
     const result = errorResponse(error, production || Boolean(res.locals.publicUserOnly), requestId);
-    report?.(error, result.status, requestId);
+    // The route is part of the diagnosis: an error entry without method/path cannot be acted on.
+    // `req.path` never contains the query string, so signed parameters cannot leak through here.
+    report?.(error, result.status, { requestId, method: req.method, path: req.path, code: result.body.code });
     if (result.retryAfterSeconds) res.set("Retry-After", String(result.retryAfterSeconds));
     res.status(result.status).json(result.body);
   };

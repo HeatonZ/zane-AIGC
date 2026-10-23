@@ -22,6 +22,23 @@ Writer 输出整套视觉方向和恰好1–8张（默认5张）的设计计划�
 
 商品事实与视觉创作分开约束：不能编造品牌、参数、功效、材质、认证或配件；但可以设计色块、字体层级、放大细节、标注、背景和合理人物情境。商品参考是外观依据，风格参考仅提供视觉方向。未知信息和风险提醒留在内部策划，不作为消费者画面文案。每张需有不同的沟通任务和构图，不能用重复外观图凑套图。
 
+## 两张（或前 N 张）确认后再出剩余
+
+「先出 2 张人工确认、确认后出剩余」有两种做法，二者都不新增电商专用执行器：
+
+1. **模板现有做法（步骤切分）**：`sample` 是单次步骤、`remaining` 是 `for_each` 剩余项，两个步骤各自带 `review.enabled`。审核发生在步骤边界，审批点清楚，但需要把计划切成 `first`/`rest` 两组。
+2. **同一个 for_each 步骤里的循环内确认点**：给逐张生成步骤加 `execution.reviewAfterItems: 2`。它是**调度屏障**——第 2 项完成前不会派发第 3 项，所以确认时看到的就是恰好 2 张，并发不会越过该点；`approve` 复用这 2 张继续出剩余项且不重复计费，`redo` 只重做这 2 张并再次暂停。要不要在整批结束时再停一次由该步骤的 `review.enabled` 独立决定。
+
+```json
+{
+  "id": "remaining",
+  "execution": { "mode": "for_each", "sourceRef": "step.render_jobs.outputs.cards", "reviewAfterItems": 2, "maxConcurrencyRef": "input.concurrency" },
+  "review": { "enabled": true, "instruction": "检查商品一致性、图文一体与逐张差异" }
+}
+```
+
+`maxConcurrencyRef` 指向一个已声明的 number 输入（例如「生成并发」），留空表示不限制（仍受 `ZANE_COMFYUI_MAX_CONCURRENCY` 与任务级并发上限约束），填 0、负数、小数或超过 32 会在预检/提交阶段被拒。两种做法都只改草稿：读取当前 revision → `validate_scene_draft` → 显式 `publish_scene`，不自动发布，也不改写历史运行。
+
 ## 配置、发布与历史
 
 模板 `examples/scenes/commerce-ai.json` 可通过现有 HTTP/MCP 场景服务创建草稿或显式更新既有场景。替换原“电商套图”入口须保留目标 sceneId，读取当前 revision 后保存、校验、显式发布。旧发布快照、旧后置排版流程和历史运行不自动替换；旧输入契约继续取其固定发布版本，旧任务续跑仍采用原快照。

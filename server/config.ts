@@ -135,8 +135,22 @@ export const defaults: SavedSettings = {
 
 export const databaseFile = path.join(localDirectory, "zane.db");
 export const maxActiveRuns = boundedInteger(process.env.ZANE_MAX_ACTIVE_RUNS, 2, 1, 32);
+/** 单账户在跑上限（排队+执行+等待审核）；0 表示不限制，只保留全局并发。 */
+export const maxActiveRunsPerUser = boundedInteger(process.env.ZANE_MAX_ACTIVE_RUNS_PER_USER, 0, 0, 32);
+/** 自助注册：默认关闭；开启后用户入口可自行建号（仍需管理员授权场景与兑换积分）。 */
+const selfSignupValue = nonEmpty(process.env.ZANE_SELF_SIGNUP);
+if (selfSignupValue !== undefined && selfSignupValue !== "true" && selfSignupValue !== "false") throw new Error("ZANE_SELF_SIGNUP 只接受 true/false");
+export const selfSignupEnabled = selfSignupValue === "true";
+/** 新注册账户的初始赠送积分；0 表示不赠送（默认）。 */
+export const signupGrantCredits = boundedInteger(process.env.ZANE_SIGNUP_GRANT_CREDITS, 0, 0, 1_000_000);
 /** 可选的本地导出根目录环境默认值；空表示该能力默认关闭，需管理员显式配置 SQLite 设置。 */
 export const localExportRoot = nonEmpty(process.env.ZANE_LOCAL_EXPORT_ROOT) ?? "";
+/** 直连模型提供商的环境默认值：只在从未保存过时生效；apiKeyEnv 也只是变量名，不是密钥。 */
+export const directLlmEnvironment = {
+  baseUrl: nonEmpty(process.env.ZANE_DIRECT_LLM_BASE_URL) ?? "",
+  apiKeyEnv: nonEmpty(process.env.ZANE_DIRECT_LLM_API_KEY_ENV) ?? "",
+  model: nonEmpty(process.env.ZANE_DIRECT_LLM_MODEL) ?? "",
+};
 // 同一 ComfyUI 上游地址的全局请求并发预算；步骤 for_each 的 maxConcurrency 在此之内生效，防止多任务同时压垮单 GPU。
 export const comfyuiMaxConcurrency = boundedInteger(process.env.ZANE_COMFYUI_MAX_CONCURRENCY, 2, 1, 32);
 export const shutdownTimeoutMs = Math.max(1000, Number.parseInt(process.env.ZANE_SHUTDOWN_TIMEOUT_MS ?? "15000", 10) || 15000);

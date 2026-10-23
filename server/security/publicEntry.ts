@@ -16,7 +16,8 @@ export function publicRequestAllowed(method: string, rawPath: string): boolean {
   if (read(method) && ["/", "/app", "/app/", "/index.html"].includes(rawPath)) return true;
   if (read(method) && (/^\/assets\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:js|css|svg|png|jpe?g|webp|gif|ico|woff2?|ttf)$/.test(rawPath) || /^\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:svg|png|jpe?g|webp|ico)$/.test(rawPath))) return true;
   if (read(method) && ["/api/auth/status", "/api/v1/ai", "/api/v1/ai/guide", "/api/v1/ai/openapi.json"].includes(rawPath)) return true;
-  if (method === "POST" && ["/api/auth/login", "/api/v1/self/logout"].includes(rawPath)) return true;
+  // 卡密登录是公网用户入口的主路径：inspect 只读，login 建会话；两者都不涉及管理能力。
+  if (method === "POST" && ["/api/auth/login", "/api/auth/register", "/api/auth/cdk/inspect", "/api/auth/cdk/login", "/api/v1/self/logout"].includes(rawPath)) return true;
   if (userOperations.some(operation => (operation.method === method || (operation.method === "GET" && method === "HEAD")) && operation.pattern.test(rawPath))) return true;
   if (!read(method)) return false;
   return /^\/api\/v1\/runs\/[^/]+\/(?:output-media|media\/[A-Za-z0-9_-][A-Za-z0-9._-]*(?:\/preview)?|media\.zip)\/?$/.test(rawPath)

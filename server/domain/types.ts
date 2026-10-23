@@ -37,6 +37,8 @@ export interface ComfyUIPropertyInfo {
   type: "text" | "number" | "boolean" | "image_list" | "video_list" | "audio_list" | "json";
   options?: string[];
   required?: boolean;
+  /** V3 dynamic combo option that must be selected for this child input to exist. */
+  option?: string;
 }
 
 export interface ComfyUINodeInfo {
@@ -114,6 +116,18 @@ export interface RunStep {
     sourceRef?: string;
     onError?: "continue" | "stop";
     maxConcurrency?: number;
+    /** for_each concurrency taken from a declared numeric input at run time.
+     *  An empty value means "no configured limit" (global budgets still apply);
+     *  0, negative, fractional or out-of-range values are rejected before execution. */
+    maxConcurrencyRef?: string;
+    /** for_each only: pause the run once the Nth item finished (scheduling barrier).
+     *  Items at or after the checkpoint are not dispatched until the review is approved. */
+    reviewAfterItems?: number;
+    /** for_each only: retries for one item after a transient upstream failure (0..3, default 0).
+     *  Only HTTP 408/429/5xx, dropped sockets, request timeouts and cut-off output parses retry. */
+    itemRetries?: number;
+    /** for_each only: base delay in seconds for the first retry (default 5, exponential, max 60). */
+    itemRetryDelaySeconds?: number;
     carry?: import("./iterationCarry.js").IterationCarry;
   };
   comfyui?: {
@@ -235,6 +249,8 @@ export interface RunRecord {
   ownerUserId?: string;
   /** Snapshot of the authenticated account that submitted this run. Legacy runs may omit it. */
   submitter?: RunSubmitter;
+  /** 积分预算与结算：只有用户自助路径提交时写入；管理员运行与历史运行没有。 */
+  credit?: import("./scenePricing.js").RunCreditRecord;
   runId: string;
   sceneId: string;
   workflowName: string;

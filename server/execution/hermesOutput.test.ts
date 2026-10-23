@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseHermesJson, parseHermesOutput } from "./hermesOutput.js";
+import { HermesOutputParseError, parseHermesJson, parseHermesOutput } from "./hermesOutput.js";
 
 const keys = ["storyboard", "shots"];
 const shots = Array.from({ length: 15 }, (_, index) => ({ index: index + 1, seconds: 8, visual_description: `镜头${index + 1}：字符 }, "shots": 不是结构`, dialogue: [] }));
@@ -130,4 +130,69 @@ test("Hermes whitespace repair never accepts ambiguous fields, partial JSON or s
     '说明：' + source + '\n补充：{"shots":[]}',
   ];
   for (const candidate of invalid) assert.throws(() => parseHermesOutput(candidate, keys), /Hermes 输出 JSON 格式无效/, candidate);
+});
+
+test("Hermes merges a list continuation and re-closes a wrong final bracket without changing values", () => {
+  const continuation = '{"prompts":["first prompt"],"second prompt"]}';
+  const merged = parseHermesOutput(continuation, ["prompts"]);
+  assert.deepEqual(merged.value, { prompts: ["first prompt", "second prompt"] });
+  assert.deepEqual(merged.repair, { kind: "premature_list_closer", offset: continuation.indexOf("],") });
+
+  const wrongCloser = '{"prompts":["A complete prompt line"]';
+  const closed = parseHermesOutput(wrongCloser, ["prompts"]);
+  assert.deepEqual(closed.value, { prompts: ["A complete prompt line"] });
+  assert.deepEqual(closed.repair, { kind: "final_closer_type_repair", offset: wrongCloser.length - 1 });
+
+  // A member key is never welded onto the located object, and an empty list closed by the
+  // wrong bracket is never invented into an empty member.
+  assert.throws(() => parseHermesOutput('{"prompts":["first"],"other":"value"}', ["prompts"]), /Hermes 输出/);
+  assert.throws(() => parseHermesOutput('{"prompts": [}', ["prompts"]), /Hermes 输出 JSON 格式无效/);
+});
+
+test("Hermes keeps only the re-emitted object when a streamed fragment is cut off", () => {
+  const text = '{"prompt":"partial fragment cut off' + '{"prompt":"the complete final prompt"}';
+  const result = parseHermesOutput(text, ["prompt"]);
+  assert.deepEqual(result.value, { prompt: "the complete final prompt" });
+  assert.equal(result.repair?.kind, "streamed_residual_reemit");
+});
+
+test("Hermes completes a single root whose nested brackets carry the wrong type", () => {
+  // A member list closed by `]` where its object still needed `}`: nesting depth
+  // alone still locates the one root, and only delimiters are rewritten.
+  const broken = '{"visual_bible":{"axes":["angle","scale"]],"cards":[{"id":"card one"}]}';
+  const repaired = parseHermesOutput(broken, ["visual_bible", "cards"]);
+  assert.deepEqual(Object.keys(repaired.value), ["visual_bible", "cards"]);
+  assert.deepEqual((repaired.value.visual_bible as { axes: string[] }).axes, ["angle", "scale"]);
+  assert.equal(repaired.repair?.kind, "wrong_bracket_type_completion");
+
+  // An empty mis-closed list invents nothing, and an unclosed root stays a failure.
+  assert.throws(() => parseHermesOutput('{"visual_bible":[}', ["visual_bible"]), /Hermes 输出 JSON 格式无效/);
+  assert.throws(() => parseHermesOutput('{"visual_bible":{"a":"b"}', ["visual_bible"]), /Hermes 输出 JSON 格式无效/);
+});
+
+test("Hermes keeps the valid path untouched and still fails ambiguous, prose-shaped or content-level output", () => {
+  assert.deepEqual(parseHermesOutput(JSON.stringify({ prompts: ["x"] }), ["prompts"]), { value: { prompts: ["x"] } });
+  // Two complete answers are ambiguous delivery, not a fragment plus a re-emission.
+  assert.throws(
+    () => parseHermesOutput(JSON.stringify({ result: "first complete answer" }) + JSON.stringify({ result: "second complete answer" }), ["result"]),
+    /Hermes 输出 JSON 格式无效/,
+  );
+  // Prose-shaped keys are never accepted as structured output (fails as a Hermes output error).
+  assert.throws(() => parseHermesOutput('{"subject_definitions:\nA block of prose":"x"}', ["prompts"]), /Hermes 输出/);
+  // A cut-off single root keeps the published failure wording and is classed retryable for the executor.
+  assert.throws(() => parseHermesOutput('{"prompts":["only one closed item"', ["prompts"]), (error: unknown) => {
+    assert.ok(error instanceof HermesOutputParseError);
+    assert.equal(error.code, "HERMES_OUTPUT_JSON_INVALID");
+    assert.equal(error.transient, true);
+    assert.match(error.message, /^Hermes 输出 JSON 格式无效：/);
+    assert.match(error.message, /；未截断内容或自动重试模型$/);
+    return true;
+  });
+  // A content-level answer is neither repaired nor retryable.
+  assert.throws(() => parseHermesOutput("这不是 JSON 输出", ["prompts"]), (error: unknown) => {
+    assert.ok(error instanceof HermesOutputParseError);
+    assert.equal(error.transient, false);
+    assert.match(error.message, /^Hermes 输出 JSON 格式无效：/);
+    return true;
+  });
 });

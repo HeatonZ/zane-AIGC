@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JsonValue, RunStatus, RunSubmitter } from "../domain/types.js";
 import { asRecord } from "../domain/workflowValues.js";
+import { workflowInputDefaults, workflowInputIssue, type InputValidationOptions } from "../domain/inputValidation.js";
 import {
   TASK_DOCUMENT_MAX_BYTES, TASK_ITEM_LIMIT, TASK_NOTE_MAX_LENGTH, TASK_NAME_MAX_LENGTH,
   TASK_ITEM_LABEL_MAX_LENGTH, taskItemState, taskProgress, taskStatusOf,
@@ -104,8 +105,13 @@ export class TaskService {
     return { task: this.view(task, states, { includeItems: true, includeInputs: true }), nextAction: task.confirmedAt ? "rerun_task_item" : "confirm_task" as const };
   }
 
-  /** 逐项校验场景/发布版/输入并固定素材版本；复用发布快照的输入契约，不另建一套校验。 */
-  private async validateItems(items: unknown[]) {
+  /**
+   * 逐项校验场景/发布版/输入并固定素材版本；复用发布快照的输入契约，不另建一套校验。
+   * requireInputs:false 是草稿路径（create/update）：默认值、类型、选项、素材版本与文件照常校验，
+   * 但不要求必填已填——「一个项目连续出几十张图」时先存进度、后补素材是常态。
+   * 必填在 confirm 前整体判一次，见 incompleteItems。
+   */
+  private async validateItems(items: unknown[], options: InputValidationOptions = {}) {
     if (!items.length) throw new HttpError(400, "任务至少需要一个任务项", "INVALID_TASK");
     if (items.length > TASK_ITEM_LIMIT) throw new HttpError(400, "任务项最多 " + TASK_ITEM_LIMIT + " 项", "INVALID_TASK");
     const prepared: Array<{ label: string; sceneId: string; versionId: string; inputValues: Record<string, JsonValue> }> = [];
@@ -118,9 +124,9 @@ export class TaskService {
       if (!inputValues) throw new HttpError(400, "第 " + (index + 1) + " 项输入无效", "INVALID_TASK");
       const named = typeof item.label === "string" && item.label.trim() ? item.label.trim().slice(0, TASK_ITEM_LABEL_MAX_LENGTH) : undefined;
       const label = named ?? "第 " + (index + 1) + " 项";
-      // 复用发布快照的输入契约校验（类型/必填/选项/素材版本），但把失败归属到具体项：
+      // 复用发布快照的输入契约校验（类型/选项/素材版本，必填由 requireInputs 决定），但把失败归属到具体项：
       // 否则 200 项里报「字段 flag 的数据类型不匹配」无法定位是哪一行。
-      const checked = await this.scenes.prepare(sceneId, versionId, inputValues as Record<string, JsonValue>)
+      const checked = await this.scenes.prepare(sceneId, versionId, inputValues as Record<string, JsonValue>, options)
         .catch((error: unknown) => {
           const reason = error instanceof Error ? error.message : String(error);
           throw new HttpError(error instanceof HttpError ? error.status : 400, "第 " + (index + 1) + " 项" + (named ? "（" + named + "）" : "") + "：" + reason, error instanceof HttpError ? error.code : "INVALID_TASK");
@@ -128,6 +134,31 @@ export class TaskService {
       prepared.push({ label, sceneId, versionId, inputValues: checked.inputValues });
     }
     return prepared;
+  }
+  /**
+   * 确认前的必填完整性检查。草稿允许缺必填，但确认是单向冻结：冻结后输入不能再改、只能重跑，
+   * 缺必填的项会永远提交不上去。所以在冻结之前先整体判一次必填，缺项时明确拒绝并指出第几项
+   * （不冻结、不提交、不计费），而不是先冻结再让这些项在 failures 里失败。
+   *
+   * 只判必填：场景/发布版/素材不可用仍按原设计由逐项提交失败反映，不在这里阻断整批。
+   * 读取失败（版本已撤下等）也交给逐项提交去报，不在这一步制造第二套错误口径。
+   */
+  private async incompleteItems(items: readonly TaskItem[]) {
+    const blocked: Array<{ itemId: string; label: string; message: string }> = [];
+    const scenes = new Map<string, Awaited<ReturnType<AiSceneService["get"]>> | null>();
+    for (const item of items) {
+      const key = item.sceneId + "@" + item.versionId;
+      if (!scenes.has(key)) scenes.set(key, await this.scenes.get(item.sceneId, item.versionId).catch(() => null));
+      const scene = scenes.get(key);
+      if (!scene) continue;
+      // 草稿里存的是「发布版默认值 + 用户输入」合并结果，这里按同一口径再合并一次，判定与执行一致。
+      const merged = { ...workflowInputDefaults(scene.workflow), ...item.inputValues };
+      for (const field of scene.workflow.inputs) {
+        const issue = workflowInputIssue(field, merged[field.key]);
+        if (issue?.code === "REQUIRED_INPUT_MISSING") { blocked.push({ itemId: item.itemId, label: item.label, message: issue.message }); break; }
+      }
+    }
+    return blocked;
   }
   private async owner(access: TaskAccess) { return { ownerUserId: access.ownerUserId, submitter: access.submitter }; }
 
@@ -145,7 +176,7 @@ export class TaskService {
     if (!Array.isArray(body.items)) throw new HttpError(400, "任务项必须是数组", "INVALID_TASK");
     // 响应丢失后重试必须按原 ID 对账，而不是再建一个任务。
     if (this.store.getDocument<TaskRecord>(project, COLLECTION, id)) throw new HttpError(409, "任务编号已存在，请读取同一任务对账", "TASK_ALREADY_EXISTS");
-    const prepared = await this.validateItems(body.items);
+    const prepared = await this.validateItems(body.items, { requireInputs: false });
     const now = new Date().toISOString();
     const { ownerUserId, submitter } = await this.owner(access);
     const task: TaskRecord = {
@@ -180,7 +211,7 @@ export class TaskService {
       }
       if (body.items !== undefined) {
         if (!Array.isArray(body.items)) throw new HttpError(400, "任务项必须是数组", "INVALID_TASK");
-        const prepared = await this.validateItems(body.items);
+        const prepared = await this.validateItems(body.items, { requireInputs: false });
         // 按位置保留 itemId：编辑表格行不会让已有项的标识漂移。
         next.items = prepared.map((item, index) => ({ itemId: task.items[index]?.itemId ?? randomUUID(), ...item }));
       }
@@ -194,7 +225,7 @@ export class TaskService {
   /**
    * 确认并批量提交。确认是一次性单向冻结：为每个任务项预先分配稳定 runId 后先落库，
    * 再逐项提交。因此响应丢失后重试会用同一批 runId 对账（已存在的运行被识别为已提交），
-   * 不会重复提交，也不会重复计费。
+   * 不会重复提交，也不会重复计费。冻结前先整体判必填：草稿允许缺，确认不允许。
    */
   async confirm(id: string, raw: unknown, access: TaskAccess) {
     access.authorize();
@@ -207,6 +238,14 @@ export class TaskService {
         if (task.revision !== body.revision) throw new HttpError(409, "任务已变化，请重新读取", "TASK_REVISION_CONFLICT", { currentRevision: task.revision });
         if (task.cancelledAt) throw new HttpError(409, "任务已取消，不能确认", "TASK_CANCELLED");
         if (!task.items.length) throw new HttpError(400, "任务没有可提交的项", "INVALID_TASK");
+        // 草稿允许缺必填，确认不允许：先整体判一次，缺项时明确拒绝且不冻结，
+        // 否则冻结后输入不能再改、只能重跑，这些项会永远提交不上去。
+        const blocked = await this.incompleteItems(task.items);
+        if (blocked.length) throw new HttpError(400,
+          "有 " + blocked.length + " 项还不能确认：" + blocked.slice(0, 5).map(item => item.label + "：" + item.message).join("；")
+            + (blocked.length > 5 ? " 等 " + blocked.length + " 项" : "") + "。草稿可先保存，补齐后再确认。",
+          "TASK_ITEMS_INCOMPLETE",
+          { items: blocked, nextAction: "update_task", notice: "任务仍是可编辑草稿：用 update_task 保存补齐后的任务项，再 confirm_task。" });
         task = this.put(project, {
           ...task, confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
           items: task.items.map(item => item.runId ? item : { ...item, runId: randomUUID() }),

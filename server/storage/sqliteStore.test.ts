@@ -39,7 +39,7 @@ test("SQLite v1 升级保留工作区、运行、步骤、事件与提交快照�
   assert.deepEqual(store.getDocument(project, "assets", "asset"), saved);
   assert.throws(() => store!.putDocument(project, "assets", saved, 0), /DOCUMENT_CONFLICT/);
   const inspect = new DatabaseSync(filename);
-  assert.equal(inspect.prepare("PRAGMA user_version").get()!.user_version, 2);
+  assert.equal(inspect.prepare("PRAGMA user_version").get()!.user_version, 3);
   assert.equal(inspect.prepare("SELECT COUNT(*) n FROM run_steps").get()!.n, 1);
   inspect.close();
 });
@@ -48,7 +48,7 @@ test("数据库版本高于当前支持版本时拒绝打开", async t => {
   const root = await temporaryDirectory(t);
   const filename = path.join(root, "future.db");
   const future = new DatabaseSync(filename);
-  future.exec("PRAGMA user_version = 3;");
+  future.exec("PRAGMA user_version = 4;");
   future.close();
-  assert.throws(() => new SqliteStore(filename), /高于当前应用支持的版本 2/);
+  assert.throws(() => new SqliteStore(filename), /高于当前应用支持的版本 3/);
 });

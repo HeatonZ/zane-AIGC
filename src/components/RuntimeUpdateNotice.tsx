@@ -6,16 +6,31 @@ export function isNewWorkbenchRelease(current: string, received: unknown) {
   // Treating "unversioned" as an old build causes a permanent false-positive notice.
   return Boolean(current !== "unversioned" && received && typeof received === "object" && "releaseId" in received && typeof received.releaseId === "string" && received.releaseId !== "unversioned" && received.releaseId !== current);
 }
+/**
+ * The public user entry rejects administrator credentials with 403 PUBLIC_USER_ONLY.
+ * That answer is final for the current identity — retrying every 15 seconds only fills
+ * the log window with the same refusal — but a different login on the same tab may be
+ * accepted, so the rejection is scoped to the actor that received it.
+ */
+export function shouldPollRelease(actorId: string, rejectedActorId: string) {
+  return Boolean(actorId) && actorId !== rejectedActorId;
+}
 export default function RuntimeUpdateNotice() {
   const [available, setAvailable] = useState(false);
   useEffect(() => {
-    let disposed=false, pending=false;
+    let disposed=false, pending=false, rejectedActor="";
     const controller=new AbortController();
     const poll=async()=>{
-      if (pending || !currentActorId || document.visibilityState === "hidden") return;
+      const actor=currentActorId;
+      if (pending || !shouldPollRelease(actor, rejectedActor) || document.visibilityState === "hidden") return;
       pending=true;
       try {
-        const response=await fetch("/api/v1/self/runtime-release",{credentials:"same-origin",cache:"no-store",headers:{"X-Zane-Actor":currentActorId},signal:controller.signal});
+        const response=await fetch("/api/v1/self/runtime-release",{credentials:"same-origin",cache:"no-store",headers:{"X-Zane-Actor":actor},signal:controller.signal});
+        if (response.status === 403) {
+          const body=await response.json().catch(()=>undefined) as {code?: string}|undefined;
+          if (body?.code === "PUBLIC_USER_ONLY") rejectedActor=actor;
+          return;
+        }
         if (!response.ok) return;
         const data=await response.json();
         if (!disposed) setAvailable(isNewWorkbenchRelease(typeof __WORKBENCH_RELEASE__ === "string" ? __WORKBENCH_RELEASE__ : "unversioned",data));

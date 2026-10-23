@@ -101,6 +101,30 @@ test("任务HTTP：参数、revision 冲突与不存在的对象返回明确错�
   assert.equal((await h.call("GET", "/api/v1/tasks?limit=101")).status, 400);
 });
 
+test("任务HTTP：缺必填的草稿能创建，确认返回 400 TASK_ITEMS_INCOMPLETE 并指出哪几项", async (t) => {
+  const h = await taskHarness(t);
+  const taskId = h.newTaskId();
+  // 显式 null 表示「还没填」：这是「先占行、后补素材」的保存路径，必须 201 而不是 REQUIRED_INPUT_MISSING。
+  const created = await h.call("POST", "/api/v1/tasks", { taskId, name: "缺必填草稿", items: [{ label: "第 1 张", sceneId: "demo", versionId: "version-a", inputValues: { flag: null } }] });
+  assert.equal(created.status, 201);
+  assert.equal((created.body.task as Record<string, unknown>).status, "draft");
+  assert.equal((created.body.task as { revision: number }).revision, 1);
+
+  const blocked = await h.call("POST", "/api/v1/tasks/" + taskId + "/confirm", { revision: 1 });
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.body.code, "TASK_ITEMS_INCOMPLETE");
+  const details = blocked.body.details as { items: Array<{ itemId: string; label: string; message: string }>; nextAction: string };
+  assert.equal(details.items.length, 1);
+  assert.equal(details.items[0].label, "第 1 张");
+  assert.match(details.items[0].message, /必填字段：flag/);
+  assert.equal(details.nextAction, "update_task");
+  // 拒绝确认时不能冻结任务、也不能提交运行：仍是 revision 1 的可编辑草稿。
+  const after = await h.call("GET", "/api/v1/tasks/" + taskId);
+  assert.equal((after.body.task as Record<string, unknown>).status, "draft");
+  assert.equal((after.body.task as { revision: number }).revision, 1);
+  assert.equal(h.store.listRuns(h.settings.projectDirectory).runs.length, 0);
+});
+
 test("任务HTTP：管理端专用，普通用户被拒绝", async (t) => {
   const h = await taskHarness(t);
   const taskId = h.newTaskId();

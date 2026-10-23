@@ -1,6 +1,6 @@
 import { contentRevision } from "../domain/sceneContent.js";
 import { asRecord, isMediaWorkflowType } from "../domain/workflowValues.js";
-import type { RunRecord, RunStepRecord } from "../domain/types.js";
+import type { JsonValue, RunInputField, RunRecord, RunStepRecord } from "../domain/types.js";
 import type { RunInputQuery } from "../ai/accessSchemas.js";
 import { resultPage } from "./runResultService.js";
 import { HttpError } from "../errors.js";
@@ -49,6 +49,8 @@ export function businessRun(run: RunRecord, executionStartedAt?: string) {
   const pendingReview = run.pendingReview ? {
     id: run.pendingReview.id, stepId: run.pendingReview.stepId,
     name: String(scrubBusinessValue(run.pendingReview.name)), createdAt: run.pendingReview.createdAt,
+    ...(run.pendingReview.scope ? { scope: run.pendingReview.scope } : {}),
+    ...(typeof run.pendingReview.afterItems === "number" ? { afterItems: run.pendingReview.afterItems } : {}),
     ...(run.pendingReview.instruction ? { instruction: String(scrubBusinessValue(run.pendingReview.instruction)) } : {}),
   } : undefined;
   const summary = {
@@ -91,16 +93,28 @@ export interface BusinessInputProjection {
 }
 /** Read the original run's input snapshot. No current scene lookups or generation. */
 export function businessRunInputs(run: RunRecord, query: RunInputQuery) {
-  const fields = run.workflow.inputs.filter(field => !query.inputKey || field.key === query.inputKey);
+  return projectInputSnapshot({ fields: run.workflow.inputs, values: run.inputValues, runId: run.runId }, query, "business_inputs");
+}
+/**
+ * 服务（包）运行的原始输入：字段来自该次运行固化的包发布快照，值来自提交时的 inputValues。
+ * 与单次运行共用同一套分页、省略标记与媒体投影，因此「原始输入」在两处口径一致。
+ * 包输入可能没有默认值也没有填写（省略的字段），这里仍按字段列出并标记 present=false。
+ */
+export function packageRunInputs(record: { id: string; versionId: string; inputValues: Record<string, JsonValue>; fields: RunInputField[] }, query: RunInputQuery) {
+  return projectInputSnapshot({ fields: record.fields, values: record.inputValues, runId: record.id }, query, "package_run_inputs");
+}
+function projectInputSnapshot(snapshot: { fields: RunInputField[]; values: Record<string, JsonValue>; runId: string }, query: RunInputQuery, kind: string) {
+  const { fields: declared, values, runId } = snapshot;
+  const fields = declared.filter(field => !query.inputKey || field.key === query.inputKey);
   if (query.inputKey && !fields.length) throw new HttpError(404, "输入字段不存在", "INPUT_NOT_AVAILABLE");
-  const revision = contentRevision({ fields: run.workflow.inputs, values: run.inputValues });
-  const scoped = { kind: "business_inputs", runId: run.runId, inputKey: query.inputKey ?? null,
+  const revision = contentRevision({ fields: declared, values });
+  const scoped = { kind, runId, inputKey: query.inputKey ?? null,
     valueOffset: query.valueOffset, valueLimit: query.valueLimit, includeValues: query.includeValues, maxValueBytes: query.maxValueBytes };
   const page = resultPage(fields, revision, scoped, query);
   let remaining = query.maxValueBytes;
   const inputs = page.data.map<BusinessInputProjection>(field => {
-    const present = Object.hasOwn(run.inputValues, field.key);
-    const raw = run.inputValues[field.key];
+    const present = Object.hasOwn(values, field.key);
+    const raw = values[field.key];
     const value = isMediaWorkflowType(field.type) ? mediaInput(raw) : scrubBusinessValue(raw);
     const characters = typeof value === "string" ? Array.from(value) : undefined;
     const entries = asRecord(value) ? Object.entries(value as Record<string, unknown>) : undefined;
@@ -118,7 +132,7 @@ export function businessRunInputs(run: RunRecord, query: RunInputQuery) {
       valueBytes, valuePage: { kind, total, offset, count: end - offset, pageSize: kind === "scalar" ? 1 : query.valueLimit, complete: !omitted && offset === 0 && end === total, hasMore: end < total, ...(end < total ? { nextValueOffset: end } : {}) },
     };
   });
-  return { runId: run.runId, revision, projection: "business" as const, snapshot: "recorded_run" as const, inputs, total: page.total,
+  return { runId, revision, projection: "business" as const, snapshot: "recorded_run" as const, inputs, total: page.total,
     hasMore: page.hasMore, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), nextAction: "inspect_inputs" };
 }
 

@@ -121,11 +121,14 @@ function isSameValue(left: unknown, right: unknown): boolean {
 }
 
 /**
- * 单行为什么还不能提交；null 表示可以提交。
- * 抽成纯函数是为了能单测这条规则：它同时被「创建」「保存修改」用来在本地先拦一道。
+ * 单行为什么还不能继续；null 表示可以继续。
+ * 抽成纯函数是为了能单测这条规则：它同时被「创建/保存草稿」「确认提交」用来在本地先拦一道。
+ *
+ * requireInputs:false 是保存草稿：只拦结构性缺项（没选场景/发布版），必填留到确认提交前再拦——
+ * 草稿本来就允许先存进度、后补素材。填错的值仍会被服务端拒绝，这里不替代服务端校验。
  */
-export function rowBlockReason(row: { sceneId?: string; versionId?: string }, gaps: readonly string[]): string | null {
+export function rowBlockReason(row: { sceneId?: string; versionId?: string }, gaps: readonly string[], options: { requireInputs?: boolean } = {}): string | null {
   if (!row.sceneId || !row.versionId) return "请先选择场景（任务项必须固定已发布版本）。";
-  if (gaps.length) return "还缺必填：" + gaps.join("、");
+  if (options.requireInputs !== false && gaps.length) return "还缺必填：" + gaps.join("、");
   return null;
 }

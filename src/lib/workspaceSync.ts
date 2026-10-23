@@ -1,5 +1,5 @@
 import type { WorkspaceSnapshot } from "../types";
-import type { RetainedSaveQueue, PendingSave } from "./retainedSaveQueue";
+import type { RetainedSaveQueue } from "./retainedSaveQueue";
 import type { WorkspaceStatus } from "../../server/domain/workspaceContracts";
 
 /** A server read is never merged with browser defaults, migrated or republished. */
@@ -15,23 +15,95 @@ export function readAuthoritativeWorkspace(value: unknown): WorkspaceSnapshot {
   return { ...record, sceneVersions: record.sceneVersions ?? {} } as WorkspaceSnapshot;
 }
 
-/** A recovery outbox is intent only. Reject incompatible entries without dropping or replaying them. */
-export function parseRetainedWorkspaceEdits(raw: string | null): PendingSave<WorkspaceSnapshot>[] {
-  let entries: unknown;
-  try { entries = raw === null ? [] : JSON.parse(raw); }
-  catch { throw new Error("待提交编辑不可读，原始数据已保留；不会用它创建场景"); }
-  if (!Array.isArray(entries)) throw new Error("待提交编辑格式不兼容，原始数据已保留；不会用它创建场景");
-  for (const entry of entries) {
-    readAuthoritativeWorkspace(entry?.base);
-    readAuthoritativeWorkspace(entry?.desired);
-  }
-  return entries as PendingSave<WorkspaceSnapshot>[];
-}
-
-/** Startup reads server authority only; retained browser edits are intentionally not an input. */
+/** Startup reads server authority only; there is no browser-owned workspace copy. */
 export async function loadAuthoritativeWorkspace(readWorkspace: () => Promise<{ workspace: WorkspaceSnapshot | null }>): Promise<WorkspaceSnapshot | null> {
   const response = await readWorkspace();
   return response.workspace === null ? null : readAuthoritativeWorkspace(response.workspace);
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return left === right;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * 只保留本次真正改动的部分，避免把整份工作区上传。
+ *
+ * 公网链路上行只有约 38 KB/s（下行 1.2 MB/s），而整份工作区约 3 MB，
+ * base 与 desired 各带一份就是 6 MB：一次保存要 160 秒，必然撞上边缘节点 524。
+ * 服务端 merge 本来就是三方合并——未出现在 base/desired 里的集合与键按"未修改"处理，
+ * 保留 current 的值，所以只送改动集合与改动键是等价的。
+ *
+ * 判定按"节点内容是否相同"而不是引用：本机编辑后的对象是新引用，
+ * 但其余场景/草稿/版本仍是原引用或深相等，不会白白上传。
+ */
+export function diffWorkspaceForMerge(base: WorkspaceSnapshot, desired: WorkspaceSnapshot): { base: WorkspaceSnapshot; workspace: WorkspaceSnapshot } {
+  const keepScenes = (before: WorkspaceSnapshot, after: WorkspaceSnapshot) => {
+    const beforeById = new Map(before.scenes.map(scene => [scene.id, scene]));
+    // 注意取 after 里的对象（改动后的值）；base 侧必须另外用 before 里的原值，
+    // 否则服务端会看到两侧相同而判定为"未修改"。
+    const scenes = after.scenes.filter(scene => !sameValue(beforeById.get(scene.id), scene));
+    // 顺序变化也是改动：服务端要靠完整序列判断是否重排。
+    const reordered = before.scenes.length !== after.scenes.length
+      || after.scenes.some((scene, index) => before.scenes[index]?.id !== scene.id);
+    return reordered ? after.scenes : scenes;
+  };
+  const keepDrafts = (before: WorkspaceSnapshot, after: WorkspaceSnapshot) => {
+    const beforeById = new Map(before.drafts.map(draft => [draft.id, draft]));
+    return after.drafts.filter(draft => !sameValue(beforeById.get(draft.id), draft));
+  };
+  const keepPresets = (before: WorkspaceSnapshot, after: WorkspaceSnapshot) => {
+    const beforeById = new Map(before.optionPresets.map(preset => [preset.id, preset]));
+    return after.optionPresets.filter(preset => !sameValue(beforeById.get(preset.id), preset));
+  };
+  const keepWorkflows = (before: WorkspaceSnapshot, after: WorkspaceSnapshot) => Object.fromEntries(
+    Object.entries(after.workflows).filter(([id, workflow]) => !sameValue(before.workflows[id], workflow)),
+  );
+  const keepVersions = (before: WorkspaceSnapshot, after: WorkspaceSnapshot) => Object.fromEntries(
+    Object.entries(after.sceneVersions).filter(([id, record]) => !sameValue(before.sceneVersions[id], record)),
+  );
+
+  const scenes = keepScenes(base, desired);
+  const drafts = keepDrafts(base, desired);
+  const optionPresets = keepPresets(base, desired);
+  const workflows = keepWorkflows(base, desired);
+  const sceneVersions = keepVersions(base, desired);
+  // 删除也必须是改动：desired 里少了谁，就要让服务端看到"少了"。
+  const removedScenes = base.scenes.filter(scene => !desired.scenes.some(current => current.id === scene.id));
+  const removedDrafts = base.drafts.filter(draft => !desired.drafts.some(current => current.id === draft.id));
+  const removedPresets = base.optionPresets.filter(preset => !desired.optionPresets.some(current => current.id === preset.id));
+  const removedWorkflows = Object.keys(base.workflows).filter(id => !(id in desired.workflows));
+  const removedVersions = Object.keys(base.sceneVersions).filter(id => !(id in desired.sceneVersions));
+
+  const trimmed = (snapshot: WorkspaceSnapshot, keep: { scenes: WorkspaceSnapshot["scenes"]; drafts: WorkspaceSnapshot["drafts"]; optionPresets: WorkspaceSnapshot["optionPresets"]; workflows: WorkspaceSnapshot["workflows"]; sceneVersions: WorkspaceSnapshot["sceneVersions"] }) => ({
+    ...snapshot,
+    scenes: keep.scenes,
+    drafts: keep.drafts,
+    optionPresets: keep.optionPresets,
+    workflows: keep.workflows,
+    sceneVersions: keep.sceneVersions,
+  });
+
+  // base 侧必须放「改动前的原值」，服务端才能算出改动；放改后的值会被判成"未修改"。
+  // 同时要带上被删除项，服务端才能识别"从有到无"。
+  const baseById = <T extends { id: string }>(items: T[]) => new Map(items.map(item => [item.id, item]));
+  const baseScenes = scenes.map(scene => baseById(base.scenes).get(scene.id) ?? scene);
+  const baseDrafts = drafts.map(draft => baseById(base.drafts).get(draft.id) ?? draft);
+  const basePresets = optionPresets.map(preset => baseById(base.optionPresets).get(preset.id) ?? preset);
+  const baseWorkflows = Object.fromEntries(Object.keys(workflows).map(id => [id, base.workflows[id]]));
+  const baseVersions = Object.fromEntries(Object.keys(sceneVersions).map(id => [id, base.sceneVersions[id]]));
+
+  return {
+    base: trimmed(base, {
+      scenes: [...baseScenes, ...removedScenes],
+      drafts: [...baseDrafts, ...removedDrafts],
+      optionPresets: [...basePresets, ...removedPresets],
+      workflows: { ...baseWorkflows, ...Object.fromEntries(removedWorkflows.map(id => [id, base.workflows[id]])) },
+      sceneVersions: { ...baseVersions, ...Object.fromEntries(removedVersions.map(id => [id, base.sceneVersions[id]])) },
+    }),
+    workspace: trimmed(desired, { scenes, drafts, optionPresets, workflows, sceneVersions }),
+  };
 }
 
 /** Preserve unchanged object identity so unrelated AI edits do not reset UI forms.
@@ -61,7 +133,7 @@ export function retainWorkspaceReferences(previous: WorkspaceSnapshot, incoming:
   return share(previous, incoming) as WorkspaceSnapshot;
 }
 
-/** Explicit user replacement: read successfully and recheck edits before discarding an outbox. */
+/** Explicit user replacement: read successfully and recheck edits before discarding pending writes. */
 export async function replaceWorkspaceFromAuthority(options: {
   current(): WorkspaceSnapshot;
   queue: Pick<RetainedSaveQueue<WorkspaceSnapshot>, "pendingCount" | "latest" | "discard">;
@@ -76,7 +148,7 @@ export async function replaceWorkspaceFromAuthority(options: {
   const response = await options.readWorkspace();
   const workspace = readAuthoritativeWorkspace(response.workspace);
   if (options.current() !== base || options.queue.latest !== pending || options.canApply?.() === false) throw new Error("读取期间有新编辑或保存回执，已保留本机内容，请稍后刷新");
-  if (options.discardPending && !options.queue.discard()) throw new Error("当前仍有配置请求在提交或本地存储失败；未替换本机内容");
+  if (options.discardPending && !options.queue.discard()) throw new Error("当前仍有配置请求在提交，未替换本机内容");
   options.apply(workspace);
 }
 
