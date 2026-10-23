@@ -153,7 +153,7 @@ const codeScenePackages = new CodeScenePackageService({
 // 用户面唯一入口：场景包就是磁盘代码子工程，历史配置型包仅作为回退保留读取。
 // 同一 packageId 只出一条目录项（代码包优先），运行记录按 packageRunId 归属分流。
 const packageCatalogue = new PackageCatalogueService(packageService, codeScenePackages);
-// CDK 登录：新卡自动建号、充值、授权当前所有已发布的包（管理员可后续调整）。
+// CDK 登录：新卡自动建号、充值、只授权卡绑定的那个包（未绑定时按 defaultPackageIds，当前为空）。
 const cdkLoginService = new CdkLoginService(
   metadataStore,
   input => accessService.create({ ...input, role: "user" }).then(result => result.user),
