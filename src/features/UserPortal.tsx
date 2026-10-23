@@ -429,8 +429,8 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
   const themeStyle = serviceThemeStyle(activePackage?.presentation);
 
   /** 结果画廊：结果区块与「作品」页共用，避免两处渲染逻辑不一致。 */
-  function resultGallery(packageRunId: string, emptyHint?: string) {
-    return <ServiceResultGallery packageRunId={packageRunId} emptyHint={emptyHint} />;
+  function resultGallery(packageRunId: string, emptyHint?: string, live?: boolean) {
+    return <ServiceResultGallery packageRunId={packageRunId} emptyHint={emptyHint} live={live} />;
   }
 
   return <div className="zclient">
@@ -669,6 +669,7 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
   /** 工作台右侧：当前这次运行的实时状态与产出；没有在跑就显示最近一次完成的结果。 */
   function workspaceResult() {
     if (packageRun && packageRun.stage !== "completed") {
+      const partial = packageRun.progress && packageRun.progress.completed > 0;
       return <div className="zclient-empty">
         <div>{serviceStageLabel(packageRun.stage)}</div>
         <div>{packageRun.stage === "running" && packageRun.progress ? `已完成 ${packageRun.progress.completed} / ${packageRun.progress.total} 步` : "结果生成后会自动出现在这里。"}</div>
@@ -677,6 +678,8 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
           <button type="button" className="zclient-btn zclient-btn-primary" disabled={busy} onClick={() => void confirmPackageItem(packageRun.confirmation!.itemId, "approve")}>满意，继续</button>
           <button type="button" className="zclient-btn" disabled={busy} onClick={() => void confirmPackageItem(packageRun.confirmation!.itemId, "redo")}>重做这一步</button>
         </div>}
+        {/* 运行中也要读结果：多步服务前面几步可能已经出图，等全部完成才显示等于让用户干等。 */}
+        {partial && <div className="zclient-gallery-wrap">{resultGallery(packageRun.packageRunId, undefined, true)}</div>}
       </div>;
     }
     // 已完成但没有产出（例如本次输入没带参考图）不能说「还在生成」——那是假的状态。
@@ -811,24 +814,33 @@ function HistoryThumb({ packageRunId, label }: { packageRunId: string; label: st
  * 结果画廊：读服务级产出（服务端已按包内顺序聚合各步媒体，不暴露子运行）。
  * 与「作品」页共用同一份读取逻辑，避免两处渲染不一致。
  */
-function ServiceResultGallery({ packageRunId, emptyHint }: { packageRunId: string; emptyHint?: string }) {
+function ServiceResultGallery({ packageRunId, emptyHint, live }: { packageRunId: string; emptyHint?: string; live?: boolean }) {
   const [shots, setShots] = useState<Shot[]>([]);
   const [error, setError] = useState("");
   const loaded = useRef("");
   useEffect(() => {
-    if (loaded.current === packageRunId) return;
-    loaded.current = packageRunId;
-    void (async () => {
+    // 结果还在跑时不能只读一次：首次读到空就上锁，会把「稍后出来的图」永久挡在门外。
+    // 只有拿到非空产出才停止轮询；运行中按短间隔重试。
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pull = async () => {
       try {
         const response = await fetch("/api/v1/self/package-runs/" + encodeURIComponent(packageRunId) + "/outputs", { credentials: "same-origin" });
-        if (!response.ok) { setError("结果暂时读取不到"); return; }
+        if (!response.ok) { if (!cancelled) setError("结果暂时读取不到"); return; }
         const data = await response.json() as { items?: Array<{ index: number; media: Array<{ url: string; kind: "image" | "video" | "audio" }> }> };
-        setShots((data.items ?? []).flatMap(item => item.media.filter(media => media.kind !== "audio").map((media, index) => ({
+        const next = (data.items ?? []).flatMap(item => item.media.filter(media => media.kind !== "audio").map((media, index) => ({
           key: item.index + ":" + index, url: media.url, kind: media.kind as "image" | "video", label: "产出",
-        }))));
-      } catch { setError("结果暂时读取不到"); }
-    })();
-  }, [packageRunId]);
+        })));
+        if (cancelled) return;
+        setShots(next);
+        setError("");
+        if (!next.length && live) timer = setTimeout(pull, 3000);
+      } catch { if (!cancelled) setError("结果暂时读取不到"); }
+    };
+    if (loaded.current !== packageRunId) { loaded.current = packageRunId; setShots([]); }
+    void pull();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [packageRunId, live]);
   if (error) return <div className="zclient-empty"><div>{error}</div></div>;
   if (!shots.length) return <div className="zclient-empty"><div>{emptyHint ?? "还在生成中，稍后刷新"}</div></div>;
   return <div className="zclient-gallery">{shots.map(shot => <RecentShot key={shot.key} url={shot.url} kind={shot.kind} label={shot.label} className="zclient-shot" zoomable />)}</div>;

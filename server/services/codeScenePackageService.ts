@@ -844,7 +844,8 @@ export class CodeScenePackageService {
     if (!loaded || !status || status.status !== "ok") {
       throw new HttpError(status ? 409 : 404, "场景包不存在或加载失败", "PACKAGE_NOT_LOADED", { packageId, error: status?.error });
     }
-    if (this.busy.has(packageId)) throw new HttpError(409, "场景包正在运行", "PACKAGE_BUSY", { packageId });
+    // 这里不再按 packageId 拦并发：包是可重复使用的服务，同一用户连续下两单是正常用法。
+    // 需要防的只是「同一个包运行被占两次」，那由 reserveRun 按 packageRunId 加锁。
     return loaded;
   }
 
@@ -901,22 +902,24 @@ export class CodeScenePackageService {
     return plan.total > 0 ? plan : undefined;
   }
 
-  /** 建一条 running 记录并占住该包；返回 packageRunId 与是否新建。 */
+  /** 建一条 running 记录并占住这次包运行；返回 packageRunId 与是否新建。 */
   private async reserveRun(packageId: string, loaded: LoadedPackage, invocation: CodeScenePackageInvocation): Promise<{ packageRunId: string; created: boolean }> {
-    // 占位必须同步完成：中间有 await，两个并发请求都能通过检查，包就会被同时跑两次。
-    if (this.busy.has(packageId)) throw new HttpError(409, "场景包正在运行", "PACKAGE_BUSY", { packageId });
-    this.busy.add(packageId);
+    // 锁的粒度是「一次包运行」，不是「一个包」：包可以同时被多次调用（用户连续下单），
+    // 但同一个 packageRunId 不能被两个请求同时占位——否则一次重放就会重复执行、重复扣费。
+    const packageRunId = invocation.packageRunId ?? randomUUID();
+    const lockKey = packageId + ":" + packageRunId;
+    // 占位必须同步完成：中间有 await，两个并发请求都能通过检查，同一个运行就会被跑两次。
+    if (this.busy.has(lockKey)) throw new HttpError(409, "这次包运行正在处理中", "PACKAGE_BUSY", { packageId, packageRunId });
+    this.busy.add(lockKey);
     let handedOff = false;
     let reserved = false;
     let reservedUserId = "";
-    let packageRunId = "";
     try {
       const project = await this.projectDirectory();
       if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
 
       const owner = this.ownerOf(invocation);
       const createdAt = this.now().toISOString();
-      packageRunId = invocation.packageRunId ?? randomUUID();
       // 同 ID 重放：响应丢失后客户端只查这个 ID，不换 ID 重提；不重复执行、不重复扣费。
       const existing = this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, packageRunId);
       if (existing) {
@@ -970,8 +973,8 @@ export class CodeScenePackageService {
       throw error;
     } finally {
       // 只有真正把包交给 executeRun 时才继续占位；重放与异常路径必须立刻释放，
-      // 否则一次失败的提交会让这个包永久 409。
-      if (!handedOff) this.busy.delete(packageId);
+      // 否则一次失败的提交会让这个运行永久 409。
+      if (!handedOff) this.busy.delete(lockKey);
     }
   }
 
@@ -984,7 +987,7 @@ export class CodeScenePackageService {
   }
 
   /** 执行一次已占位的包运行，并落终态。start() 与 invoke() 共用这一条路径。 */
-  private async executeRun(packageId: string, loaded: LoadedPackage, packageRunId: string, raw?: unknown): Promise<{
+  private async executeRun(packageId: string, loaded: LoadedPackage, packageRunId: string, raw?: unknown, actor?: { ownerUserId: string; submitter?: RunSubmitter }): Promise<{
     packageRunId: string;
     packageId: string;
     status: "completed" | "failed";
@@ -994,7 +997,10 @@ export class CodeScenePackageService {
     runIds: string[];
   }> {
     const project = await this.projectDirectory();
-    const owner = this.deps.resolveOwner?.() ?? OPERATOR_IDENTITY;
+    // 归属必须跟着「这次包运行是谁发起的」走：用户面提交的子运行要挂在提交人身上，
+    // 否则用户拿自己的登录态读不到自己刚出的图（ownerUserId 是 @operator，媒体一律 401）。
+    // 只有管理端/运维调用没有发起人时才回退操作员身份。
+    const owner = actor ?? this.deps.resolveOwner?.() ?? OPERATOR_IDENTITY;
     const context: InvocationContext = {
       packageRunId,
       projectDirectory: project,
@@ -1059,7 +1065,8 @@ export class CodeScenePackageService {
         runIds: [...context.runIds],
       };
     } finally {
-      this.busy.delete(packageId);
+      // 与 reserveRun 同一把键：锁是按「这次包运行」加的，按包 ID 释放会漏掉占位。
+      this.busy.delete(packageId + ":" + packageRunId);
     }
   }
 
@@ -1109,10 +1116,11 @@ export class CodeScenePackageService {
     const saved = this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, reserved.packageRunId)!;
     if (reserved.created) {
       // 已受理即返回；执行在后台推进，HTTP 请求不等分钟级子运行。
+      // 发起人身份必须显式传下去：子运行与产出的归属靠它，缺了就会落到 @operator 上。
       void this.executeRun(packageId, loaded, reserved.packageRunId, {
         inputs,
         ...(typeof body.runTitle === "string" && body.runTitle.trim() ? { title: body.runTitle.trim().slice(0, 120) } : {}),
-      });
+      }, this.ownerOf({ identity: current }));
     }
     return { packageRun: this.viewUserRun(saved), created: reserved.created, nextAction: "poll_own_package_run" };
   }

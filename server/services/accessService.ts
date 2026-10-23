@@ -246,8 +246,12 @@ export class AccessService {
    * 用户没有内部场景的 sceneIds；存量服务运行没有 packageRunId 标记，只能按引用反查。
    */
   ownedByPackageRun(run: { runId: string }, ownerUserId: string) {
-    const runs = this.store.listDocumentsAcrossProjects<{ ownerUserId?: string; items?: Array<{ runId?: string }> }>("packageRuns");
-    return runs.some(record => record.ownerUserId === ownerUserId && (record.items ?? []).some(item => item.runId === run.runId));
+    // 配置型包把子运行记在 items[].runId；代码包记在 runIds[]。两种都要查，
+    // 否则代码包的历史产出（尤其早期 owner 落成 @operator 的记录）对用户永久 401。
+    const configured = this.store.listDocumentsAcrossProjects<{ ownerUserId?: string; items?: Array<{ runId?: string }> }>("packageRuns");
+    if (configured.some(record => record.ownerUserId === ownerUserId && (record.items ?? []).some(item => item.runId === run.runId))) return true;
+    const code = this.store.listDocumentsAcrossProjects<{ ownerUserId?: string; runIds?: string[] }>("codeScenePackageRuns");
+    return code.some(record => record.ownerUserId === ownerUserId && (record.runIds ?? []).includes(run.runId));
   }
   /** 包授权是用户面的唯一单元：管理员不受限；普通用户只看 packageIds。 */
   authorizePackage(identity: Identity, packageId: string) {

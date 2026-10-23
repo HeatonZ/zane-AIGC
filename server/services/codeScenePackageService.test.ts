@@ -303,8 +303,10 @@ test("start() 返回 packageRunId 后立即查详情可见，并在后台跑到�
   assert.equal(immediate.packageId, "demo");
   assert.ok(["running", "completed"].includes(immediate.status));
 
-  // 同一包并发再起一次 → 409，不许同一个包并行跑两遍。
-  await assert.rejects(service.start("demo"), (error: unknown) => error instanceof HttpError && error.code === "PACKAGE_BUSY");
+  // 包是可重复调用的服务：同一用户连续下两单必须都能受理，不能因为上一单还在跑就 409。
+  const second = await service.start("demo");
+  assert.equal(second.status, "running");
+  assert.notEqual(second.packageRunId, accepted.packageRunId);
 
   // 等后台跑到终态。
   let detail = await service.getRunDetail("demo", accepted.packageRunId);
@@ -321,13 +323,23 @@ test("start() 返回 packageRunId 后立即查详情可见，并在后台跑到�
 
   // 另一个包跑一次，验证列表按 packageId 归属过滤，不会串包。
   const otherRun = await service.invoke("other");
+  // 第二单也要跑到终态，列表计数才稳定。
+  let secondDetail = await service.getRunDetail("demo", second.packageRunId);
+  for (let attempt = 0; attempt < 200 && secondDetail.status === "running"; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    secondDetail = await service.getRunDetail("demo", second.packageRunId);
+  }
+  assert.equal(secondDetail.status, "completed");
+  // 两单各自有独立子运行，互不串。
+  assert.notEqual(secondDetail.runIds[0], detail.runIds[0]);
+  assert.equal(secondDetail.runs[0]!.packageRunId, second.packageRunId);
+
   const demoRuns = await service.listRuns("demo");
   assert.equal(demoRuns.packageId, "demo");
-  assert.equal(demoRuns.runs.length, 1);
-  assert.equal(demoRuns.runs[0]!.id, accepted.packageRunId);
+  assert.equal(demoRuns.runs.length, 2);
+  assert.deepEqual(demoRuns.runs.map((run) => run.id).sort(), [accepted.packageRunId, second.packageRunId].sort());
   assert.equal(demoRuns.runs[0]!.packageId, "demo");
   assert.equal(demoRuns.runs[0]!.packageTitle, "演示包");
-  assert.equal(demoRuns.hasMore, false);
   // 列表不带 result：产出走详情。
   assert.equal("result" in (demoRuns.runs[0] as Record<string, unknown>), false);
   const otherRuns = await service.listRuns("other");
@@ -339,12 +351,12 @@ test("start() 返回 packageRunId 后立即查详情可见，并在后台跑到�
 
   // 状态筛选 + 分页。
   const completed = await service.listRuns("demo", { status: "completed" });
-  assert.equal(completed.runs.length, 1);
+  assert.equal(completed.runs.length, 2);
   const running = await service.listRuns("demo", { status: "running" });
   assert.equal(running.runs.length, 0);
   const paged = await service.listRuns("demo", { limit: 1 });
   assert.equal(paged.runs.length, 1);
-  assert.equal(paged.hasMore, false);
+  assert.equal(paged.hasMore, true);
   await assert.rejects(service.listRuns("demo", { limit: 0 }), (error: unknown) => error instanceof HttpError && error.code === "INVALID_RUN_LIMIT");
   await assert.rejects(service.listRuns("demo", { cursor: "not-a-run" }), (error: unknown) => error instanceof HttpError && error.code === "INVALID_RUN_CURSOR");
   await assert.rejects(service.listRuns("bad id"), (error: unknown) => error instanceof HttpError && error.code === "INVALID_PACKAGE_ID");
