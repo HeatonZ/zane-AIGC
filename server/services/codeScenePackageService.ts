@@ -34,12 +34,24 @@ const executorSchema = z.object({
   sceneId: z.string().min(1),
   versionId: z.string().min(1),
 });
+/**
+ * 多场景执行清单的一项：`key` 是包代码里用来选场景的名字，sceneId/versionId 是固定发布版。
+ * 一个包可以声明多条（如短剧的「四视图 / 场景图 / 分镜 / 出片」），代码用 framework.scenes.run({ scene: key }) 选。
+ */
+const executorEntrySchema = z.object({
+  key: z.string().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "场景键只允许字母、数字、下划线、点与短横线"),
+  sceneId: z.string().min(1),
+  versionId: z.string().min(1),
+});
+const executorsSchema = z.array(executorEntrySchema).max(32);
 
 const configDocumentSchema = z.object({
   id: z.string().min(1),
   revision: z.int().min(0),
   enabled: z.boolean(),
   executor: executorSchema.nullable().optional(),
+  /** 多场景清单：与 executor 并存，两者都声明时以清单为准（executor 视作清单第一项）。 */
+  executors: executorsSchema.optional(),
   inputs: z.array(z.object({
     key: z.string().min(1).max(200),
     label: z.string().max(200).optional(),
@@ -62,6 +74,8 @@ const packageJsonSchema = z.object({
     version: z.string().min(1),
     // 规格 §2：executor 可省略，省略时取管理端配置（管理端为准）。
     executor: executorSchema.optional(),
+    /** 多场景清单：短剧这类一条流水线要用多个场景的包，用清单声明，代码按 key 选。 */
+    executors: executorsSchema.optional(),
     inputs: z.array(z.record(z.string(), z.unknown())).optional(),
     entry: z.string().min(1).optional(),
     // 服务页面与定价属于包自身：代码工程要能自描述「用户打开看到什么、跑一次多少钱」，
@@ -76,6 +90,11 @@ const packageJsonSchema = z.object({
 export interface CodeScenePackageExecutor {
   sceneId: string;
   versionId: string;
+}
+
+/** 多场景清单的一项：key 是包代码里的选择名，sceneId/versionId 固定发布版。 */
+export interface CodeScenePackageExecutorEntry extends CodeScenePackageExecutor {
+  key: string;
 }
 
 /**
@@ -96,6 +115,8 @@ export interface DeclaredScenePackageManifest {
   title: string;
   version: string;
   executor?: CodeScenePackageExecutor;
+  /** 多场景清单（可选）：一条流水线要用多个场景时声明，代码按 key 选。 */
+  executors?: CodeScenePackageExecutorEntry[];
   inputs: Array<Record<string, unknown>>;
   entry: string;
   /** 一句话说明与详情，用户面目录/详情直接读包自己的声明。 */
@@ -106,9 +127,9 @@ export interface DeclaredScenePackageManifest {
   pricing?: Record<string, unknown>;
 }
 
-/** 已解析的执行契约：executor 一定存在，运行期只认这个形状。 */
+/** 已解析的执行契约：单场景包一定有 executor；多场景包用 executors，此时 executor 可省略。 */
 export interface CodeScenePackageManifest extends DeclaredScenePackageManifest {
-  executor: CodeScenePackageExecutor;
+  executor?: CodeScenePackageExecutor;
 }
 
 export type CodeScenePackageStatus = "ok" | "error" | "disabled";
@@ -177,6 +198,8 @@ export interface CodeScenePackageFramework {
   };
   package: { packageId: string; title: string; version: string };
   scenes: {
+    /** 本包声明过的场景清单：key 用于 run({ scene: key }) 选场景。 */
+    list(): Array<{ key: string; sceneId: string; versionId: string }>;
     run(input?: unknown): Promise<{
       runId: string;
       status: string;
@@ -238,8 +261,8 @@ interface LoadedPackage {
   directory: string;
   projectDirectory: string;
   manifest: CodeScenePackageManifest;
-  /** 生效的执行场景：管理端配置优先，package.json 只作默认值（规格 §2/§6）。 */
-  executor: CodeScenePackageExecutor;
+  /** 生效的执行场景：管理端配置优先，package.json 只作默认值（规格 §2/§6）。多场景包可省略。 */
+  executor?: CodeScenePackageExecutor;
   entryPath: string;
   framework: CodeScenePackageFramework;
   run: (input: unknown) => unknown;
@@ -345,6 +368,41 @@ export class CodeScenePackageService {
     return config?.executor ?? manifest.executor;
   }
 
+  /**
+   * 生效的场景清单：管理端配置优先，其次 package.json；两者都没写 executors 时，
+   * 把旧的单 executor 包成一项（key = "default"），旧包因此不需要改一行代码。
+   * 清单非空即视为「多场景包」，sceneRun 允许按 key 选；单场景包仍只认配置的那一个场景。
+   */
+  private effectiveExecutors(
+    config: CodeScenePackageConfigDocument | undefined,
+    manifest: DeclaredScenePackageManifest,
+  ): CodeScenePackageExecutorEntry[] {
+    const declared = config?.executors ?? manifest.executors;
+    if (declared?.length) return declared;
+    const single = this.effectiveExecutor(config, manifest);
+    return single ? [{ key: "default", ...single }] : [];
+  }
+
+  /** 清单里按 key 找场景；key 省略时取第一项（单场景包等价于原来的唯一执行场景）。 */
+  private pickExecutor(
+    executors: CodeScenePackageExecutorEntry[],
+    key: unknown,
+  ): CodeScenePackageExecutorEntry | undefined {
+    if (!executors.length) return undefined;
+    if (key === undefined || key === null || key === "") return executors[0];
+    if (typeof key !== "string") return undefined;
+    return executors.find((entry) => entry.key === key);
+  }
+
+  /**
+   * 运行记录/日志上的「执行场景」字段。多场景包没有唯一执行场景，
+   * 用第一项占位（保持字段非空、可读），真实用哪个场景看该次子运行。
+   */
+  private primaryExecutor(manifest: CodeScenePackageManifest): CodeScenePackageExecutor {
+    const declared = manifest.executors?.length ? manifest.executors : manifest.executor ? [{ key: "default", ...manifest.executor }] : [];
+    return declared[0] ?? { sceneId: "", versionId: "" };
+  }
+
   private decorateStatus(project: string, entry: CodeScenePackageRegistryEntry): CodeScenePackageRegistryEntry {
     const config = this.configFor(project, entry.packageId);
     const manifest = entry.manifest;
@@ -399,6 +457,7 @@ export class CodeScenePackageService {
       revision: expectedRevision as number,
       enabled: typeof body.enabled === "boolean" ? body.enabled : current?.enabled ?? true,
       executor: body.executor === null ? null : body.executor === undefined ? current?.executor ?? null : body.executor,
+      executors: body.executors === undefined ? current?.executors : body.executors,
       inputs: Array.isArray(body.inputs) ? body.inputs : current?.inputs ?? [],
       ...(body.presentation !== undefined ? { presentation: body.presentation } : current?.presentation ? { presentation: current.presentation } : {}),
       ...(body.pricing !== undefined ? { pricing: body.pricing } : current?.pricing ? { pricing: current.pricing } : {}),
@@ -407,7 +466,8 @@ export class CodeScenePackageService {
     const parsed = configDocumentSchema.safeParse(next);
     if (!parsed.success) throw new HttpError(400, "场景包配置格式无效", "INVALID_CODE_PACKAGE_CONFIG", { issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) });
     const effective = parsed.data.executor ?? manifest?.executor;
-    if (parsed.data.enabled && (!effective?.sceneId || !effective.versionId)) throw new HttpError(400, "必须选择执行场景和已发布版本", "CODE_PACKAGE_EXECUTOR_REQUIRED");
+    const effectiveList = this.effectiveExecutors(parsed.data, manifest ?? { title: "", version: "", inputs: [], entry: "" });
+    if (parsed.data.enabled && !effectiveList.length && (!effective?.sceneId || !effective.versionId)) throw new HttpError(400, "必须选择执行场景和已发布版本", "CODE_PACKAGE_EXECUTOR_REQUIRED");
     try {
       const saved = this.deps.store.putDocumentChecked(project, PACKAGE_CONFIG_COLLECTION, parsed.data, expectedRevision as number);
       if (!saved.enabled) {
@@ -459,6 +519,8 @@ export class CodeScenePackageService {
       const config = this.configFor(project, packageId);
       const enabled = config?.enabled ?? true;
       const executor = this.effectiveExecutor(config, declared);
+      // 多场景包没有单一 executor，但清单非空同样算「已配置执行场景」。
+      const executors = this.effectiveExecutors(config, declared);
       // 管理端配置为准（规格 §2/§6）：package.json 只作默认值。缺执行场景时该包不可运行，
       // 但磁盘代码仍要能列出来，让管理员在配置面板里补选。
       const manifest: DeclaredScenePackageManifest = declared;
@@ -474,10 +536,10 @@ export class CodeScenePackageService {
         writeLog("info", "scene_package.disabled", { packageId, directory });
         return status;
       }
-      if (!executor) {
+      if (!executor && !executors.length) {
         throw new HttpError(400, "未配置执行场景：请在此场景包的配置面板选择执行场景与已发布版本", "CODE_PACKAGE_EXECUTOR_REQUIRED", { packageId });
       }
-      const resolved: CodeScenePackageManifest = { ...manifest, executor };
+      const resolved: CodeScenePackageManifest = { ...manifest, ...(executor ? { executor } : {}), ...(executors.length > 1 ? { executors } : {}) };
       const entryPath = path.resolve(directory, resolved.entry);
       const relative = path.relative(directory, entryPath);
       if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -574,6 +636,7 @@ export class CodeScenePackageService {
       title: meta.title,
       version: meta.version,
       executor: meta.executor,
+      ...(meta.executors?.length ? { executors: meta.executors } : {}),
       inputs: meta.inputs ?? [],
       entry: meta.entry ?? DEFAULT_ENTRY,
       ...(meta.summary ? { summary: meta.summary } : {}),
@@ -600,6 +663,10 @@ export class CodeScenePackageService {
       },
       package: { packageId, title: manifest.title, version: manifest.version },
       scenes: {
+        list: () => {
+          const config = service.configFor(service.active.getStore()?.projectDirectory ?? "", packageId);
+          return service.effectiveExecutors(config, manifest).map((entry) => ({ key: entry.key, sceneId: entry.sceneId, versionId: entry.versionId }));
+        },
         run: (input) => service.sceneRun(packageId, manifest, input),
         wait: (runId, options) => service.sceneWait(runId, options),
         cancel: (runId) => service.sceneCancel(runId),
@@ -635,12 +702,24 @@ export class CodeScenePackageService {
     const suppliedSceneId = body.sceneId;
     const suppliedVersionId = body.versionId;
     const inputsBody = asRecord(body.inputs);
+
+    // 选场景：清单里按 key 选（多场景包），或用旧的单 executor（单场景包）。
+    // 两种形态都必须落在包声明过的场景上——执行归属仍归父工程，不能临时指定任意场景。
+    const executors = this.effectiveExecutors(this.configFor(context.projectDirectory, packageId), manifest);
+    const requestedKey = body.scene ?? body.sceneKey;
+    const chosen = this.pickExecutor(executors, requestedKey);
+    if (!chosen) {
+      throw new HttpError(400, requestedKey === undefined || requestedKey === null || requestedKey === ""
+        ? "场景包未配置执行场景"
+        : "场景包没有声明这个场景键：" + String(requestedKey) + "；可用：" + executors.map((entry) => entry.key).join("、"),
+      "PACKAGE_SCENE_NOT_DECLARED", { packageId, requested: String(requestedKey ?? ""), declared: executors.map((entry) => entry.key) });
+    }
     // Only the executor fields at the call's top level can change attribution. A scene may
     // legitimately declare an input literally named "sceneId"; that is payload, not executor.
-    if (suppliedSceneId !== undefined && suppliedSceneId !== manifest.executor.sceneId) throw executorMismatch(packageId, "sceneId", suppliedSceneId, manifest.executor.sceneId);
-    if (suppliedVersionId !== undefined && suppliedVersionId !== manifest.executor.versionId) throw executorMismatch(packageId, "versionId", suppliedVersionId, manifest.executor.versionId);
+    if (suppliedSceneId !== undefined && suppliedSceneId !== chosen.sceneId) throw executorMismatch(packageId, "sceneId", suppliedSceneId, chosen.sceneId);
+    if (suppliedVersionId !== undefined && suppliedVersionId !== chosen.versionId) throw executorMismatch(packageId, "versionId", suppliedVersionId, chosen.versionId);
 
-    const reserved = new Set(["sceneId", "versionId", "title", "runTitle", "inputs", "inputValues"]);
+    const reserved = new Set(["sceneId", "versionId", "scene", "sceneKey", "title", "runTitle", "inputs", "inputValues"]);
     const flatInputs = Object.fromEntries(Object.entries(body).filter(([key]) => !reserved.has(key)));
     const inputValues = asRecord(body.inputValues) ?? inputsBody ?? (Object.keys(flatInputs).length ? flatInputs : {});
 
@@ -648,7 +727,7 @@ export class CodeScenePackageService {
     const title = typeof titleSource === "string" && titleSource.trim() ? titleSource.trim().slice(0, 80) : manifest.title;
     const runTitle = `${manifest.title} · ${title}`.slice(0, 120);
 
-    const prepared = await this.deps.scenes.prepare(manifest.executor.sceneId, manifest.executor.versionId, inputValues as Record<string, JsonValue>);
+    const prepared = await this.deps.scenes.prepare(chosen.sceneId, chosen.versionId, inputValues as Record<string, JsonValue>);
     const runId = randomUUID();
     const run = await this.deps.runs.submit(
       { runId, runTitle, workflow: prepared.workflow, inputValues: prepared.inputValues, packageRunId: context.packageRunId },
@@ -658,8 +737,8 @@ export class CodeScenePackageService {
     return {
       runId: run.runId,
       status: run.status,
-      sceneId: manifest.executor.sceneId,
-      versionId: manifest.executor.versionId,
+      sceneId: chosen.sceneId,
+      versionId: chosen.versionId,
       runTitle: run.runTitle ?? runTitle,
       packageRunId: context.packageRunId,
     };
@@ -737,7 +816,7 @@ export class CodeScenePackageService {
     writeLog(safeLevel, "scene_package.log", {
       packageId,
       packageRunId: context?.packageRunId ?? "",
-      executorSceneId: manifest.executor.sceneId,
+      executorSceneId: this.primaryExecutor(manifest).sceneId,
       message: message.slice(0, 500),
       ...(fields ?? {}),
     });
@@ -857,8 +936,8 @@ export class CodeScenePackageService {
         kind: "code-scene-package",
         packageId,
         packageTitle: loaded.manifest.title,
-        executorSceneId: loaded.manifest.executor.sceneId,
-        executorVersionId: loaded.manifest.executor.versionId,
+        executorSceneId: this.primaryExecutor(loaded.manifest).sceneId,
+        executorVersionId: this.primaryExecutor(loaded.manifest).versionId,
         packageRunId,
         ownerUserId: owner.ownerUserId,
         ...(owner.submitter ? { submitter: owner.submitter } : {}),
@@ -968,7 +1047,7 @@ export class CodeScenePackageService {
       writeLog("error", "scene_package.run_failed", {
         packageId,
         packageRunId,
-        executorSceneId: loaded.manifest.executor.sceneId,
+        executorSceneId: this.primaryExecutor(loaded.manifest).sceneId,
         error: message,
       });
       return {
@@ -1094,8 +1173,8 @@ export class CodeScenePackageService {
       packageRunId: reserved.packageRunId,
       packageId,
       status: "running" as const,
-      executorSceneId: loaded.manifest.executor.sceneId,
-      executorVersionId: loaded.manifest.executor.versionId,
+      executorSceneId: this.primaryExecutor(loaded.manifest).sceneId,
+      executorVersionId: this.primaryExecutor(loaded.manifest).versionId,
       nextAction: "poll_package_run" as const,
     };
   }

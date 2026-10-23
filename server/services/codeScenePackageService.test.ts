@@ -349,3 +349,78 @@ test("start() 返回 packageRunId 后立即查详情可见，并在后台跑到�
   await assert.rejects(service.listRuns("demo", { cursor: "not-a-run" }), (error: unknown) => error instanceof HttpError && error.code === "INVALID_RUN_CURSOR");
   await assert.rejects(service.listRuns("bad id"), (error: unknown) => error instanceof HttpError && error.code === "INVALID_PACKAGE_ID");
 });
+
+test("多场景包：executors 清单可按 key 选场景，未声明的 key 拒绝且不产生子运行", async (t) => {
+  let store: import("../storage/sqliteStore.js").SqliteStore | undefined;
+  const root = await temporaryDirectory(t, () => store?.close());
+  const project = path.join(root, "project");
+  await mkdir(project, { recursive: true });
+  const prepared: Array<{ sceneId: string; versionId: string }> = [];
+  await writePackage(project, "drama", {
+    "package.json": JSON.stringify({
+      zaneScenePackage: {
+        title: "短剧流水线",
+        version: "1.0.0",
+        // 没有单一 executor：一条流水线要用多个场景。
+        executors: [
+          { key: "four_view", sceneId: "scene-four-view", versionId: "v-fv" },
+          { key: "scene_plate", sceneId: "scene-plate", versionId: "v-pl" },
+          { key: "render", sceneId: "scene-render", versionId: "v-rd" },
+        ],
+        entry: "index.mjs",
+      },
+    }),
+    "index.mjs": `export default (framework) => ({
+      run: async () => {
+        const keys = framework.scenes.list().map((entry) => entry.key);
+        const a = await framework.scenes.run({ scene: "four_view", inputs: { prompt: "四视图" } });
+        const b = await framework.scenes.run({ scene: "render", inputs: { prompt: "出片" } });
+        return { keys, scenes: [a.sceneId, b.sceneId] };
+      },
+    });`,
+  });
+
+  const { SqliteStore } = await import("../storage/sqliteStore.js");
+  store = new SqliteStore(path.join(root, "metadata.db"));
+  const service = new CodeScenePackageService({
+    store,
+    scenes: {
+      prepare: async (sceneId: string, versionId: string) => {
+        prepared.push({ sceneId, versionId });
+        return { workflow: { sceneId }, inputValues: {} };
+      },
+    } as never,
+    runs: { submit: async (input: { runId: string }) => ({ runId: input.runId, status: "completed" }), wait: async () => ({}), cancel: async () => ({}), getRun: async () => undefined } as never,
+    loadSettings: async () => ({ projectDirectory: project, comfyuiBaseUrl: "", workflowTimeoutMinutes: 1, enabledHermesProfiles: [] }),
+  });
+
+  const loaded = await service.loadAll();
+  assert.equal(loaded.failed, 0);
+  assert.equal(loaded.loaded, 1);
+
+  const invoked = await service.invoke("drama");
+  assert.equal(invoked.status, "completed", invoked.error);
+  assert.deepEqual((invoked.result as { keys: string[] }).keys, ["four_view", "scene_plate", "render"]);
+  assert.deepEqual((invoked.result as { scenes: string[] }).scenes, ["scene-four-view", "scene-render"]);
+  // 两次调用各落到清单里对应的场景与发布版，不是同一个场景。
+  assert.deepEqual(prepared, [
+    { sceneId: "scene-four-view", versionId: "v-fv" },
+    { sceneId: "scene-render", versionId: "v-rd" },
+  ]);
+
+  // 未声明的场景键必须拒绝，且不能留下子运行。
+  await writePackage(project, "drama", {
+    "index.mjs": `export default (framework) => ({
+      run: async () => {
+        const r = await framework.scenes.run({ scene: "not_declared", inputs: {} });
+        return { sceneId: r.sceneId };
+      },
+    });`,
+  });
+  await service.reload("drama");
+  const before = prepared.length;
+  const rejected = await service.invoke("drama");
+  assert.equal(rejected.status, "failed");
+  assert.equal(rejected.errorCode, "PACKAGE_SCENE_NOT_DECLARED");
+  assert.equal(prepared.length, before);
+});

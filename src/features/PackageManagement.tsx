@@ -4,7 +4,7 @@ import type { SceneModule } from "../types";
 import type { SceneVersionRecord } from "../types";
 import PackagePageEditor, { defaultServicePage } from "./PackagePageEditor";
 import type { PackagePresentation } from "../../server/domain/packageContracts.js";
-import { describeCodePackageStatus, executorSelectionError, inputContractRows, inputOverridePayload, mergePackageCatalog } from "../lib/packageCatalog";
+import { describeCodePackageStatus, inputContractRows, inputOverridePayload, mergePackageCatalog } from "../lib/packageCatalog";
 
 interface PackageItemDraft { id: string; name: string; sceneId: string; versionId: string; inputs: Array<{ key: string; valueSource: "input" | "literal" | "previous"; sourceRef?: string; literalValue?: string }>; confirmAfter?: boolean }
 interface PackagePricingDraft { version: 1; base: number; items: Record<string, { unit: "per_call" | "per_item"; credits: number }> }
@@ -14,6 +14,7 @@ interface CodePackageConfigDraft {
   revision: number;
   enabled: boolean;
   executor?: { sceneId: string; versionId: string } | null;
+  executors?: Array<{ key: string; sceneId: string; versionId: string }>;
   inputs?: Array<{ key: string; label?: string; required?: boolean; defaultValue?: unknown }>;
   presentation?: PackagePresentation;
   pricing?: PackagePricingDraft;
@@ -27,7 +28,7 @@ interface CodePackageEntry {
   loadedAt?: string;
   enabled: boolean;
   revision?: number;
-  manifest?: { title: string; version: string; entry: string; inputs: Array<Record<string, unknown>>; executor?: { sceneId: string; versionId: string } };
+  manifest?: { title: string; version: string; entry: string; inputs: Array<Record<string, unknown>>; executor?: { sceneId: string; versionId: string }; executors?: Array<{ key: string; sceneId: string; versionId: string }> };
   executor?: { sceneId: string; versionId: string };
   config?: CodePackageConfigDraft;
 }
@@ -154,12 +155,12 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
   async function saveCode() {
     if (!selectedCode) return;
     const config = selectedCode.config;
-    const executor = config?.executor ?? selectedCode.executor ?? null;
     const enabled = config?.enabled ?? selectedCode.enabled;
-    if (enabled) {
-      const invalid = executorSelectionError(executor?.sceneId ?? "", executor?.versionId ?? "");
-      if (invalid) { setError(invalid); return; }
-    }
+    // 场景清单：界面上的行就是提交内容。全空行视为「没配」，不能存成一条空场景。
+    const rows = codeExecutors.filter(entry => entry.key.trim() && entry.sceneId && entry.versionId);
+    if (enabled && !rows.length) { setError("请至少配一个执行场景和已发布版本"); return; }
+    const duplicate = rows.map(entry => entry.key.trim()).find((key, index, all) => all.indexOf(key) !== index);
+    if (duplicate) { setError("场景键重复：" + duplicate + "；每个场景键必须唯一"); return; }
     setBusy(true); setError(""); setNotice("");
     try {
       const result = await accessApi<{ package: CodePackageEntry }>("/api/v1/code-packages/" + encodeURIComponent(selectedCode.packageId), {
@@ -167,10 +168,11 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
         body: JSON.stringify({
           revision: config?.revision ?? selectedCode.revision ?? 0,
           enabled,
-          executor: executor ? { sceneId: executor.sceneId, versionId: executor.versionId } : null,
+          // 单场景包仍写 executor（旧形态兼容），多场景写清单；两者都由服务端按清单优先解析。
+          executor: rows.length === 1 ? { sceneId: rows[0].sceneId, versionId: rows[0].versionId } : null,
+          executors: rows.map(entry => ({ key: entry.key.trim(), sceneId: entry.sceneId, versionId: entry.versionId })),
           // 送覆盖差异而不是全量：管理员没动过的字段留给 package.json，磁盘改标签/必填才继续生效。
           inputs: inputOverridePayload(codeInputs, selectedCode.manifest?.inputs ?? []),
-          ...(config?.presentation ? { presentation: config.presentation } : {}),
           ...(config?.pricing ? { pricing: config.pricing } : {}),
         }),
       });
@@ -208,6 +210,14 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
       defaultValue: (field as Record<string, unknown>).defaultValue,
     }));
   const codeExecutor = selectedCode?.config?.executor ?? selectedCode?.executor ?? null;
+  // 场景清单：管理端配置优先，其次 package.json 的 executors；都没有就退回单 executor（键名 default）。
+  // 界面永远至少给一行，避免「多场景包没有唯一执行场景」时出现空面板无法配置。
+  const codeExecutors: Array<{ key: string; sceneId: string; versionId: string }> = (() => {
+    const declared = selectedCode?.config?.executors ?? selectedCode?.manifest?.executors;
+    if (declared?.length) return declared.map(entry => ({ key: entry.key, sceneId: entry.sceneId, versionId: entry.versionId }));
+    if (codeExecutor) return [{ key: "default", sceneId: codeExecutor.sceneId, versionId: codeExecutor.versionId }];
+    return [{ key: "default", sceneId: "", versionId: "" }];
+  })();
 
   // ---- 运行一个代码包 ----
   // 提交走管理员路由（202 + packageRunId），执行与排队全部由 RunService 负责，本页只轮询记录。
@@ -283,20 +293,30 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
     {selectedCode && <section className="access-card" data-code-config={selectedCode.packageId}>
       <h2>配置 · {selectedCode.manifest?.title ?? selectedCode.packageId}</h2>
       <p className="access-hint">package.json 里的值只是默认值，这里保存的配置优先。代码本身在磁盘上改，本页不提供编辑器。</p>
-      <label>执行场景<select className="text-input" value={codeExecutor?.sceneId ?? ""} onChange={e => {
-        const sceneId = e.target.value;
-        patchCode({ executor: sceneId ? { sceneId, versionId: publishedVersionOf(sceneId) } : null });
-      }}>
-        <option value="">请选择</option>
-        {scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.title}</option>)}
-      </select><small>代码里每次调 framework.scenes.run 都用这个场景；包不能自己指定别的场景。</small></label>
-      <label>发布版本<select className="text-input" value={codeExecutor?.versionId ?? ""} onChange={e => {
-        const versionId = e.target.value;
-        patchCode({ executor: codeExecutor ? { sceneId: codeExecutor.sceneId, versionId } : null });
-      }}>
-        <option value="">请选择</option>
-        {(codeExecutor?.sceneId ? sceneVersions[codeExecutor.sceneId]?.versions ?? [] : []).map(version => <option key={version.id} value={version.id}>{version.version} · {version.publishedAt.slice(0, 10)}</option>)}
-      </select><small>必填。已发布版本固定，不会跟着场景后续改版漂移。</small></label>
+      <h3>执行场景</h3>
+      <p className="access-hint">一个包只用一条流水线时配单个场景；要用多个场景（如短剧的四视图→场景图→分镜→出片）就加多行，代码用 <code>framework.scenes.run({"{ scene: \"键\" }"})</code> 按「场景键」选。所有场景都归这个包的工作台台账。</p>
+      {codeExecutors.map((entry, index) => <div className="package-binding" key={"exec-" + index}>
+        <input className="text-input" value={entry.key} placeholder="场景键（如 four_view）" onChange={e => patchCode({ executors: codeExecutors.map((candidate, position) => position === index ? { ...candidate, key: e.target.value } : candidate) })} />
+        <select className="text-input" value={entry.sceneId} onChange={e => {
+          const sceneId = e.target.value;
+          patchCode({ executors: codeExecutors.map((candidate, position) => position === index ? { ...candidate, sceneId, versionId: sceneId ? publishedVersionOf(sceneId) : "" } : candidate) });
+        }}>
+          <option value="">请选择场景</option>
+          {scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.title}</option>)}
+        </select>
+        <select className="text-input" value={entry.versionId} onChange={e => {
+          const versionId = e.target.value;
+          patchCode({ executors: codeExecutors.map((candidate, position) => position === index ? { ...candidate, versionId } : candidate) });
+        }}>
+          <option value="">请选择发布版本</option>
+          {(entry.sceneId ? sceneVersions[entry.sceneId]?.versions ?? [] : []).map(version => <option key={version.id} value={version.id}>{version.version} · {version.publishedAt.slice(0, 10)}</option>)}
+        </select>
+        <button className="button button-outline" disabled={busy || codeExecutors.length <= 1} onClick={() => patchCode({ executors: codeExecutors.filter((_, position) => position !== index) })}>移除</button>
+      </div>)}
+      <div className="access-inline">
+        <button className="button button-outline" disabled={busy || codeExecutors.length >= 32} onClick={() => patchCode({ executors: [...codeExecutors, { key: "scene_" + (codeExecutors.length + 1), sceneId: "", versionId: "" }] })}>加一个场景</button>
+        <small className="access-muted">发布版本固定，不会跟着场景后续改版漂移。</small>
+      </div>
       <label className="package-confirm"><input type="checkbox" checked={selectedCode.config?.enabled ?? selectedCode.enabled} onChange={e => patchCode({ enabled: e.target.checked })} />启用这个包（禁用后不加载、用户面不出现，历史运行仍可查）</label>
 
       <h3>输入契约</h3>
@@ -323,8 +343,6 @@ export default function PackageManagement({ scenes, sceneVersions, onOpenRuns }:
         <button className="button button-outline" onClick={() => setSelectedCodeId(null)}>收起</button>
       </div>
     </section>}
-
-    {selectedCode && <PackagePageEditor presentation={selectedCode.config?.presentation} onChange={presentation => patchCode({ presentation })} />}
 
     {/* 运行面板：输入契约来自 package.json + 管理端覆盖；提交后轮询同一 packageRunId 的记录。 */}
     {runEntry && <section className="access-card" data-run-panel={runEntry.packageId}>

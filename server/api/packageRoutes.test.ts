@@ -90,6 +90,29 @@ async function harness() {
 
 const admin = { "X-Test-Role": "admin", "Content-Type": "application/json" };
 
+test("管理端目录遇到同 ID 的代码包与配置型包时只返回代码包，不重复列出", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  await writePackage(h.projectDirectory, "ai_image", { title: "生图", version: "1.0.0", executor: { sceneId: "demo-scene", versionId: "v1" }, inputs: [] });
+  await h.service.loadAll();
+  // 配置型里留着同 ID 的历史草稿（真实库里就是这样：ai_image 既是代码包又是旧配置包）。
+  const packages = { listDrafts: async () => ({ packages: [{ id: "ai_image", revision: 9, title: "生图", inputs: [], items: [] }], nextAction: "get_package_draft" }) } as unknown as PackageService;
+  const app = express();
+  app.use(express.json());
+  app.use((_request, response, next) => { response.locals.identity = { id: "admin", role: "admin" }; response.locals.authorizeAdmin = () => ({ id: "admin", role: "admin" }); next(); });
+  app.use(createPackageRouter(packages, h.service));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  t.after(() => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }));
+  const origin = "http://127.0.0.1:" + (server.address() as { port: number }).port;
+
+  const body = await (await fetch(origin + "/api/v1/packages", { headers: admin })).json() as { packages: Array<Record<string, unknown>> };
+  const sameId = body.packages.filter((item) => (item.packageId ?? item.id) === "ai_image");
+  assert.equal(sameId.length, 1);
+  assert.equal(sameId[0].source, "code");
+  assert.equal(body.packages.filter((item) => item.source === "config").length, 0);
+});
+
 test("管理端目录同时给出代码包与配置型包，代码包带加载状态与代码路径", async (t) => {
   const h = await harness();
   t.after(() => h.close());

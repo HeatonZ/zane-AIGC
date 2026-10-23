@@ -18,10 +18,13 @@ export function createPackageRouter(packages: PackageService, codePackages: Code
   router.get("/api/v1/packages", async (_req, res) => {
     res.locals.authorizeAdmin();
     const [config, code] = await Promise.all([packages.listDrafts(), codePackages.getAdminList()]);
+    // 同 ID 只留代码包：代码子工程与历史配置型包可能撞同一个 ID（如 ai_image），
+    // 代码包是唯一在跑的实现，重复列出会让配置型那份看起来还能编辑、实际不生效。
+    const codeIds = new Set(code.packages.map((entry) => entry.packageId));
     res.json({
       packages: [
         ...code.packages.map((entry) => ({ ...entry, source: "code" as const })),
-        ...config.packages.map((draft) => ({ ...draft, source: "config" as const })),
+        ...config.packages.filter((draft) => !codeIds.has(draft.id)).map((draft) => ({ ...draft, source: "config" as const })),
       ],
       codePackages: code.packages,
       nextAction: config.nextAction,

@@ -22,6 +22,23 @@ test("mergePackageCatalog sorts code before config and sorts each group by title
   assert.equal(merged[3].title, "Zeta");
 });
 
+test("mergePackageCatalog drops config rows that share an id with a code package", () => {
+  const merged = mergePackageCatalog(
+    [
+      { source: "config", id: "ai_image", title: "生图" },
+      { source: "config", id: "legacy_only", title: "旧配置包" },
+    ],
+    [
+      { source: "code", packageId: "ai_image", title: "生图", version: "1.0.0", status: "ok", directory: "/x", entryPath: "x.mjs", enabled: true },
+    ] as any,
+  );
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].source, "code");
+  assert.equal((merged[0] as any).packageId, "ai_image");
+  assert.equal(merged[1].source, "config");
+  assert.equal((merged[1] as any).id, "legacy_only");
+});
+
 test("describeCodePackageStatus maps ok/error/disabled", () => {
   assert.equal(describeCodePackageStatus("ok", "x").label, "正常");
   assert.equal(describeCodePackageStatus("error", "Unexpected end of input").label, "失败");

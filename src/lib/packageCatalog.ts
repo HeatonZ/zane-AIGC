@@ -24,13 +24,18 @@ export interface ConfigPackageRow {
 
 export type PackageCatalogRow = CodePackageRow | ConfigPackageRow;
 
-/** 包列表合并：代码子工程优先，各自按标题排序。 */
+/**
+ * 包列表合并：代码子工程优先，各自按标题排序。
+ * 同 ID 只保留代码包——历史配置型包可能与代码包撞 ID（如 ai_image），
+ * 代码包是唯一在跑的实现，重复列出会让配置型那份看起来还能编辑、实际不生效。
+ */
 export function mergePackageCatalog(
   config: ConfigPackageRow[],
   code: CodePackageRow[],
 ): PackageCatalogRow[] {
+  const codeIds = new Set(code.map(item => item.packageId));
   const sortedCode = [...code].sort((a, b) => a.title.localeCompare(b.title));
-  const sortedConfig = [...config].sort((a, b) => a.title.localeCompare(b.title));
+  const sortedConfig = config.filter(item => !codeIds.has(item.id)).sort((a, b) => a.title.localeCompare(b.title));
   return [...sortedCode, ...sortedConfig];
 }
 
