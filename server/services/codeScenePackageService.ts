@@ -6,13 +6,21 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { z } from "zod";
 
-import type { JsonValue, RunRecord, RunSubmitter, SavedSettings } from "../domain/types.js";
-import { asRecord } from "../domain/workflowValues.js";
+import type { JsonValue, RunInputField, RunRecord, RunSubmitter, SavedSettings } from "../domain/types.js";
+import { asRecord, isMediaWorkflowType } from "../domain/workflowValues.js";
 import { HttpError } from "../errors.js";
 import { log as writeLog } from "../observability/logger.js";
 import { redactErrorText } from "../security/errorHandler.js";
 import type { AiSceneService } from "./aiSceneService.js";
+import type { AccessService, Identity } from "./accessService.js";
 import type { AssetService } from "./assetService.js";
+import type { CreditService } from "./creditService.js";
+import type { RunInputQuery } from "../ai/accessSchemas.js";
+import { fromUnits, hasAtMostTwoDecimals, normalizePoints, toUnits } from "../domain/creditUnits.js";
+import { workflowInputIssue } from "../domain/inputValidation.js";
+import { packageRunInputs } from "./runDetailService.js";
+import { validatePresentation, type PackagePresentation } from "../domain/packageContracts.js";
+import type { RunCreditPlan } from "../domain/scenePricing.js";
 import type { RunService } from "./runService.js";
 import type { SqliteStore } from "../storage/sqliteStore.js";
 
@@ -56,6 +64,12 @@ const packageJsonSchema = z.object({
     executor: executorSchema.optional(),
     inputs: z.array(z.record(z.string(), z.unknown())).optional(),
     entry: z.string().min(1).optional(),
+    // 服务页面与定价属于包自身：代码工程要能自描述「用户打开看到什么、跑一次多少钱」，
+    // 否则每上一个包都要人工到管理端补配置。管理端配置仍可覆盖（见 decorateStatus）。
+    summary: z.string().max(200).optional(),
+    description: z.string().max(4000).optional(),
+    presentation: z.record(z.string(), z.unknown()).optional(),
+    pricing: z.record(z.string(), z.unknown()).optional(),
   }),
 });
 
@@ -64,6 +78,19 @@ export interface CodeScenePackageExecutor {
   versionId: string;
 }
 
+/**
+ * 包自带的定价声明：与配置型包的 `packagePricing` 同构，单位是积分（最多两位小数）。
+ * 代码包的调用次数由包代码决定，提交时无法预知，所以这里只声明「每个计价项一次多少钱」。
+ */
+const packagePricingSchema = z.object({
+  version: z.literal(1),
+  base: z.number().min(0).max(1_000_000).refine(hasAtMostTwoDecimals, "基础分最多两位小数").default(0),
+  items: z.record(z.string(), z.object({
+    unit: z.enum(["per_call", "per_item"]),
+    credits: z.number().min(0).max(1_000_000).refine(hasAtMostTwoDecimals, "单价最多两位小数"),
+  })).default({}),
+}).strict();
+
 /** package.json 里声明的元数据：executor 可省略（省略时取管理端配置）。 */
 export interface DeclaredScenePackageManifest {
   title: string;
@@ -71,6 +98,12 @@ export interface DeclaredScenePackageManifest {
   executor?: CodeScenePackageExecutor;
   inputs: Array<Record<string, unknown>>;
   entry: string;
+  /** 一句话说明与详情，用户面目录/详情直接读包自己的声明。 */
+  summary?: string;
+  description?: string;
+  /** 服务页面（PackagePresentation）与定价（PackagePricing），随包自描述。 */
+  presentation?: Record<string, unknown>;
+  pricing?: Record<string, unknown>;
 }
 
 /** 已解析的执行契约：executor 一定存在，运行期只认这个形状。 */
@@ -117,7 +150,7 @@ export interface CodeScenePackageRun {
   packageRunId: string;
   ownerUserId: string;
   submitter?: RunSubmitter;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "cancelled";
   createdAt: string;
   updatedAt: string;
   finishedAt?: string;
@@ -125,6 +158,14 @@ export interface CodeScenePackageRun {
   error?: string;
   errorCode?: string;
   result?: JsonValue;
+  /** 提交时的输入快照：用户面「再做一次」与原始输入读取都以它为准，改版不影响历史。 */
+  inputValues?: Record<string, JsonValue>;
+  /** 该次运行固化的输入契约（字段来自提交时的包声明），历史读取不跟随磁盘改动。 */
+  inputFields?: Array<Record<string, unknown>>;
+  /** 本次运行的上限价与实际结算；未配置定价时不写。 */
+  credit?: { total: number; settlement?: { settledAt: string; charged: number; refunded: number } };
+  /** 用户取消的时间；有值时 status 一定是 cancelled。 */
+  cancelledAt?: string;
 }
 
 export interface CodeScenePackageFramework {
@@ -163,12 +204,25 @@ export interface CodeScenePackageDependencies {
   scenes: Pick<AiSceneService, "prepare">;
   runs: Pick<RunService, "submit" | "wait" | "cancel" | "getRun">;
   assets?: Pick<AssetService, "save">;
+  /** 积分账本：用户面路径的预扣/结算唯一入口；未接线时只按操作员身份跑、不计费。 */
+  credits?: Pick<CreditService, "balance" | "reserve" | "release" | "settlePackage">;
+  /** 包授权（packageIds）与身份刷新：用户面路径必须用它判定，管理员不受限。 */
+  access?: Pick<AccessService, "authorizePackage" | "refresh">;
   loadSettings(): Promise<SavedSettings>;
   workbenchBaseUrl?(): string;
   packagesRoot?(projectDirectory: string): string;
   resolveOwner?(): { ownerUserId: string; submitter?: RunSubmitter } | undefined;
   importEntry?(url: string): Promise<unknown>;
   now?(): Date;
+}
+
+/** 一次运行的身份与计费上下文：用户面路径由路由传入，管理端路径回退操作员。 */
+export interface CodeScenePackageInvocation {
+  identity?: Identity;
+  /** 用户面提交时的包运行ID（幂等键）：同ID重放返回同一条记录，不重复执行。 */
+  packageRunId?: string;
+  inputValues?: Record<string, JsonValue>;
+  runTitle?: string;
 }
 
 interface InvocationContext {
@@ -230,6 +284,25 @@ export class CodeScenePackageService {
 
   get(packageId: string): CodeScenePackageRegistryEntry | undefined {
     return this.statuses.get(packageId);
+  }
+
+  /**
+   * 这个 packageId 是否由代码子工程提供（已加载成功、已启用）。
+   * 用户面目录靠它裁决「同 ID 时谁上场」：代码包在就是代码包，配置型同 ID 包不再出现。
+   */
+  offers(packageId: string): boolean {
+    const entry = this.statuses.get(packageId);
+    return Boolean(entry && entry.status === "ok" && entry.enabled && entry.manifest);
+  }
+
+  /**
+   * 这条运行是否属于代码包（按集合存在性判断，与调用者身份无关）。
+   * 用户面的 `package-runs*` 用它分流：代码包记录在 codeScenePackageRuns，
+   * 历史配置型记录在 packageRuns，两个集合的 ID 空间不重叠。
+   */
+  async ownsRun(packageRunId: string): Promise<boolean> {
+    if (!packageRunId) return false;
+    return Boolean(await this.getPackageRun(packageRunId));
   }
 
   async loadAll(): Promise<{ loaded: number; failed: number; disabled: number; packages: CodeScenePackageRegistryEntry[] }> {
@@ -503,6 +576,10 @@ export class CodeScenePackageService {
       executor: meta.executor,
       inputs: meta.inputs ?? [],
       entry: meta.entry ?? DEFAULT_ENTRY,
+      ...(meta.summary ? { summary: meta.summary } : {}),
+      ...(meta.description ? { description: meta.description } : {}),
+      ...(meta.presentation ? { presentation: meta.presentation } : {}),
+      ...(meta.pricing ? { pricing: meta.pricing } : {}),
     };
   }
 
@@ -676,8 +753,8 @@ export class CodeScenePackageService {
     runIds: string[];
   }> {
     const loaded = this.requireRunnable(packageId);
-    const packageRunId = await this.reserveRun(packageId, loaded);
-    const outcome = await this.executeRun(packageId, loaded, packageRunId, raw);
+    const reserved = await this.reserveRun(packageId, loaded, {});
+    const outcome = await this.executeRun(packageId, loaded, reserved.packageRunId, raw);
     return outcome;
   }
 
@@ -692,18 +769,88 @@ export class CodeScenePackageService {
     return loaded;
   }
 
-  /** 建一条 running 记录并占住该包；返回 packageRunId。 */
-  private async reserveRun(packageId: string, loaded: LoadedPackage): Promise<string> {
+  /** 生效定价：管理端配置覆盖优先，否则取 package.json 的 pricing。 */
+  private effectivePricing(project: string, packageId: string, manifest: DeclaredScenePackageManifest): Record<string, unknown> | undefined {
+    const config = this.configFor(project, packageId);
+    return config?.pricing ?? manifest.pricing;
+  }
+
+  /** 生效输入契约：package.json 声明 + 管理端逐字段覆盖（键不可改，代码按 key 读）。 */
+  private effectiveInputs(project: string, packageId: string, manifest: DeclaredScenePackageManifest): Array<Record<string, unknown>> {
+    const overrides = this.configFor(project, packageId)?.inputs ?? [];
+    const byKey = new Map(overrides.map((item) => [item.key, item]));
+    return manifest.inputs.map((field) => {
+      const key = String(field.key ?? "");
+      const override = byKey.get(key);
+      if (!override) return field;
+      return {
+        ...field,
+        ...(override.label !== undefined ? { label: override.label } : {}),
+        ...(override.required !== undefined ? { required: override.required } : {}),
+        ...(override.defaultValue !== undefined ? { defaultValue: override.defaultValue } : {}),
+      };
+    });
+  }
+
+  /** 生效服务页面：管理端配置覆盖优先，否则取 package.json 的 presentation。 */
+  private effectivePresentation(project: string, packageId: string, manifest: DeclaredScenePackageManifest): PackagePresentation | undefined {
+    const raw = this.configFor(project, packageId)?.presentation ?? manifest.presentation;
+    if (!raw) return undefined;
+    // 磁盘上的页面配置同样要过发布期校验：坏配置不能让用户页崩掉，也不能静默少一块。
+    return validatePresentation(raw);
+  }
+
+  /**
+   * 上限价：代码包的调用次数由包代码决定，提交时无法预知，因此每个声明的计价项按 1 次计。
+   * 这是**上限**——结算只退不补扣，多跑的不会额外收费，少跑的按实际退还。
+   */
+  private planCost(pricing: Record<string, unknown> | undefined): RunCreditPlan | undefined {
+    if (!pricing) return undefined;
+    const parsed = packagePricingSchema.safeParse(pricing);
+    if (!parsed.success) {
+      throw new HttpError(400, "场景包定价格式无效：" + parsed.error.issues.map((issue) => issue.path.join(".") + ": " + issue.message).join("; "), "INVALID_CODE_PACKAGE_PRICING");
+    }
+    const baseUnits = toUnits(parsed.data.base);
+    const plan: RunCreditPlan = { pricingVersion: 1, base: fromUnits(baseUnits), total: fromUnits(baseUnits), steps: {} };
+    let totalUnits = baseUnits;
+    for (const [itemId, entry] of Object.entries(parsed.data.items)) {
+      const units = 1;
+      plan.steps[itemId] = { unit: entry.unit, credits: fromUnits(toUnits(entry.credits)), units };
+      totalUnits += units * toUnits(entry.credits);
+    }
+    plan.total = fromUnits(totalUnits);
+    return plan.total > 0 ? plan : undefined;
+  }
+
+  /** 建一条 running 记录并占住该包；返回 packageRunId 与是否新建。 */
+  private async reserveRun(packageId: string, loaded: LoadedPackage, invocation: CodeScenePackageInvocation): Promise<{ packageRunId: string; created: boolean }> {
     // 占位必须同步完成：中间有 await，两个并发请求都能通过检查，包就会被同时跑两次。
     if (this.busy.has(packageId)) throw new HttpError(409, "场景包正在运行", "PACKAGE_BUSY", { packageId });
     this.busy.add(packageId);
+    let handedOff = false;
+    let reserved = false;
+    let reservedUserId = "";
+    let packageRunId = "";
     try {
       const project = await this.projectDirectory();
       if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
 
-      const owner = this.deps.resolveOwner?.() ?? OPERATOR_IDENTITY;
+      const owner = this.ownerOf(invocation);
       const createdAt = this.now().toISOString();
-      const packageRunId = randomUUID();
+      packageRunId = invocation.packageRunId ?? randomUUID();
+      // 同 ID 重放：响应丢失后客户端只查这个 ID，不换 ID 重提；不重复执行、不重复扣费。
+      const existing = this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, packageRunId);
+      if (existing) {
+        if (existing.ownerUserId !== owner.ownerUserId && invocation.identity?.role !== "admin") {
+          throw new HttpError(404, "没有找到这条场景包运行记录", "PACKAGE_RUN_NOT_FOUND", { packageRunId });
+        }
+        return { packageRunId, created: false };
+      }
+
+      const plan = this.planCost(this.effectivePricing(project, packageId, loaded.manifest));
+      // 计费只发生在用户自助路径：管理员入口没有积分账户，不该被扣费。
+      const billable = Boolean(invocation.identity && invocation.identity.role !== "admin" && plan && this.deps.credits);
+      const inputValues = (invocation.inputValues ?? {}) as Record<string, JsonValue>;
       const record: CodeScenePackageRun = {
         id: packageRunId,
         revision: 0,
@@ -719,13 +866,42 @@ export class CodeScenePackageService {
         createdAt,
         updatedAt: createdAt,
         runIds: [],
+        ...(Object.keys(inputValues).length ? { inputValues } : {}),
+        ...(invocation.inputValues !== undefined ? { inputFields: this.effectiveInputs(project, packageId, loaded.manifest) } : {}),
+        ...(billable && plan ? { credit: { total: plan.total } } : {}),
       };
-      this.putRun(project, record, 0);
-      return packageRunId;
+      if (billable && plan && this.deps.credits) {
+        // 预扣上限价：与配置型包同一本账、同一幂等键（包运行ID作为 ref）。
+        this.deps.credits.reserve(owner.ownerUserId, packageRunId, plan);
+        reserved = true;
+        reservedUserId = owner.ownerUserId;
+      }
+      try {
+        this.putRun(project, record, 0);
+      } catch (error) {
+        if (reserved && this.deps.credits) this.deps.credits.release(reservedUserId, packageRunId, "包运行写入失败");
+        reserved = false;
+        throw error;
+      }
+      handedOff = true;
+      return { packageRunId, created: true };
     } catch (error) {
-      this.busy.delete(packageId);
+      // 预扣成功但后续抛错同样要退回，不留悬空预扣。
+      if (reserved && this.deps.credits) this.deps.credits.release(reservedUserId, packageRunId, error instanceof Error ? error.message : String(error));
       throw error;
+    } finally {
+      // 只有真正把包交给 executeRun 时才继续占位；重放与异常路径必须立刻释放，
+      // 否则一次失败的提交会让这个包永久 409。
+      if (!handedOff) this.busy.delete(packageId);
     }
+  }
+
+  /** 运行归属：用户面取登录身份，管理端回退操作员；不接受客户端传入的 owner。 */
+  private ownerOf(invocation: CodeScenePackageInvocation): { ownerUserId: string; submitter?: RunSubmitter } {
+    if (invocation.identity) {
+      return { ownerUserId: invocation.identity.id, submitter: { userId: invocation.identity.id, username: invocation.identity.username, displayName: invocation.identity.displayName } };
+    }
+    return this.deps.resolveOwner?.() ?? OPERATOR_IDENTITY;
   }
 
   /** 执行一次已占位的包运行，并落终态。start() 与 invoke() 共用这一条路径。 */
@@ -768,6 +944,8 @@ export class CodeScenePackageService {
         runIds: [...context.runIds],
         result: jsonValue(result),
       }));
+      // 成功即结算：只退不补扣，上限就是预扣价。
+      this.settle(project, packageRunId);
       return { packageRunId, packageId, status: "completed", result: jsonValue(result), runIds: [...context.runIds] };
     } catch (error) {
       const message = this.safeError(error);
@@ -781,6 +959,8 @@ export class CodeScenePackageService {
         error: message,
         ...(error instanceof HttpError ? { errorCode: error.code } : {}),
       }));
+      // 失败全额退还预扣：不依赖包作者写对，宿主负责。
+      this.settle(project, packageRunId, 0);
       const currentStatus = this.statuses.get(packageId);
       if (currentStatus) {
         this.statuses.set(packageId, { ...currentStatus, status: "error", error: message, loadedAt: currentStatus.loadedAt });
@@ -805,6 +985,102 @@ export class CodeScenePackageService {
   }
 
   /**
+   * 包级结算：charged 省略表示「按预扣上限全额收取」（成功路径），传 0 表示全额退还（失败/取消）。
+   * 走 CreditService.settlePackage，与配置型包同一本账、同一幂等键；重复调用只结一次。
+   */
+  private settle(project: string, packageRunId: string, charged?: number) {
+    if (!this.deps.credits) return;
+    const record = this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, packageRunId);
+    if (!record?.credit || record.credit.settlement) return;
+    const total = record.credit.total;
+    if (!(total > 0)) return;
+    const amount = charged === undefined ? total : Math.max(0, normalizePoints(charged));
+    try {
+      const result = this.deps.credits.settlePackage(record.ownerUserId, packageRunId, amount, total);
+      this.updateRun(project, packageRunId, (current) => ({
+        ...current,
+        credit: { total, settlement: { settledAt: this.now().toISOString(), charged: result.charged, refunded: result.refunded } },
+      }));
+    } catch (error) {
+      writeLog("error", "scene_package.settle_failed", { packageRunId, error: String(error) });
+    }
+  }
+
+  /**
+   * 用户面提交：授权、计费、归属全部在这一条路径上收口。
+   * 与配置型包同一套语义——`packageIds` 是唯一授权单元，执行用包配置的场景，
+   * 运行记录复用 RunService 队列与 codeScenePackageRuns 集合，不自建状态机。
+   */
+  async startForUser(identity: Identity, packageId: string, raw: unknown): Promise<{
+    packageRun: ReturnType<CodeScenePackageService["viewUserRun"]>;
+    created: boolean;
+    nextAction: "poll_own_package_run";
+  }> {
+    if (!this.deps.access) throw new HttpError(503, "场景包授权服务未启用", "PACKAGES_DISABLED");
+    const current = this.deps.access.authorizePackage(identity, packageId);
+    const loaded = this.requireRunnable(packageId);
+    const body = asRecord(raw) ?? {};
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const inputs = this.resolveUserInputs(project, packageId, loaded.manifest, asRecord(body.inputValues) ?? {});
+    const requestedId = typeof body.packageRunId === "string" && body.packageRunId ? body.packageRunId : undefined;
+    if (requestedId && !/^[a-f0-9-]{36}$/i.test(requestedId)) throw new HttpError(400, "包运行ID无效", "INVALID_PACKAGE_RUN_ID");
+
+    const reserved = await this.reserveRun(packageId, loaded, { identity: current, inputValues: inputs, ...(requestedId ? { packageRunId: requestedId } : {}) });
+    const saved = this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, reserved.packageRunId)!;
+    if (reserved.created) {
+      // 已受理即返回；执行在后台推进，HTTP 请求不等分钟级子运行。
+      void this.executeRun(packageId, loaded, reserved.packageRunId, {
+        inputs,
+        ...(typeof body.runTitle === "string" && body.runTitle.trim() ? { title: body.runTitle.trim().slice(0, 120) } : {}),
+      });
+    }
+    return { packageRun: this.viewUserRun(saved), created: reserved.created, nextAction: "poll_own_package_run" };
+  }
+
+  /**
+   * 用户输入：以包声明为准（含管理端覆盖），媒体保持素材引用原样（归属由素材解析校验）。
+   * 未声明的键一律丢弃——代码只按声明的 key 读，多传的字段会让包作者以为有值。
+   */
+  private resolveUserInputs(project: string, packageId: string, manifest: DeclaredScenePackageManifest, supplied: Record<string, unknown>): Record<string, JsonValue> {
+    const declared = this.effectiveInputs(project, packageId, manifest);
+    const fields = declared.map((field) => normalizeInputField(field)).filter((field): field is NonNullable<typeof field> => Boolean(field));
+    const values: Record<string, JsonValue> = {};
+    for (const field of fields) {
+      const value = supplied[field.key];
+      if (value !== undefined && value !== null && value !== "") values[field.key] = value as JsonValue;
+      else if (field.defaultValue !== undefined) values[field.key] = field.defaultValue;
+    }
+    for (const field of fields) {
+      const issue = workflowInputIssue(field, values[field.key]);
+      if (issue) throw new HttpError(400, issue.message, issue.code, { inputKey: field.key, expectedType: field.type, nextAction: "correct_input_values" });
+    }
+    return values;
+  }
+
+  /** 用户面预检：只算上限价与余额，不创建运行、不扣费。 */
+  async prepareForUser(identity: Identity, packageId: string, raw: unknown) {
+    if (!this.deps.access) throw new HttpError(503, "场景包授权服务未启用", "PACKAGES_DISABLED");
+    const current = this.deps.access.authorizePackage(identity, packageId);
+    const loaded = this.requireRunnable(packageId);
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const body = asRecord(raw) ?? {};
+    const inputs = this.resolveUserInputs(project, packageId, loaded.manifest, asRecord(body.inputValues) ?? {});
+    const plan = this.planCost(this.effectivePricing(project, packageId, loaded.manifest));
+    return {
+      valid: true as const,
+      packageId,
+      version: loaded.manifest.version,
+      costPlan: plan ?? { pricingVersion: 1, base: 0, total: 0, steps: {} },
+      credits: this.deps.credits?.balance(current.id) ?? null,
+      externalServicesChecked: false as const,
+      nextAction: "submit_own_package" as const,
+      ...(Object.keys(inputs).length ? { inputValues: inputs } : {}),
+    };
+  }
+
+  /**
    * 受理一次包运行并立即返回 packageRunId：包内通常会 `scenes.wait` 到子运行终态（分钟级），
    * 挂在 HTTP 请求上等它结束会撑爆请求超时，也会让「已受理」与「已跑完」两件事混在一个响应里。
    * 执行语义与 `invoke` 完全一致（同一条 `invoke` 代码路径），只是不 await。
@@ -812,10 +1088,10 @@ export class CodeScenePackageService {
   async start(packageId: string, raw?: unknown): Promise<{ packageRunId: string; packageId: string; status: "running"; executorSceneId: string; executorVersionId: string; nextAction: "poll_package_run" }> {
     const loaded = this.requireRunnable(packageId);
     // 先同步占位再返回：调用方拿到 packageRunId 后立刻查详情时必须能查到，不能出现「已返回但记录还没有」的窗口。
-    const packageRunId = await this.reserveRun(packageId, loaded);
-    void this.executeRun(packageId, loaded, packageRunId, raw);
+    const reserved = await this.reserveRun(packageId, loaded, {});
+    void this.executeRun(packageId, loaded, reserved.packageRunId, raw);
     return {
-      packageRunId,
+      packageRunId: reserved.packageRunId,
       packageId,
       status: "running" as const,
       executorSceneId: loaded.manifest.executor.sceneId,
@@ -874,6 +1150,220 @@ export class CodeScenePackageService {
     return this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, packageRunId);
   }
 
+  // ---------------------------------------------------------------------------
+  // 用户面（self/*）：授权单元是 packageIds，视图只给「服务」不该看到实现细节。
+  // 这一组方法是 `/api/v1/self/packages*` 的唯一数据源，路由不再自己拼投影。
+  // ---------------------------------------------------------------------------
+
+  /** 用户可见的包目录：只列已加载成功、已启用且已授权的包。 */
+  async listAvailable(identity: Identity, query: { limit?: number; cursor?: string }) {
+    if (!this.deps.access) throw new HttpError(503, "场景包授权服务未启用", "PACKAGES_DISABLED");
+    const current = this.deps.access.refresh(identity);
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const visible = [...this.statuses.values()]
+      .filter((entry) => entry.status === "ok" && entry.enabled && entry.manifest)
+      .filter((entry) => current.role === "admin" || (current.packageIds ?? []).includes(entry.packageId))
+      .sort((left, right) => (left.manifest!.title).localeCompare(right.manifest!.title) || left.packageId.localeCompare(right.packageId));
+    const limit = Math.min(200, Math.max(1, query.limit ?? 50));
+    const offset = query.cursor ? Number(Buffer.from(query.cursor, "base64url").toString("utf8")) : 0;
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new HttpError(400, "分页游标无效", "INVALID_PACKAGE_CURSOR");
+    const page = visible.slice(offset, offset + limit);
+    return {
+      packages: page.map((entry) => {
+        const presentation = this.safePresentation(project, entry.packageId, entry.manifest!);
+        return {
+          packageId: entry.packageId,
+          source: "code" as const,
+          version: entry.manifest!.version,
+          title: entry.manifest!.title,
+          ...(entry.manifest!.summary ? { summary: entry.manifest!.summary } : {}),
+          itemCount: 1,
+          ...(presentation?.hero?.headline ? { headline: presentation.hero.headline } : {}),
+          ...(presentation?.hero?.showcase?.length ? { showcase: presentation.hero.showcase.slice(0, 1) } : {}),
+          ...(presentation?.theme?.accent ? { accent: presentation.theme.accent } : {}),
+        };
+      }),
+      total: visible.length,
+      hasMore: offset + page.length < visible.length,
+      ...(offset + page.length < visible.length ? { nextCursor: Buffer.from(String(offset + page.length)).toString("base64url") } : {}),
+      nextAction: "get_available_package" as const,
+    };
+  }
+
+  /**
+   * 用户可见的包详情：输入契约 + 服务页面 + 预计消耗。
+   * 不返回磁盘路径、入口文件、执行场景 ID——那些是实现细节，用户不需要也不能据此绕过。
+   */
+  async getAvailable(identity: Identity, packageId: string, _versionId?: string) {
+    if (!this.deps.access) throw new HttpError(503, "场景包授权服务未启用", "PACKAGES_DISABLED");
+    const current = this.deps.access.authorizePackage(identity, packageId);
+    const loaded = this.requireRunnable(packageId);
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const fields = this.effectiveInputs(project, packageId, loaded.manifest)
+      .map((field) => normalizeInputField(field))
+      .filter((field): field is NonNullable<typeof field> => Boolean(field))
+      .map((field) => ({
+        key: field.key,
+        label: String(asRecord(field)?.label ?? field.key),
+        type: field.type,
+        required: Boolean(field.required),
+        hidden: Boolean(field.hidden),
+        ...(field.type === "number" && field.minimum !== undefined ? { minimum: field.minimum } : {}),
+        ...(field.maximum !== undefined && (field.type === "number" || isMediaWorkflowType(field.type)) ? { maximum: field.maximum } : {}),
+        ...(field.options ? { options: field.options } : {}),
+        ...(field.defaultValue !== undefined ? { defaultValue: field.defaultValue } : {}),
+      }));
+    const defaults = Object.fromEntries(fields.filter((field) => field.defaultValue !== undefined).map((field) => [field.key, field.defaultValue]));
+    const presentation = this.safePresentation(project, packageId, loaded.manifest);
+    const plan = this.planCost(this.effectivePricing(project, packageId, loaded.manifest));
+    return {
+      packageId,
+      source: "code" as const,
+      version: loaded.manifest.version,
+      title: loaded.manifest.title,
+      ...(loaded.manifest.summary ? { summary: loaded.manifest.summary } : {}),
+      ...(loaded.manifest.description ? { description: loaded.manifest.description } : {}),
+      fields,
+      inputDefaults: defaults,
+      steps: [{ itemId: "run", name: loaded.manifest.title }],
+      ...(presentation ? { presentation } : {}),
+      costPlan: plan ?? { pricingVersion: 1, base: 0, total: 0, steps: {} },
+      credits: this.deps.credits?.balance(current.id) ?? null,
+      nextAction: "prepare_own_package" as const,
+    };
+  }
+
+  /** 服务页面读不到或校验不过时降级为「无页面」，让用户面按默认页渲染，而不是整个服务打不开。 */
+  private safePresentation(project: string, packageId: string, manifest: DeclaredScenePackageManifest): PackagePresentation | undefined {
+    try {
+      return this.effectivePresentation(project, packageId, manifest);
+    } catch (error) {
+      writeLog("warn", "scene_package.presentation_invalid", { packageId, error: this.safeError(error) });
+      return undefined;
+    }
+  }
+
+  /** 本人的服务运行列表（新的在前）。 */
+  async listOwnRuns(identity: Identity, query: { limit?: number; cursor?: string }) {
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const all = this.deps.store.listDocuments<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION)
+      .filter((run) => run.ownerUserId === identity.id || identity.role === "admin")
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+    const limit = Math.min(200, Math.max(1, query.limit ?? 50));
+    const offset = query.cursor ? Number(Buffer.from(query.cursor, "base64url").toString("utf8")) : 0;
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new HttpError(400, "分页游标无效", "INVALID_PACKAGE_CURSOR");
+    const page = all.slice(offset, offset + limit);
+    return {
+      items: page.map((run) => this.viewUserRun(run)),
+      total: all.length,
+      hasMore: offset + page.length < all.length,
+      ...(offset + page.length < all.length ? { nextCursor: Buffer.from(String(offset + page.length)).toString("base64url") } : {}),
+      nextAction: "get_own_package_run" as const,
+    };
+  }
+
+  /** 本人的单条服务运行；他人一律 404（不区分「不存在」与「不是你的」）。 */
+  async getOwnRun(identity: Identity, packageRunId: string) {
+    const record = await this.requireOwnRun(identity, packageRunId);
+    return this.viewUserRun(record);
+  }
+
+  /** 服务级产出：按子运行聚合媒体，用户不需要知道来自哪次子运行。 */
+  async ownOutputs(identity: Identity, packageRunId: string) {
+    const record = await this.requireOwnRun(identity, packageRunId);
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const items: Array<{ index: number; name: string; media: Array<{ url: string; kind: "image" | "video" | "audio" }> }> = [];
+    record.runIds.forEach((runId, index) => {
+      const run = this.deps.store.getRun(project, runId);
+      if (!run) return;
+      const seen = new Set<string>();
+      const media = run.outputs.flatMap((output) => {
+        if (!/^(image|video|audio)(_list)?$/.test(output.type)) return [];
+        const values = Array.isArray(output.value) ? output.value : [output.value];
+        return values.flatMap((value, mediaIndex) => {
+          const identityKey = typeof value === "string" ? value : JSON.stringify(value ?? null);
+          if (seen.has(identityKey)) return [];
+          seen.add(identityKey);
+          const parameters = new URLSearchParams({ outputKey: output.key, mediaIndex: String(mediaIndex) });
+          return [{ url: "/api/v1/runs/" + run.runId + "/output-media?" + parameters, kind: (output.type.startsWith("video") ? "video" : output.type.startsWith("audio") ? "audio" : "image") as "image" | "video" | "audio" }];
+        });
+      });
+      if (media.length) items.push({ index: index + 1, name: record.packageTitle, media });
+    });
+    return { packageRunId, items, total: items.reduce((sum, item) => sum + item.media.length, 0), nextAction: "get_own_package_run" as const };
+  }
+
+  /** 本次运行的原始输入：字段取提交时固化的契约，值取提交快照，之后改包不影响。 */
+  async ownInputs(identity: Identity, packageRunId: string, query: RunInputQuery) {
+    const record = await this.requireOwnRun(identity, packageRunId);
+    const fields = (record.inputFields ?? []).map((field) => normalizeInputField(field)).filter((field): field is NonNullable<typeof field> => Boolean(field));
+    const fallback = fields.length ? fields : Object.keys(record.inputValues ?? {}).map((key) => ({ key, type: "text" }));
+    return {
+      ...packageRunInputs({ id: record.id, versionId: record.packageId, inputValues: (record.inputValues ?? {}) as Record<string, JsonValue>, fields: fallback }, query),
+      packageRunId: record.id,
+      packageId: record.packageId,
+      versionId: record.packageId,
+      nextAction: "prepare_own_package" as const,
+    };
+  }
+
+  /** 取消：标记终态、尽力取消在途子运行、按未完成全额退还预扣。 */
+  async cancelOwnRun(identity: Identity, packageRunId: string) {
+    const record = await this.requireOwnRun(identity, packageRunId);
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    if (record.cancelledAt || record.status === "cancelled") return this.viewUserRun(record);
+    if (record.status !== "running") throw new HttpError(409, "这条服务运行已经结束，不能取消", "PACKAGE_RUN_NOT_CANCELLABLE", { status: record.status });
+    const cancelledAt = this.now().toISOString();
+    this.updateRun(project, packageRunId, (current) => ({ ...current, status: "cancelled", cancelledAt, finishedAt: cancelledAt }));
+    for (const runId of record.runIds) {
+      try { await this.deps.runs.cancel(project, runId); } catch { /* 子运行取消失败由它自己的真实状态反映 */ }
+    }
+    this.settle(project, packageRunId, 0);
+    const latest = this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, packageRunId)!;
+    return this.viewUserRun(latest);
+  }
+
+  private async requireOwnRun(identity: Identity, packageRunId: string): Promise<CodeScenePackageRun> {
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const record = this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, packageRunId);
+    if (!record || (record.ownerUserId !== identity.id && identity.role !== "admin")) {
+      throw new HttpError(404, "没有找到这条服务运行", "PACKAGE_RUN_NOT_FOUND", { packageRunId });
+    }
+    return record;
+  }
+
+  /**
+   * 用户面运行视图：只说「做到哪一步、出没出结果、扣了多少」。
+   * 执行场景 ID、子运行 ID、磁盘路径与内部错误原文都是实现细节，一律不下发。
+   */
+  viewUserRun(record: CodeScenePackageRun) {
+    const stage = record.cancelledAt ? "cancelled" : record.status === "completed" ? "completed" : record.status === "failed" ? "failed" : "running";
+    // 代码包对用户是「一个服务、一步完成」：进度按单步投影，与配置型包的 progress 形状对齐，
+    // 用户页才能用同一套渲染（结果画廊按 completed>0 判断是否出图）。
+    const total = 1;
+    const completed = record.status === "completed" ? 1 : 0;
+    return {
+      packageRunId: record.packageRunId,
+      packageId: record.packageId,
+      title: record.packageTitle,
+      status: record.status,
+      stage,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      ...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
+      progress: { total, completed, current: Math.min(total, completed + 1) },
+      inputCount: Object.keys(record.inputValues ?? {}).length,
+      ...(record.credit ? { credit: { total: record.credit.total, ...(record.credit.settlement ? { settlement: record.credit.settlement } : {}) } } : {}),
+      nextAction: stage === "running" ? "wait" : "get_own_package_run",
+    };
+  }
+
   private putRun(project: string, record: CodeScenePackageRun, expectedRevision: number): CodeScenePackageRun {
     try {
       return this.deps.store.putDocumentChecked(project, PACKAGE_RUNS_COLLECTION, record, expectedRevision);
@@ -899,8 +1389,31 @@ export class CodeScenePackageService {
   }
 }
 
-function storeDocumentId(packageId: string, key: string): string {
+function storeDocumentId(packageId: string, key: string) {
   return packageId + "/" + key;
+}
+
+/**
+ * 包声明的输入字段（package.json 里是自由形状的 record）收敛成运行期契约。
+ * 代码只按 key 读，所以 type 缺省按 text 处理、label 缺省取 key，其余非法值直接丢弃。
+ */
+function normalizeInputField(raw: unknown): RunInputField | undefined {
+  const record = asRecord(raw);
+  if (!record || typeof record.key !== "string" || !record.key) return undefined;
+  const type = typeof record.type === "string" && record.type ? record.type : "text";
+  return {
+    key: record.key,
+    type,
+    ...(typeof record.label === "string" ? { label: record.label } : {}),
+    ...(typeof record.required === "boolean" ? { required: record.required } : {}),
+    ...(typeof record.hidden === "boolean" ? { hidden: record.hidden } : {}),
+    ...(typeof record.minimum === "number" ? { minimum: record.minimum } : {}),
+    ...(typeof record.maximum === "number" ? { maximum: record.maximum } : {}),
+    ...(Array.isArray(record.options) && record.options.every((option) => typeof option === "string") ? { options: record.options as string[] } : {}),
+    ...(record.defaultValue !== undefined ? { defaultValue: record.defaultValue as JsonValue } : {}),
+    ...(record.inputMode === "object_array" ? { inputMode: "object_array" as const } : {}),
+    ...(Array.isArray(record.itemFields) ? { itemFields: record.itemFields as RunInputField["itemFields"] } : {}),
+  };
 }
 
 function executorMismatch(packageId: string, field: "sceneId" | "versionId", supplied: unknown, expected: string): HttpError {

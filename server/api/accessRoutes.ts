@@ -17,7 +17,7 @@ import { ownAssetQuerySchema } from "../domain/assetLibraryContracts.js";
 import type { CreditService } from "../services/creditService.js";
 import { creditLedgerQuery, redeemCodeRequest, createRedeemBatch, redeemCodeKey, redeemBatchKey, adjustUserCredits, voidRedeemCodeRequest, voidRedeemBatchRequest } from "../domain/creditContracts.js";
 import { signupRegister, ownPackageQuery, packageRunKey, packageAccess } from "../ai/accessSchemas.js";
-import type { PackageService } from "../services/packageService.js";
+import type { PackageCatalogueService } from "../services/packageCatalogueService.js";
 import type { CdkLoginService } from "../services/cdkLoginService.js";
 const parsed = <S extends z.ZodType>(schema: S, value: unknown): z.output<S> => { const result = schema.safeParse(value); if (!result.success) throw new HttpError(400, result.error.issues.map(issue => issue.path.join(".") + ": " + issue.message).join("; "), "INVALID_ACCESS_REQUEST"); return result.data; };
 const identity = (res: Response): Identity => res.locals.identity;
@@ -66,7 +66,7 @@ export function createAuthRouter(access: AccessService, signup?: { enabled: bool
   // Logout is handled after the identity gate, not by an unauthenticated bypass.
   return router;
 }
-export function createAccessRouter(access: AccessService, portal: UserPortalService, credits?: CreditService, packages?: PackageService) {
+export function createAccessRouter(access: AccessService, portal: UserPortalService, credits?: CreditService, packages?: PackageCatalogueService) {
   const router = Router();
   const uploadQuotaLimiter = new UploadQuotaLimiter();
   const feedback = new SystemFeedbackService(access, async () => (await portal.scenes.loadSettings()).projectDirectory);
@@ -91,8 +91,9 @@ export function createAccessRouter(access: AccessService, portal: UserPortalServ
   router.post("/api/v1/users/:userId/scene-access", async (req,res) => res.json(await access.setScenes(parsed(userAccess,{ ...req.body, userId: req.params.userId }),res.locals.authorizeAdmin, res.locals.identity?.id)));
   router.post("/api/v1/users/:userId/package-access", async (req,res) => {
     if (!packages) throw new HttpError(503, "场景包服务未启用", "PACKAGES_DISABLED");
-    const project = (await portal.scenes.loadSettings()).projectDirectory;
-    const known = new Set(packages.listDraftIds(project));
+    // 已知包 ID = 代码子工程（已加载且启用）∪ 配置型草稿：授权单元仍是 packageIds，
+    // 代码包与配置型包在这一层没有区别，用户只看到「哪个服务被授权」。
+    const known = new Set(await packages.knownPackageIds());
     res.json(await access.setPackages(parsed(packageAccess,{ ...req.body, userId: req.params.userId }), known, res.locals.authorizeAdmin, res.locals.identity?.id));
   });
   router.post("/api/v1/users/:userId/password", async (req,res) => res.json(await access.resetPassword(parsed(passwordReset,{ ...req.body,userId:req.params.userId }),res.locals.authorizeAdmin, res.locals.identity?.id)));

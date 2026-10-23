@@ -27,6 +27,7 @@ import { UserPortalService } from "./services/userPortalService.js";
 import { createAuthRouter, createAccessRouter } from "./api/accessRoutes.js";
 import { createPackageRouter } from "./api/packageRoutes.js";
 import { PackageService } from "./services/packageService.js";
+import { PackageCatalogueService } from "./services/packageCatalogueService.js";
 import { CodeScenePackageService } from "./services/codeScenePackageService.js";
 import { CdkLoginService } from "./services/cdkLoginService.js";
 import { createAiRouter } from "./api/aiRoutes.js";
@@ -145,19 +146,24 @@ const codeScenePackages = new CodeScenePackageService({
   scenes: aiScenes,
   runs: runService,
   assets: assetService,
+  // 计费与授权都复用既有服务：代码包不允许自建第二套账，也不允许自建第二套授权。
+  credits: creditService,
+  access: accessService,
   loadSettings: readSettings,
   workbenchBaseUrl: () => localBackendUrl(host, port),
 });
+// 用户面唯一入口：场景包就是磁盘代码子工程，历史配置型包仅作为回退保留读取。
+// 同一 packageId 只出一条目录项（代码包优先），运行记录按 packageRunId 归属分流。
+const packageCatalogue = new PackageCatalogueService(packageService, codeScenePackages);
 // CDK 登录：新卡自动建号、充值、授权当前所有已发布的包（管理员可后续调整）。
 const cdkLoginService = new CdkLoginService(
   metadataStore,
   input => accessService.create({ ...input, role: "user" }).then(result => result.user),
   async (userId) => {
     const account = accessService.get(userId);
-    const { projectDirectory } = await readSettings();
-    const published = packageService.publishedIds(projectDirectory);
-    if (!published.length) return undefined;
-    return accessService.setPackages({ userId, revision: account.revision, packageIds: published }, new Set(published), undefined, "@cdk");
+    const grantable = await packageCatalogue.grantablePackageIds();
+    if (!grantable.length) return undefined;
+    return accessService.setPackages({ userId, revision: account.revision, packageIds: grantable }, new Set(grantable), undefined, "@cdk");
   },
   () => [],
 );
@@ -182,7 +188,7 @@ app.use(createQualityRouter(new RunQualityService(
   undefined,
   userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; },
 ), new StepFeedbackService({ loadSettings: readSettings, getRun: (project, id) => runService.getRun(project, id) })));
-app.use(createAccessRouter(accessService, portalService, creditService, packageService));
+app.use(createAccessRouter(accessService, portalService, creditService, packageCatalogue));
 app.use(createPackageRouter(packageService, codeScenePackages));
 app.use(createAiRouter(aiScenes, runService, readSettings, userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; }));
 app.use(createTaskRouter(new TaskService(metadataStore, aiScenes, runService)));

@@ -71,6 +71,8 @@ export class PackageService {
   ) {}
 
   private async project() { return (await this.scenes.loadSettings()).projectDirectory; }
+  /** 当前项目目录：授权校验（已知包 ID 全集）在路由层需要它，避免各处重复读设置。 */
+  async projectDirectory() { return this.project(); }
   private requireProject(project: string) { if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED"); return project; }
   private async locked<T>(key: string, operation: () => Promise<T>): Promise<T> {
     if (this.busy.has(key)) throw new HttpError(409, "正在处理此场景包，请稍后重试", "PACKAGE_BUSY");

@@ -38,7 +38,10 @@ type ServiceRunDetail = ServiceRunSummary & {
   credit?: { total: number; settlement?: { charged: number; refunded: number } };
 };
 type ServicePackage = {
-  packageId: string; versionId: string; version: string; title: string; summary?: string;
+  /** 配置型包固定发布版本ID；代码子工程没有版本ID（版本由包自身声明），所以是可选的。 */
+  packageId: string; versionId?: string; version: string; title: string; summary?: string;
+  /** 目录来源：code=磁盘代码子工程，config=历史配置型包。用户面不区分，仅用于诊断与埋点。 */
+  source?: "code" | "config";
   itemCount: number; headline?: string; accent?: string; showcase?: Array<{ url: string; caption?: string }>;
 };
 type ActivePackage = ServicePackage & {
