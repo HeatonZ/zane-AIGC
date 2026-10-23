@@ -267,11 +267,11 @@ test("包定价小数：上限价、预扣与包级结算不带浮点尾数", as
 
   const submitted = await packages.submit(identity, "cent-svc", { versionId: published.version.versionId, inputValues: {}, packageRunId: "66666666-6666-4666-8666-666666666666" });
   assert.ok(submitted.packageRun);
-  // 预扣 0.2：余额 1 → 0.8，占用 0.2，可用 0.6，都是精确两位小数。
+  // 预扣 0.2：余额 1 → 0.8，占用 0.2；预扣已扣进余额，可用同样是 0.8，都是精确两位小数。
   const held = credits.balance(buyer.user.id);
   assert.equal(held.balance, 0.8);
   assert.equal(held.reserved, 0.2);
-  assert.equal(held.available, 0.6);
+  assert.equal(held.available, 0.8);
 
   // 跑完三项：包级结算按已完成项计费。这里只断言精度——0.05×3 必须是 0.15，
   // 而不是 0.15000000000000002；base 是否参与包级实扣是另一条既有口径，本次不改。

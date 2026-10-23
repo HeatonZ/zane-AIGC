@@ -49,12 +49,22 @@ export class CreditService {
     return owners;
   }
 
+  /**
+   * 余额三件套：账面、未结预扣、可用。
+   *
+   * 关键事实：`reserve()` 是真扣款（delta 为负，直接减 `balance`），预扣金额**已经**体现在
+   * `balance` 里。所以 `available` 就是 `balance` 本身，不能再减一次 `reserved`——
+   * 那会把同一笔预扣扣两遍：预扣 0.05 时页面显示少 0.10，结算后 reserved 归零又「回升」0.05，
+   * 用户看到的就是「提交扣 0.1、跑完退 0.05」的假象。账本始终是对的，错的是这个派生值。
+   *
+   * `reserved` 仍然保留并如实返回：它是「有哪些预扣还没结清」的对账信号（reconciliation 用它
+   * 点名漏结算的运行），只是不再参与可用余额的计算。
+   */
   balance(userId: string): CreditBalance {
     const account = this.store.creditAccount(userId);
     const reserved = this.store.reservedCredits(userId).total;
     const balance = account?.balance ?? 0;
-    // 余额与占用都在厘域相减：0.3 − 0.05 在浮点里是 0.24999999999999997。
-    return { balance, reserved, available: fromUnits(Math.max(0, toUnits(balance) - toUnits(reserved))), revision: account?.revision ?? 0 };
+    return { balance, reserved, available: balance, revision: account?.revision ?? 0 };
   }
 
   /** 提交前预扣：上限价一次扣足；差额在结算时退还，永不事后补扣。 */

@@ -399,7 +399,8 @@ export class SqliteStore {
         userId: account.user_id, balance: balancePoints, revision: Number(account.revision), updatedAt: account.updated_at,
         ledgerTotal: ledgerPoints, reserved: reservedPoints, reservedRefs: held.count,
         balanceMatchesLedger: Number(account.balance) === total,
-        available: fromUnits(Math.max(0, Number(account.balance) - held.total)),
+        // 预扣已真扣进 balance，可用就是 balance；再看 reserved 会重复扣同一笔。
+        available: balancePoints,
       };
     });
     return {

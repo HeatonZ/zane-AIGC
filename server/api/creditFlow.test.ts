@@ -68,13 +68,13 @@ test("积分闭环：余额不足、兑换、预检上限价、预扣与结算�
   assert.equal(redeemed.faceValue, 100);
   assert.equal(credits.balance(user.user.id).balance, 100);
 
-  // 提交：预扣 18，余额降到 82，reserved 18。
+  // 提交：预扣 18，余额降到 82，reserved 18；预扣已扣进余额，可用同样是 82。
   const submitted = await portal.submit(userIdentity, { sceneId: "demo", versionId: "version-a", inputValues: { flag: true }, runId: "22222222-2222-4222-8222-222222222222" });
   assert.equal(submitted.status, "queued");
   const afterReserve = credits.balance(user.user.id);
   assert.equal(afterReserve.balance, 82);
   assert.equal(afterReserve.reserved, 18);
-  assert.equal(afterReserve.available, 64);
+  assert.equal(afterReserve.available, 82);
 
   // 跑完：结算只按成功步骤计费，这里两个 fake 步骤都成功 → 18 全收，退还 0。
   const done = await h.service.wait(h.settings.projectDirectory, "22222222-2222-4222-8222-222222222222");

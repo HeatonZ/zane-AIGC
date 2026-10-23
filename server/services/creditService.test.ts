@@ -56,7 +56,8 @@ test("预扣与结算：失败/跳过/取消退还，成功项计费，charged �
     const reserved = credits.balance(userId);
     assert.equal(reserved.balance, 1000 - plan.total);
     assert.equal(reserved.reserved, plan.total);
-    assert.equal(reserved.available, reserved.balance - plan.total);
+    // 预扣是真扣款，余额里已经扣过一次；available 必须等于 balance，不能再减 reserved。
+    assert.equal(reserved.available, reserved.balance);
 
     // 2/3 张图成功、文本步骤成功：只收 base + llm + 2 张。
     const run = { ...runRecord([
@@ -468,10 +469,11 @@ test("对账：余额绕过账本、退款超预扣、漏结算都能被点名",
     const stuck = report.accounts.find(row => row.userId === "stuck")!;
     assert.equal(stuck.reserved, 40);
     assert.equal(stuck.reservedRefs, 1);
-    // 余额已经扣过预扣（100-40=60），available 再减去未结预扣 40 = 20：
-    // 这正是「预扣占着但还没结清」的样子——对账要同时看 reserved 与 available。
+    // 预扣已经真扣进余额（100−40=60）。available 反映的是「现在还能用多少」，
+    // 它必须等于 balance：再减一次 reserved 等于把同一笔预扣扣两遍。
+    // 「还有预扣没结清」这个信号看 reserved/reservedRefs，不靠压低 available 来表达。
     assert.equal(stuck.balance, 60);
-    assert.equal(stuck.available, 20);
+    assert.equal(stuck.available, 60);
     assert.equal(report.totals.usersWithReserved, 1);
 
     // 绕过账本直接改余额 → 余额≠流水累计。
@@ -559,9 +561,10 @@ test("精度回归：多笔小额乘加、余额减法与结算都不留浮点�
 
     credits.reserve(userId, "run-precision", plan);
     assert.equal(credits.balance(userId).balance, 0.15);
-    // 0.3 − 0.15 在浮点里是 0.14999999999999997：余额与占用都必须按厘相减。
+    // 0.3 − 0.15 在浮点里是 0.14999999999999997：余额按厘存储，不产生尾数。
     assert.equal(credits.balance(userId).reserved, 0.15);
-    assert.equal(credits.balance(userId).available, 0, "预扣后余额正好被占用，可用为 0（不是 0.30000000000000004 这类尾数）");
+    // 预扣已扣进余额，可用就是余额本身：0.15（不是 0，也不是 0.30000000000000004 这类尾数）。
+    assert.equal(credits.balance(userId).available, 0.15, "预扣后可用等于实际余额，不能把预扣扣两遍");
 
     // 部分成功：3 项里成功 2 项 → 收 0.1，退 0.05，余额回到 0.2。
     const run = {
