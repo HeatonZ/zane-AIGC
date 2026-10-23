@@ -280,7 +280,7 @@ GET /api/v1/self/credits
 
 副作用：read
 
-本人积分余额与在跑占用：available = balance − reserved（未结算预扣，只占用不消耗）。只读，不兑换、不调账。口径见手册 §12。
+本人积分余额与在跑占用：available=balance（预扣已扣进余额），reserved 只作对账。只读。口径见手册 §12。
 
 ## list_own_credit_entries
 

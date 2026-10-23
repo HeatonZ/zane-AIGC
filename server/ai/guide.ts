@@ -394,7 +394,7 @@ const OPERATOR_GUIDE_BODY = [
   "- 运行到终态按实际成功产出结算（账本 `run_settle:<runId>`）：completed 的步骤与逐项计费；failed / skipped / cancelled 与复用项（reusedFromRunId）不计费；差额退还。**charged 永远不超过预扣价，永不事后补扣**，所以「跑到一半发现积分不够」不会发生。",
   "- `waiting`（等人工审核）不是终态，不结算；approve 继续执行、redo 重跑的部分都在同一份预扣里，不会二次收费。续跑/局部重做会新建运行并按来源运行固化的 pricing 重新预扣。",
   "",
-  "**幂等与对账。** 余额是账本（credit_entries，append-only）的物化值，两者同事务更新；幂等键是 `run_reserve:<runId>` / `run_settle:<runId>`，因此响应丢失后按同一 runId 查询即可对账，**不会重复扣费也不会重复退款**。`get_own_credits` 的 `available = balance − reserved`：reserved 是进行中运行的未结算预扣，只是占用，不是已花掉。",
+  "**幂等与对账。** 余额是账本（credit_entries，append-only）的物化值，两者同事务更新；幂等键是 `run_reserve:<runId>` / `run_settle:<runId>`，因此响应丢失后按同一 runId 查询即可对账，**不会重复扣费也不会重复退款**。`get_own_credits` 的 `available` 等于 `balance`：预扣（run_reserve）是**真扣款**，提交那一刻就已经从 balance 里减掉了，所以可用资金就是余额本身；`reserved` 表示「当前余额里有多少是进行中运行的未结算预扣」，只用于对账与显示进度，**不再从 available 里二次扣减**（否则同一笔钱会被扣两遍：提交时显示少一倍、结算后 reserved 归零又「回升」）。",
   "",
   "**租户公平配额。** `ZANE_MAX_ACTIVE_RUNS_PER_USER`（默认 0=不限制）限制单账户在跑数（排队+执行+等待审核都算占用）；超出返回 **429 USER_RUN_LIMIT_REACHED**，遵守 Retry-After 等待，不要靠换 runId 重试。全局并发（ZANE_MAX_ACTIVE_RUNS）仍然生效。",
   "",

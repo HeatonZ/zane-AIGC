@@ -2,7 +2,7 @@
 
 契约版本：1.7.12。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
 本手册是伞式目录：会话级只下发本目录，正文按节读取。MCP 用 zane://guide/<节号>（如 zane://guide/9），HTTP 用 /api/v1/ai/guide?detail=<节号>；detail=full 一次返回目录、全部正文与历史变更记录，detail=changelog（MCP zane://guide/changelog）是历史版本小节，只在核对旧版本行为时读取。
-正文共 79702 字节、28 个节号（↳ 是父节的细分，父节正文已完整包含子节）；只读当前任务需要的那几节，不要把整本手册当成每次会话的入场券。
+正文共 80017 字节、28 个节号（↳ 是父节的细分，父节正文已完整包含子节）；只读当前任务需要的那几节，不要把整本手册当成每次会话的入场券。
 
 ## 最小铁律（摘要，细节见对应节）
 
@@ -42,7 +42,7 @@
 | 10.4.1 | ↳ 入站转发：外部系统 → 工作台 → 目标 Webhook | 1519 | zane://guide/10.4.1 |
 | 11 | 接管验收清单 | 1623 | zane://guide/11 |
 | 13 | 场景包（1.7.0） | 5780 | zane://guide/13 |
-| 12 | 积分与卡密（1.6.0） | 5109 | zane://guide/12 |
+| 12 | 积分与卡密（1.6.0） | 5424 | zane://guide/12 |
 
 机器契约：docs/ai-openapi.json（AI操作面与高级提交/媒体/SSE）；工具目录：docs/ai-tools.md；契约导航 zane://openapi/index（完整文档约0.6MB，按需读取）。本目录与 docs/ai-operator.md（目录 + 全部正文）同源，生成 npm run docs:ai，校验 npm run docs:ai:check。
 
@@ -436,7 +436,7 @@ core.code 的 fileAccess 会把受控根目录内的真实文件路径写进 tex
 - 运行到终态按实际成功产出结算（账本 `run_settle:<runId>`）：completed 的步骤与逐项计费；failed / skipped / cancelled 与复用项（reusedFromRunId）不计费；差额退还。**charged 永远不超过预扣价，永不事后补扣**，所以「跑到一半发现积分不够」不会发生。
 - `waiting`（等人工审核）不是终态，不结算；approve 继续执行、redo 重跑的部分都在同一份预扣里，不会二次收费。续跑/局部重做会新建运行并按来源运行固化的 pricing 重新预扣。
 
-**幂等与对账。** 余额是账本（credit_entries，append-only）的物化值，两者同事务更新；幂等键是 `run_reserve:<runId>` / `run_settle:<runId>`，因此响应丢失后按同一 runId 查询即可对账，**不会重复扣费也不会重复退款**。`get_own_credits` 的 `available = balance − reserved`：reserved 是进行中运行的未结算预扣，只是占用，不是已花掉。
+**幂等与对账。** 余额是账本（credit_entries，append-only）的物化值，两者同事务更新；幂等键是 `run_reserve:<runId>` / `run_settle:<runId>`，因此响应丢失后按同一 runId 查询即可对账，**不会重复扣费也不会重复退款**。`get_own_credits` 的 `available` 等于 `balance`：预扣（run_reserve）是**真扣款**，提交那一刻就已经从 balance 里减掉了，所以可用资金就是余额本身；`reserved` 表示「当前余额里有多少是进行中运行的未结算预扣」，只用于对账与显示进度，**不再从 available 里二次扣减**（否则同一笔钱会被扣两遍：提交时显示少一倍、结算后 reserved 归零又「回升」）。
 
 **租户公平配额。** `ZANE_MAX_ACTIVE_RUNS_PER_USER`（默认 0=不限制）限制单账户在跑数（排队+执行+等待审核都算占用）；超出返回 **429 USER_RUN_LIMIT_REACHED**，遵守 Retry-After 等待，不要靠换 runId 重试。全局并发（ZANE_MAX_ACTIVE_RUNS）仍然生效。
 

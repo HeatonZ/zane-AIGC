@@ -92,7 +92,7 @@ export const aiOperations: AiOperation[] = [
   operation("update_user", "/api/v1/users/{userId}", "PATCH", "仅管理员。revision 保护名称/角色/启停。角色或状态变化使旧会话和 AI 凭证失效；不能降级/停用最后管理员。普通用户可用范围由卡密绑定的服务决定。", userUpdate,"write"),
   operation("set_user_scene_access", "/api/v1/users/{userId}/scene-access", "POST", "仅管理员。用 revision 设置完整 sceneIds 授权集（兼容旧账户与直接跑场景；卡密用户由绑定服务授权）。不发布、不执行；新场景不自动授权。", userAccess,"write"),
   operation("reset_user_password", "/api/v1/users/{userId}/password", "POST", "仅管理员。revision 保护重置密码，所有旧会话/AI 凭证失效。敏感参数不要记录或转发。", passwordReset,"write"),
-  self("get_own_credits", "/api/v1/self/credits", "GET", "本人积分余额与在跑占用：available = balance − reserved（未结算预扣，只占用不消耗）。只读，不兑换、不调账。口径见手册 §12。", empty),
+  self("get_own_credits", "/api/v1/self/credits", "GET", "本人积分余额与在跑占用：available=balance（预扣已扣进余额），reserved 只作对账。只读。口径见手册 §12。", empty),
   self("list_own_credit_entries", "/api/v1/self/credits/entries", "GET", "本人积分流水分页（新到旧，keyset 游标）：kind 区分兑换/调账/预扣/结算，ref_id 可反查运行。只读。", ownCreditLedgerQuery),
   self("redeem_own_code", "/api/v1/self/credits/redeem", "POST", "兑换本人卡密：与记账同事务，同码重复提交返回已兑换回执不重复加分；无效/已用/作废统一拒绝防枚举。", ownRedeemCode, "write"),
   operation("list_redeem_batches", "/api/v1/redeem-batches", "GET", "仅管理员。卡密批次与未用/已用/作废计数；逐张明文用 list_redeem_codes 读取。", empty),

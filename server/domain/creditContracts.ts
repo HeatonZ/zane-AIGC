@@ -129,7 +129,7 @@ export const CREDIT_CONTRACT = {
   ledger: {
     appendOnly: "credit_entries；余额 credit_accounts 是它的物化值，同一事务更新",
     kinds: ["cdk_redeem", "cdk_refund", "admin_grant", "admin_adjust", "run_reserve", "run_settle"],
-    available: "available = balance − reserved；reserved 是进行中运行的未结算预扣",
+    available: "available = balance；预扣已扣进 balance，reserved 只作对账不二次扣减",
   },
   redeem: {
     plaintext: "明文写入本机 SQLite，管理员可随时经 list_redeem_codes 回读；哈希与末四位继续保留，兑换校验走 sha256",
