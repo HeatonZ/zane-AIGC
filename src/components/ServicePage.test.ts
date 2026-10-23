@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ServicePage } from "../components/ServicePage";
+import { ServicePage, ServiceActionBar } from "../components/ServicePage";
 import { ServiceWorkspace } from "../components/ServiceWorkspace";
 import { validatePresentation } from "../../server/domain/packageContracts.js";
 
@@ -86,7 +86,6 @@ test("工作台布局：左控制栏与右结果画布同屏，提交按钮不�
     result: createElement("div", null, "RESULT-AREA"),
     history: createElement("div", null, "HISTORY"),
     cost: 0.1,
-    credits: 5,
     onSubmit: () => {},
   }));
   assert.match(html, /sws-controls/);
@@ -99,6 +98,22 @@ test("工作台布局：左控制栏与右结果画布同屏，提交按钮不�
   // history:false 时不渲染历史条。
   assert.doesNotMatch(html, /HISTORY/);
   assert.doesNotMatch(html, /spage-hero/);
+  // 积分只在最顶部导航栏出现一处：工作台内不得再重复显示余额。
+  assert.doesNotMatch(html, /可用/);
+  assert.doesNotMatch(html, /sws-credit/);
+});
+
+test("服务页底部操作栏不再重复显示余额，只在余额不足时提示", () => {
+  const rich = renderToStaticMarkup(createElement(ServiceActionBar, {
+    cost: 0.1, available: 98.9, busy: false, onSubmit: () => {},
+  }));
+  assert.doesNotMatch(rich, /可用/);
+  assert.match(rich, /未消耗自动退回/);
+
+  const poor = renderToStaticMarkup(createElement(ServiceActionBar, {
+    cost: 0.1, available: 0.05, busy: false, onSubmit: () => {},
+  }));
+  assert.match(poor, /余额不足/);
 });
 
 test("工作台默认显示历史条；配置隐藏时才不渲染", () => {

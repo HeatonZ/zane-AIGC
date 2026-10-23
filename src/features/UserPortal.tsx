@@ -473,7 +473,6 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
               presentation={activePackage.presentation}
               title={activePackage.title}
               summary={activePackage.summary}
-              credits={credits?.available}
               cost={estimatedCost}
               busy={busy}
               onSubmit={() => void submitPackage()}
@@ -645,11 +644,12 @@ export default function UserPortal({ user, entryPackageId, onLogout, onAdmin }: 
                 <section className="zclient-card">
                   <h2>积分</h2>
                   <div className="zclient-metrics">
-                    <div className="zclient-metric"><strong>{credits ? formatPoints(credits.available) : "—"}</strong><small>可用</small></div>
-                    <div className="zclient-metric"><strong>{credits ? formatPoints(credits.reserved) : "—"}</strong><small>进行中占用</small></div>
+                    {/* 「可用」与「总余额」现在是同一个值（预扣已直接扣进余额），两栏并列就成了重复数字。
+                        这里只留总余额与进行中占用：前者是能花的钱，后者是正在跑、还没结算的部分。 */}
                     <div className="zclient-metric"><strong>{credits ? formatPoints(credits.balance) : "—"}</strong><small>总余额</small></div>
+                    <div className="zclient-metric"><strong>{credits ? formatPoints(credits.reserved) : "—"}</strong><small>进行中占用</small></div>
                   </div>
-                  <p className="zclient-muted">按上限预扣、按成功产出结算；失败、跳过与取消的部分自动退回，不会事后补扣。</p>
+                  <p className="zclient-muted">按上限预扣、按成功产出结算；失败、跳过与取消的部分自动退回，不会事后补扣。进行中占用已含在总余额内，仅用于显示尚未结算的部分。</p>
                 </section>
 
                 {ledger.length > 0 && <section className="zclient-card">

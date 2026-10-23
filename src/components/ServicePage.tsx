@@ -236,12 +236,17 @@ export function ServiceQuickStarts({ presentation, onApplyPrompt, onApplyPreset 
 export function ServiceActionBar({ cost, available, busy, cta, onSubmit }: {
   cost: number | null; available: number | undefined; busy: boolean; cta?: string; onSubmit: () => void;
 }) {
+  // 积分余额只在最顶部导航栏显示一处：这里再写一遍「可用 X 积分」会和顶栏重复。
+  // 余额是不是够，由提交时的服务端校验负责；这里只说明计费方式。
+  const short = available !== undefined && cost !== null && available < cost;
   return <div className="zclient-actionbar">
     <div className="zclient-price">
       <strong>{cost === null ? "…" : formatPoints(cost)}</strong>
       <span>积分 / 次</span>
     </div>
-    <div className="zclient-actionbar-meta">可用 {available === undefined ? "—" : formatPoints(available)} 积分 · 未消耗自动退回</div>
+    <div className="zclient-actionbar-meta">
+      {short ? "余额不足，请先充值或兑换" : "按实际生成量计费 · 未消耗自动退回"}
+    </div>
     <button type="button" className="zclient-cta" disabled={busy} onClick={onSubmit}>{busy ? "提交中…" : cta ?? "开始生成"}</button>
   </div>;
 }

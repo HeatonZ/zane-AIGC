@@ -9,7 +9,7 @@ import type { ServicePresentation } from "./ServicePage";
  * 但出图、改图这类高频工具每次都要滚过一大段介绍才到输入框，出完图还要往下滚才看得到结果。
  * 工作台把「调参数」和「看结果」放在同一屏，结果常驻不滚走。
  */
-export function ServiceWorkspace({ presentation, title, summary, form, result, history, resultActions, credits, cost, busy, submitLabel, onSubmit, onBack }: {
+export function ServiceWorkspace({ presentation, title, summary, form, result, history, resultActions, cost, busy, submitLabel, onSubmit, onBack }: {
   presentation?: ServicePresentation;
   title: string;
   summary?: string;
@@ -21,7 +21,6 @@ export function ServiceWorkspace({ presentation, title, summary, form, result, h
   history?: ReactNode;
   /** 结果区右上角操作：例如「用这组参数」。 */
   resultActions?: ReactNode;
-  credits?: number;
   cost?: number | null;
   busy?: boolean;
   submitLabel?: string;
@@ -40,7 +39,7 @@ export function ServiceWorkspace({ presentation, title, summary, form, result, h
         <p>{workspace.subtitle ?? summary ?? ""}</p>
       </div>
       <div className="sws-head-meta">
-        {credits !== undefined && <span className="sws-credit">可用 {formatPoints(credits)} 积分</span>}
+        {/* 积分只在最顶部导航栏显示一处：这里再显示「可用」会和顶栏重复，同一屏出现两个相同数字。 */}
         {history && workspace.history !== false && <button type="button" className="sws-toggle" onClick={() => setHistoryOpen(value => !value)} aria-pressed={historyOpen}>
           {historyOpen ? "隐藏历史" : "显示历史"}
         </button>}
