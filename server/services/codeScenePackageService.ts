@@ -675,37 +675,71 @@ export class CodeScenePackageService {
     errorCode?: string;
     runIds: string[];
   }> {
+    const loaded = this.requireRunnable(packageId);
+    const packageRunId = await this.reserveRun(packageId, loaded);
+    const outcome = await this.executeRun(packageId, loaded, packageRunId, raw);
+    return outcome;
+  }
+
+  /** 可取运行的包：已加载且状态 ok。 */
+  private requireRunnable(packageId: string): LoadedPackage {
     const loaded = this.entries.get(packageId);
     const status = this.statuses.get(packageId);
     if (!loaded || !status || status.status !== "ok") {
       throw new HttpError(status ? 409 : 404, "场景包不存在或加载失败", "PACKAGE_NOT_LOADED", { packageId, error: status?.error });
     }
     if (this.busy.has(packageId)) throw new HttpError(409, "场景包正在运行", "PACKAGE_BUSY", { packageId });
+    return loaded;
+  }
 
+  /** 建一条 running 记录并占住该包；返回 packageRunId。 */
+  private async reserveRun(packageId: string, loaded: LoadedPackage): Promise<string> {
+    // 占位必须同步完成：中间有 await，两个并发请求都能通过检查，包就会被同时跑两次。
+    if (this.busy.has(packageId)) throw new HttpError(409, "场景包正在运行", "PACKAGE_BUSY", { packageId });
+    this.busy.add(packageId);
+    try {
+      const project = await this.projectDirectory();
+      if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+
+      const owner = this.deps.resolveOwner?.() ?? OPERATOR_IDENTITY;
+      const createdAt = this.now().toISOString();
+      const packageRunId = randomUUID();
+      const record: CodeScenePackageRun = {
+        id: packageRunId,
+        revision: 0,
+        kind: "code-scene-package",
+        packageId,
+        packageTitle: loaded.manifest.title,
+        executorSceneId: loaded.manifest.executor.sceneId,
+        executorVersionId: loaded.manifest.executor.versionId,
+        packageRunId,
+        ownerUserId: owner.ownerUserId,
+        ...(owner.submitter ? { submitter: owner.submitter } : {}),
+        status: "running",
+        createdAt,
+        updatedAt: createdAt,
+        runIds: [],
+      };
+      this.putRun(project, record, 0);
+      return packageRunId;
+    } catch (error) {
+      this.busy.delete(packageId);
+      throw error;
+    }
+  }
+
+  /** 执行一次已占位的包运行，并落终态。start() 与 invoke() 共用这一条路径。 */
+  private async executeRun(packageId: string, loaded: LoadedPackage, packageRunId: string, raw?: unknown): Promise<{
+    packageRunId: string;
+    packageId: string;
+    status: "completed" | "failed";
+    result?: JsonValue;
+    error?: string;
+    errorCode?: string;
+    runIds: string[];
+  }> {
     const project = await this.projectDirectory();
-    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
-
     const owner = this.deps.resolveOwner?.() ?? OPERATOR_IDENTITY;
-    const createdAt = this.now().toISOString();
-    const packageRunId = randomUUID();
-    const record: CodeScenePackageRun = {
-      id: packageRunId,
-      revision: 0,
-      kind: "code-scene-package",
-      packageId,
-      packageTitle: loaded.manifest.title,
-      executorSceneId: loaded.manifest.executor.sceneId,
-      executorVersionId: loaded.manifest.executor.versionId,
-      packageRunId,
-      ownerUserId: owner.ownerUserId,
-      ...(owner.submitter ? { submitter: owner.submitter } : {}),
-      status: "running",
-      createdAt,
-      updatedAt: createdAt,
-      runIds: [],
-    };
-    this.putRun(project, record, 0);
-
     const context: InvocationContext = {
       packageRunId,
       projectDirectory: project,
@@ -714,7 +748,6 @@ export class CodeScenePackageService {
       runIds: [],
     };
 
-    this.busy.add(packageId);
     const abort = new AbortController();
     // 入口契约（规格 §3）：run({ inputs, runId, signal, log })。log 必须是可直接调用的函数，
     // 不能只挂在 framework 上，否则照规格写的包会在第一行日志处失败。
@@ -769,6 +802,70 @@ export class CodeScenePackageService {
     } finally {
       this.busy.delete(packageId);
     }
+  }
+
+  /**
+   * 受理一次包运行并立即返回 packageRunId：包内通常会 `scenes.wait` 到子运行终态（分钟级），
+   * 挂在 HTTP 请求上等它结束会撑爆请求超时，也会让「已受理」与「已跑完」两件事混在一个响应里。
+   * 执行语义与 `invoke` 完全一致（同一条 `invoke` 代码路径），只是不 await。
+   */
+  async start(packageId: string, raw?: unknown): Promise<{ packageRunId: string; packageId: string; status: "running"; executorSceneId: string; executorVersionId: string; nextAction: "poll_package_run" }> {
+    const loaded = this.requireRunnable(packageId);
+    // 先同步占位再返回：调用方拿到 packageRunId 后立刻查详情时必须能查到，不能出现「已返回但记录还没有」的窗口。
+    const packageRunId = await this.reserveRun(packageId, loaded);
+    void this.executeRun(packageId, loaded, packageRunId, raw);
+    return {
+      packageRunId,
+      packageId,
+      status: "running" as const,
+      executorSceneId: loaded.manifest.executor.sceneId,
+      executorVersionId: loaded.manifest.executor.versionId,
+      nextAction: "poll_package_run" as const,
+    };
+  }
+
+  /** 按包列出运行记录（新的在前）；cursor 为上一页最后一条的 id。 */
+  async listRuns(packageId: string, query: { limit?: number; cursor?: string; status?: CodeScenePackageRun["status"] } = {}): Promise<{
+    packageId: string;
+    runs: Array<Omit<CodeScenePackageRun, "result">>;
+    hasMore: boolean;
+    nextCursor?: string;
+  }> {
+    if (!PACKAGE_ID_PATTERN.test(packageId)) throw new HttpError(400, "场景包ID无效", "INVALID_PACKAGE_ID", { packageId });
+    const limit = query.limit === undefined ? 50 : query.limit;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new HttpError(400, "分页条数需要是 1–200 的整数", "INVALID_RUN_LIMIT");
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const all = this.deps.store.listDocuments<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION)
+      .filter((run) => run.packageId === packageId)
+      .filter((run) => !query.status || run.status === query.status)
+      // listDocuments 已按 updated_at DESC 排；这里再按 createdAt 稳定一次，避免同毫秒写入的顺序抖动。
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+    const start = query.cursor ? all.findIndex((run) => run.id === query.cursor) + 1 : 0;
+    if (query.cursor && start === 0) throw new HttpError(400, "运行记录分页游标无效", "INVALID_RUN_CURSOR", { packageRunId: query.cursor });
+    const page = all.slice(start, start + limit);
+    const hasMore = start + limit < all.length;
+    return {
+      packageId,
+      // 列表不带 result：包的产出可能很大，详情接口才给。
+      runs: page.map(({ result: _result, ...rest }) => rest),
+      hasMore,
+      ...(hasMore && page.length ? { nextCursor: page[page.length - 1]!.id } : {}),
+    };
+  }
+
+  /** 单条包运行详情：带 result 与本次产出的子运行。 */
+  async getRunDetail(packageId: string, packageRunId: string): Promise<CodeScenePackageRun & { runs: RunRecord[] }> {
+    if (!PACKAGE_ID_PATTERN.test(packageId)) throw new HttpError(400, "场景包ID无效", "INVALID_PACKAGE_ID", { packageId });
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    const record = this.deps.store.getDocument<CodeScenePackageRun>(project, PACKAGE_RUNS_COLLECTION, packageRunId);
+    // 归属校验：包详情只能看这个包自己的运行，不能拿别的包的 packageRunId 读别人记录。
+    if (!record || record.packageId !== packageId) throw new HttpError(404, "没有找到这条场景包运行记录", "PACKAGE_RUN_NOT_FOUND", { packageId, packageRunId });
+    const runs = record.runIds
+      .map((runId) => this.deps.store.getRun(project, runId))
+      .filter((run): run is RunRecord => Boolean(run));
+    return { ...record, runs };
   }
 
   async getPackageRun(packageRunId: string): Promise<CodeScenePackageRun | undefined> {

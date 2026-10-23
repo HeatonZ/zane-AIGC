@@ -248,3 +248,104 @@ test("package async throw yields failed package run and package status error whi
   assert.equal(process.listenerCount("uncaughtException"), uncaughtBefore);
   assert.equal(process.listenerCount("unhandledRejection"), unhandledBefore);
 });
+
+test("start() 返回 packageRunId 后立即查详情可见，并在后台跑到终态；listRuns 按包归属过滤", async (t) => {
+  const h = await productionHarness(t, {
+    kind: "fake",
+    async execute({ inputValues }) { return { value: "产出：" + String(inputValues.seed ?? "") }; },
+  });
+  await h.service.start();
+  const workspace = new WorkspaceService(h.store, path.join(h.root, "workspace.json"));
+  t.after(() => workspace.shutdown());
+  const scene = { id: SCENE_ID, title: "包执行场景", summary: "", description: "", cover: "", accent: "green", stages: [] };
+  const workflow = {
+    sceneId: SCENE_ID,
+    name: "包执行场景",
+    inputs: [{ key: "seed", type: "text" }],
+    steps: [{ id: "step-one", name: "第一步", kind: "fake", outputs: [{ key: "value", type: "text" }] }],
+    outputs: [{ key: "value", type: "text", sourceRef: "step.step-one.outputs.value" }],
+  };
+  await workspace.initialize({
+    format: "zane-studio.workspace/v1",
+    scenes: [scene],
+    workflows: { [SCENE_ID]: workflow },
+    optionPresets: [],
+    drafts: [],
+    sceneVersions: { [SCENE_ID]: { publishedVersionId: VERSION_ID, versions: [{ id: VERSION_ID, version: "abc12345", publishedAt: "2026-10-01T00:00:00.000Z", scene, workflow, optionPresets: [] }] } },
+  });
+  const scenes = new AiSceneService(workspace, h.executors, h.assets, async () => h.settings);
+  const service = new CodeScenePackageService({ store: h.store, scenes, runs: h.service, assets: h.assets, loadSettings: async () => h.settings });
+
+  const project = h.settings.projectDirectory;
+  await writePackage(project, "demo", {
+    "package.json": manifest("演示包"),
+    "index.mjs": `export default (framework) => ({ run: async ({ log }) => {
+      log("info", "包开始");
+      const scene = await framework.scenes.run({ inputs: { seed: "甲" }, title: "第一镜" });
+      const finished = await framework.scenes.wait(scene.runId);
+      log("info", "包结束");
+      return { runId: scene.runId, status: finished.status };
+    } });`,
+  });
+  await writePackage(project, "other", {
+    "package.json": manifest("另一个包"),
+    "index.mjs": "export default () => ({ run: async () => ({ ok: true }) });",
+  });
+  await service.loadAll();
+
+  const accepted = await service.start("demo");
+  assert.equal(accepted.status, "running");
+  assert.equal(accepted.nextAction, "poll_package_run");
+  assert.match(accepted.packageRunId, /^[a-f0-9-]{36}$/);
+  assert.equal(accepted.executorSceneId, SCENE_ID);
+  // 关键：拿到 id 立刻查必须能查到（不能等后台跑完才落记录）。
+  const immediate = await service.getRunDetail("demo", accepted.packageRunId);
+  assert.equal(immediate.packageId, "demo");
+  assert.ok(["running", "completed"].includes(immediate.status));
+
+  // 同一包并发再起一次 → 409，不许同一个包并行跑两遍。
+  await assert.rejects(service.start("demo"), (error: unknown) => error instanceof HttpError && error.code === "PACKAGE_BUSY");
+
+  // 等后台跑到终态。
+  let detail = await service.getRunDetail("demo", accepted.packageRunId);
+  for (let attempt = 0; attempt < 200 && detail.status === "running"; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    detail = await service.getRunDetail("demo", accepted.packageRunId);
+  }
+  assert.equal(detail.status, "completed");
+  assert.equal(detail.runIds.length, 1);
+  assert.deepEqual(detail.result, { runId: detail.runIds[0], status: "completed" });
+  assert.equal(detail.runs.length, 1);
+  assert.equal(detail.runs[0]!.sceneId, SCENE_ID);
+  assert.equal(detail.runs[0]!.packageRunId, accepted.packageRunId);
+
+  // 另一个包跑一次，验证列表按 packageId 归属过滤，不会串包。
+  const otherRun = await service.invoke("other");
+  const demoRuns = await service.listRuns("demo");
+  assert.equal(demoRuns.packageId, "demo");
+  assert.equal(demoRuns.runs.length, 1);
+  assert.equal(demoRuns.runs[0]!.id, accepted.packageRunId);
+  assert.equal(demoRuns.runs[0]!.packageId, "demo");
+  assert.equal(demoRuns.runs[0]!.packageTitle, "演示包");
+  assert.equal(demoRuns.hasMore, false);
+  // 列表不带 result：产出走详情。
+  assert.equal("result" in (demoRuns.runs[0] as Record<string, unknown>), false);
+  const otherRuns = await service.listRuns("other");
+  assert.equal(otherRuns.runs.length, 1);
+  assert.equal(otherRuns.runs[0]!.id, otherRun.packageRunId);
+
+  // 拿别的包的 packageRunId 读详情 → 404，不能跨包读。
+  await assert.rejects(service.getRunDetail("other", accepted.packageRunId), (error: unknown) => error instanceof HttpError && error.code === "PACKAGE_RUN_NOT_FOUND");
+
+  // 状态筛选 + 分页。
+  const completed = await service.listRuns("demo", { status: "completed" });
+  assert.equal(completed.runs.length, 1);
+  const running = await service.listRuns("demo", { status: "running" });
+  assert.equal(running.runs.length, 0);
+  const paged = await service.listRuns("demo", { limit: 1 });
+  assert.equal(paged.runs.length, 1);
+  assert.equal(paged.hasMore, false);
+  await assert.rejects(service.listRuns("demo", { limit: 0 }), (error: unknown) => error instanceof HttpError && error.code === "INVALID_RUN_LIMIT");
+  await assert.rejects(service.listRuns("demo", { cursor: "not-a-run" }), (error: unknown) => error instanceof HttpError && error.code === "INVALID_RUN_CURSOR");
+  await assert.rejects(service.listRuns("bad id"), (error: unknown) => error instanceof HttpError && error.code === "INVALID_PACKAGE_ID");
+});

@@ -17,6 +17,8 @@ export interface PreparedRun {
   artifacts: RunArtifactPaths;
   createdAt: string;
   runTitle?: string;
+  /** 由哪个代码场景包运行创建；子运行靠它回指包运行。 */
+  packageRunId?: string;
   feedbackHistory?: StepFeedbackRecord[];
   feedbackSourceAliases?: Record<string, string>;
   resumedFromRunId?: string;

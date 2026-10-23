@@ -68,6 +68,8 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
   }
   if (input?.runTitle !== undefined && (typeof input.runTitle !== "string" || input.runTitle.length > 120)) throw new HttpError(400, "运行标题无效，最多可填写 120 个字符");
   let runTitle = typeof input?.runTitle === "string" ? input.runTitle.trim() : "";
+  // 代码场景包提交的子运行带上包运行号：运行记录靠它回指到包，按场景筛出来也能看出属于哪个包。
+  const packageRunId = typeof input?.packageRunId === "string" && input.packageRunId ? input.packageRunId : undefined;
   let resumeSource: RunRecord | undefined;
   let workflowValue = value;
   let inputValues = structuredClone(rawInputs) as Record<string, JsonValue>;
@@ -151,5 +153,5 @@ export async function prepareRun(body: unknown, runId: string, settings: SavedSe
     await discardRunArtifacts(settings.projectDirectory, runId).catch(failure => log("warn", "run.preparation_cleanup_failed", { runId, error: String(failure) }));
     throw error;
   }
-  return { runId, executionWorkflow, inputValues, settings, artifacts, createdAt, ...(feedbackHistory.length ? { feedbackHistory, feedbackSourceAliases } : {}), ...(runTitle ? { runTitle } : {}), ...(resumedFromRunId ? { resumedFromRunId, resumeSource } : {}), ...(rerunFromRunId ? { rerunFromRunId, rerun } : {}) };
+  return { runId, executionWorkflow, inputValues, settings, artifacts, createdAt, ...(feedbackHistory.length ? { feedbackHistory, feedbackSourceAliases } : {}), ...(runTitle ? { runTitle } : {}), ...(packageRunId ? { packageRunId } : {}), ...(resumedFromRunId ? { resumedFromRunId, resumeSource } : {}), ...(rerunFromRunId ? { rerunFromRunId, rerun } : {}) };
 }

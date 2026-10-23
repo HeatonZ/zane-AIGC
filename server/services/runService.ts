@@ -135,6 +135,7 @@ export class RunService {
         createdAt: prepared.createdAt, startedAt: prepared.createdAt, steps: [], outputs: [],
         inputValues: externalizeRuntimeValue(prepared.inputValues) as RunRecord["inputValues"], workflow,
         artifacts: prepared.artifacts, ...(prepared.feedbackHistory?.length ? { feedbackHistory: prepared.feedbackHistory } : {}), ...(prepared.runTitle ? { runTitle: prepared.runTitle } : {}),
+        ...(prepared.packageRunId ? { packageRunId: prepared.packageRunId } : {}),
         ...(prepared.resumedFromRunId ? { resumedFromRunId: prepared.resumedFromRunId } : {}),
         ...(prepared.rerunFromRunId ? { rerunFromRunId: prepared.rerunFromRunId, rerunPlan: prepared.rerun!.plan, rerunRequest: prepared.rerun!.request } : {}),
       };
@@ -142,7 +143,7 @@ export class RunService {
       accepted = true;
       this.publish(settings.projectDirectory, record, events);
       this.queue.push(prepared);
-      log("info", "run.queued", { runId, sceneId: record.sceneId });
+      log("info", "run.queued", { runId, sceneId: record.sceneId, ...(record.packageRunId ? { packageRunId: record.packageRunId } : {}) });
       setImmediate(() => this.pump());
       return record;
     } catch (error) {
@@ -424,7 +425,7 @@ export class RunService {
         error: job.shutdown ? "服务关闭时中断，请从断点继续" : reason,
         ...(!job.shutdown ? { cancellationReason: reason } : {}),
       } : {}) }, [{ type: `run.${status}` }]);
-      log("info", `run.${status}`, { runId: prepared.runId, durationMs: result.durationMs });
+      log("info", `run.${status}`, { runId: prepared.runId, ...(record.packageRunId ? { packageRunId: record.packageRunId } : {}), durationMs: result.durationMs });
       // waiting（等待人工审核）不是终态样本，不计入时长统计。
       if (status !== "waiting") this.metricsTracker?.record({ at: finishedAt, status: status as "completed" | "failed" | "cancelled" | "stale", durationMs: result.durationMs, sceneId: record.sceneId });
     } catch (error) {
