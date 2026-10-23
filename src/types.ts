@@ -3,7 +3,7 @@ export type { WorkflowMediaRole };
 
 export type SceneId = string;
 
-export type PageId = "home" | "history" | "tasks" | "runs" | "assets" | "connections" | "studio" | "flows" | "users" | "feedback";
+export type PageId = "home" | "history" | "tasks" | "runs" | "assets" | "connections" | "studio" | "flows" | "users" | "feedback" | "logs";
 
 export interface SceneModule {
   id: SceneId;
@@ -476,6 +476,10 @@ export interface ComfyUIWorkflowDetail {
   converted?: boolean;
   nodes: ComfyUIWorkflowNode[];
 }
+
+/** Administrator-only structured log window and ops-log tail; never cached in localStorage.
+ *  进程内窗口重启即清零，运维日志来自数据目录白名单文件；两者都只读。 */
+export type { SystemLogPage, OpsLogPage, SystemLogEntry, SystemLogOpsLine, LogLevelName, LogOpsFile } from "../server/domain/systemLogContracts";
 
 /** Administrator-only, system-wide scheduler configuration; never cached in localStorage. */
 export interface TaskConcurrencySettings {

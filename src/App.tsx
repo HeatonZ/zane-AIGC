@@ -26,6 +26,7 @@ import { createId } from "./lib/ids";
 import { downloadScenePackage, parseScenePackage, prepareImportedScene } from "./lib/sceneTransfer";
 import { publishedSceneVersion, publishSceneVersion, restoreSceneVersionDraft } from "./lib/sceneVersions";
 const FlowDesigner = lazy(() => import("./features/FlowDesigner"));
+const Logs = lazy(() => import("./features/Logs"));
 import SceneOrderDialog from "./features/SceneOrderDialog";
 import type { ConnectorState, JsonValue, PageId, SceneDetails, SceneId, SceneModule, SceneVersion, SceneVersionRecord, WorkflowDefinition, WorkflowDraft, WorkflowOptionPreset, WorkflowRunRecord, WorkspaceSnapshot } from "./types";
 
@@ -42,6 +43,7 @@ const navLabels: Record<PageId, string> = {
   connections: "集成连接",
   studio: "创作场景",
   flows: "流程配置",
+  logs: "运行日志",
 };
 
 
@@ -641,6 +643,7 @@ export default function App({ userId, displayName, onLogout, onOpenUserView }: {
             {page === "tasks" && <Tasks onOpenRun={runId => { selectRun(runId); setPage("runs"); }} />}
             {page === "runs" && <WorkflowRuns scenes={scenes} onNavigate={setPage} selectedRunId={selectedRunId} onSelectRun={selectRun} onCancelRun={cancelWorkflowRun} onResumeRun={resumeWorkflowRun} onRerunRun={rerunWorkflowRun} activeRunId={selectedRunId !== null && activeRunIds.includes(selectedRunId) ? selectedRunId : null} submissionPending={selectedRunId !== null && pendingSubmissionIds.includes(selectedRunId)} runStartError={selectedRunId ? runStartErrors[selectedRunId] : undefined} />}
             {page === "assets" && <Library drafts={drafts} scenes={scenes} onNavigate={setPage} onOpenScene={openScene} onOpenRun={runId => { selectRun(runId); setPage("runs"); }} />}
+            {page === "logs" && <Suspense fallback={<div className="page-loading">正在加载运行日志…</div>}><Logs /></Suspense>}
             {page === "users" && <UserManagement scenes={scenes} />}
             {page === "feedback" && <SystemFeedback key={userId} userId={userId} admin />}
             {page === "connections" && <Connections connectors={connectors} onRefresh={refreshConnections} />}

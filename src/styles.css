@@ -1520,3 +1520,187 @@ fieldset.rerun-dialog-body { border: 0; margin: 0; min-width: 0; }
 .task-file-button{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
 .task-file-button:has(input:disabled){opacity:.55;cursor:not-allowed}
 @media(max-width:900px){.task-table{display:block;overflow-x:auto;white-space:nowrap}.task-fields{grid-template-columns:1fr}}
+
+/* ---- 运行日志（管理员只读日志查看）----
+   日志页复用 access-card / connection-settings 的既有外壳；这里补日志特有的信息层级：
+   每条事件一行 = 时间 + 等级 + 分类 + 中文事件名 + 一行摘要 + 原始事件名，
+   展开后是逐项字段表（而不是一整块 JSON），运维日志另有结构化/原始文本两种视图。 */
+.logs-page{display:grid;gap:18px}
+.logs-page .access-heading{margin-bottom:0}
+/* 筛选区沿用 connection-fields 的栅格，但字段更多，放宽到自适应列。 */
+.logs-filter-grid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.logs-filter-grid .field-group{display:grid;align-content:start}
+.logs-filter-grid .field-help{min-height:0}
+.field-help-error{color:#a45245}
+.input-invalid{border-color:#d9a79c}
+/* 常用事件前缀：写进同一个前缀筛选，不是页面内二次过滤。 */
+.logs-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.logs-chip{padding:2px 8px;border:1px solid #dfe6da;border-radius:999px;background:#f7f9f4;color:#5c6a56;font-size:10px;cursor:pointer}
+.logs-chip:hover{border-color:#b9c9ad;color:#33462f}
+.logs-chip.active{border-color:#7f9d6d;background:#e9f1e2;color:#2f4a2a;font-weight:600}
+.logs-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.logs-heading h2{display:inline-flex;align-items:center;gap:7px;margin:0;font-size:16px}
+.logs-meta{color:#8b938a;font-size:11px;font-variant-numeric:tabular-nums}
+.logs-hint{margin:6px 0;color:#7c857b;font-size:11px;line-height:1.7}
+.logs-list{list-style:none;margin:12px 0 0;padding:0;border:1px solid #e6e9e2;border-radius:8px;overflow:hidden}
+.logs-entry+ .logs-entry{border-top:1px solid #eef0eb}
+/* 等级用左侧色条表达，比整行着色更易扫读、也不影响展开区可读性。 */
+.logs-entry{border-left:3px solid transparent}
+.logs-info{border-left-color:#9db98f}
+.logs-warn{border-left-color:#c1ad68}
+.logs-error{border-left-color:#cf7868}
+.logs-plain{border-left-color:#d5dcd1}
+/* 行头本身不是按钮：行内还要放「复制完整 JSON」，按钮不能嵌套。 */
+.logs-entry-head{display:flex;align-items:stretch;background:none}
+.logs-entry-head:hover{background:#f8faf7}
+.logs-entry-main{display:flex;align-items:center;gap:9px;flex:1;min-width:0;padding:8px 4px 8px 12px;border:0;background:none;color:inherit;text-align:left;cursor:pointer;font-size:12px}
+.logs-entry-main:focus-visible{outline:2px solid #7f9d6d;outline-offset:-2px}
+.logs-info .logs-entry-main>svg:first-child{color:#6f8f63}
+.logs-warn .logs-entry-main>svg:first-child{color:#a18c45}
+.logs-error .logs-entry-main>svg:first-child{color:#b45c4b}
+.logs-plain .logs-entry-main>svg:first-child{color:#96a291}
+.logs-time{flex:0 0 auto;color:#8b938a;font-size:10px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.logs-level{flex:0 0 auto;padding:1px 6px;border-radius:3px;font-size:10px;white-space:nowrap}
+.logs-level-info{color:#4c7750;background:#edf3e9}
+.logs-level-warn{color:#8a7434;background:#f7f2e2}
+.logs-level-error{color:#9c4a3b;background:#fbece8}
+/* 分类让同类事件可整列扫读，例如连续看 ComfyUI 或 Hermes 的失败。 */
+.logs-category{flex:0 0 auto;padding:1px 6px;border:1px solid #e2e8dd;border-radius:3px;color:#66735f;font-size:10px;white-space:nowrap}
+.logs-title{display:flex;align-items:baseline;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}
+.logs-label{flex:0 0 auto;color:#2f4030;font-size:12px;font-weight:600;white-space:nowrap}
+.logs-summary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#6b7a65;font-size:11px}
+.logs-summary-plain{font-family:"DM Sans",Consolas,monospace;color:#55604f}
+.logs-event{flex:0 0 auto;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:"DM Sans",Consolas,monospace;font-size:10px;color:#9aa596}
+.logs-seq{flex:0 0 auto;color:#a7aea4;font-size:10px;font-variant-numeric:tabular-nums}
+.logs-flag{flex:0 0 auto;padding:1px 5px;border:1px solid #dfbc55;border-radius:3px;color:#8a7434;font-size:9px;white-space:nowrap}
+.logs-chevron{flex:0 0 auto;color:#a7aea4;transition:transform .15s ease}
+.logs-chevron.open{transform:rotate(180deg)}
+.logs-copy{flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;padding:0 10px;border:0;border-left:1px solid #eef0eb;background:none;color:#9aa596;font-size:10px;cursor:pointer;white-space:nowrap}
+.logs-copy:hover{background:#eef2ea;color:#3f5239}
+/* 正文：一句中文说明发生了什么。日志页的主要阅读内容，字号比技术标签大。 */
+.logs-narrative{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2b3a2a;font-size:13px;line-height:1.6}
+.logs-failed .logs-narrative{color:#8c3d2e;font-weight:600}
+.logs-noise .logs-narrative{color:#7c857b;font-size:12px}
+/* 技术信息默认收起：路径、事件名、字段名只在排障时需要。 */
+.logs-technical{margin-top:10px;border:1px solid #e6e9e2;border-radius:6px;background:#fff}
+.logs-technical>summary{padding:6px 10px;color:#7c857b;font-size:10px;cursor:pointer;list-style:none;font-family:"DM Sans",Consolas,monospace;word-break:break-all}
+.logs-technical>summary::-webkit-details-marker{display:none}
+.logs-technical>summary::before{content:"▸ ";color:#a7aea4}
+.logs-technical[open]>summary::before{content:"▾ "}
+.logs-technical>summary:hover{color:#4a5a44}
+.logs-technical .logs-field-list{margin:0 8px 8px}
+.logs-technical .logs-detail-bar{padding:0 8px 8px;margin:0}
+/* 行内事实：请求方法与路径、状态码、运行/场景/步骤、耗时。不用展开就能定位是哪次调用。 */
+.logs-entry-body{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:0 12px 8px 33px}
+.logs-entry-body:empty{display:none}
+.logs-facts{display:flex;flex-wrap:wrap;align-items:center;gap:5px;min-width:0}
+.logs-fact{display:inline-flex;align-items:center;gap:3px;max-width:100%;padding:1px 6px;border-radius:3px;background:#f2f5ee;color:#4f5d49;font-size:10px;line-height:1.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.logs-fact-route{background:#eef2ea;color:#33452f;font-family:"DM Sans",Consolas,monospace;max-width:min(420px,100%)}
+.logs-fact-status{font-variant-numeric:tabular-nums;font-weight:700}
+.logs-fact-status.tone-ok{background:#edf3e9;color:#3f6a3a}
+.logs-fact-status.tone-warn{background:#f7f2e2;color:#8a7434}
+.logs-fact-status.tone-error{background:#fbe4de;color:#943f2c}
+.logs-fact-muted{background:transparent;color:#98a292}
+.logs-fact-link{border:1px solid #dfe6da;background:#fff;color:#4a6440;cursor:pointer;font-family:inherit}
+.logs-fact-link:hover{border-color:#a9bd9b;background:#f4f8f0}
+/* 失败条目：左侧色条加粗、行底淡红，失败原因整行可见——这是「什么请求报错了」的答案。 */
+.logs-failed{border-left-width:4px;background:#fffbfa}
+.logs-failed.logs-warn{border-left-color:#c9922f;background:#fffcf4}
+.logs-failed.logs-info{border-left-color:#c9922f}
+.logs-failed .logs-entry-head:hover{background:#fdf3f0}
+.logs-failed.logs-warn .logs-entry-head:hover{background:#fdf8ec}
+.logs-failed .logs-label{color:#8c3d2e}
+.logs-failed.logs-warn .logs-label{color:#8a6a24}
+.logs-error-line{display:flex;align-items:flex-start;gap:5px;margin:0;padding:0;width:100%;color:#943f2c;font-size:11px;line-height:1.65;word-break:break-word}
+.logs-error-line svg{flex:0 0 auto;margin-top:3px}
+.logs-failed.logs-warn .logs-error-line{color:#8a6a24}
+.logs-failure-summary{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:8px 0;padding:7px 10px;border:1px solid #f0cfc7;border-radius:6px;background:#fdf1ee;color:#8c3d2e;font-size:11px}
+.logs-failure-summary svg{flex:0 0 auto}
+.logs-failure-summary .logs-copy{padding:1px 8px;border:1px solid #e0b3a9;border-radius:4px;color:#8c3d2e}
+.logs-failure-summary .logs-copy:hover{background:#f9e2dc}
+/* 重点摘要：先回答「出了什么事、有多少条」，再往下才是逐条明细。 */
+.logs-digest{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:10px 0 4px}
+.logs-digest-card{display:grid;gap:2px;padding:10px 14px;border:1px solid #e3e9df;border-radius:8px;background:#fbfcfa}
+.logs-digest-value{font-size:22px;line-height:1.2;font-weight:700;color:#2f4030;font-variant-numeric:tabular-nums}
+.logs-digest-label{color:#6f7c69;font-size:11px}
+.logs-digest-bad{border-color:#f0cfc7;background:#fdf4f1}
+.logs-digest-bad .logs-digest-value{color:#a8442f}
+.logs-digest-ok .logs-digest-value{color:#4a7750}
+.logs-digest-action{justify-self:start;margin-top:4px;padding:2px 8px;border:1px solid #dfe6da;border-radius:4px;background:#fff;color:#4a6440;font-size:10px;cursor:pointer}
+.logs-digest-action:hover{border-color:#a9bd9b;background:#f4f8f0}
+.logs-digest-bad .logs-digest-action{border-color:#e0b3a9;color:#8c3d2e}
+.logs-digest-bad .logs-digest-action:hover{background:#f9e2dc}
+/* 分组小标题：失败 / 轮询 / 其余事件，三段分开才不会互相淹没。 */
+.logs-section-title{display:flex;align-items:center;gap:6px;margin:18px 0 0;font-size:12px;font-weight:700;color:#3d4b3d}
+.logs-section-title:first-of-type{margin-top:12px}
+.logs-section-bad{color:#943f2c}
+.logs-section-muted{color:#8b938a;font-weight:600}
+.logs-section-title+.logs-list{margin-top:8px}
+.logs-count{flex:0 0 auto;padding:1px 7px;border-radius:999px;background:#f0e2de;color:#8c3d2e;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
+.logs-noise .logs-count{background:#eef0ea;color:#7c857b}
+.logs-group-items{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.logs-group-items>li{display:grid;gap:4px;padding:8px 10px;border:1px solid #e6e9e2;border-radius:6px;background:#fff}
+.logs-group-items .logs-field-list{margin:0}
+.logs-group .logs-entry-main{cursor:pointer}
+/* 详情分区：一次请求的全部记录、这次运行的上下文、前后日志。逐条日志本身字段很少，
+   这几块才是排障真正要看的内容。 */
+.logs-detail-section{margin-top:12px;padding-top:10px;border-top:1px dashed #dde3d8}
+.logs-detail-section h4{margin:0 0 8px;font-size:11px;font-weight:700;color:#4a5a44}
+.logs-detail-section .logs-detail-hint{display:flex;align-items:center;gap:5px;margin:0}
+.logs-detail-bad{color:#943f2c}
+.logs-record-list{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.logs-record-list>li{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;gap:8px;padding:5px 8px;border:1px solid #e6e9e2;border-radius:5px;background:#fff;font-size:11px}
+.logs-record-list>li.logs-neighbor-bad{border-color:#f0cfc7;background:#fdf6f3}
+.logs-record-event{font-family:"DM Sans",Consolas,monospace;font-size:10px;color:#5b6a55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.logs-record-summary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#3f4d3c}
+/* 运行上下文：状态、场景、耗时与逐步状态，把孤立的日志行放回一次真实运行。 */
+.logs-run-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px 16px;margin:0 0 10px}
+.logs-run-summary>div{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:baseline;font-size:11px}
+.logs-run-summary dt{color:#7c857b;white-space:nowrap}
+.logs-run-summary dd{margin:0;min-width:0;color:#2f3d2f;word-break:break-word}
+.logs-run-summary code{font-family:"DM Sans",Consolas,monospace;font-size:10px}
+.logs-run-status{font-weight:700}
+.logs-run-status.status-failed{color:#943f2c}
+.logs-run-status.status-completed{color:#3b652f}
+.logs-run-status.status-waiting{color:#8a7434}
+.logs-run-status.status-running{color:#3f6a8a}
+.logs-run-error{display:flex;align-items:flex-start;gap:5px;margin:0 0 10px;padding:7px 9px;border:1px solid #f0cfc7;border-radius:5px;background:#fdf4f1;color:#8c3d2e;font-size:11px;line-height:1.6;word-break:break-word}
+.logs-run-error svg{flex:0 0 auto;margin-top:3px}
+.logs-run-steps{width:100%;border-collapse:collapse;margin:0 0 8px;font-size:11px}
+.logs-run-steps th{text-align:left;padding:4px 8px;border-bottom:1px solid #e3e9df;color:#7c857b;font-weight:600;font-size:10px}
+.logs-run-steps td{padding:5px 8px;border-bottom:1px solid #f0f2ed;color:#2f3d2f;vertical-align:top}
+.logs-run-steps tr.row-failed td{background:#fdf6f3;color:#8c3d2e}
+.logs-run-steps code{font-family:"DM Sans",Consolas,monospace;font-size:10px;color:#5b6a55}
+/* 展开区：字段逐项列出，错误字段用警示色，长值可滚动。 */
+.logs-detail{padding:10px 14px 14px;background:#f7f8f5;border-top:1px solid #eef0eb}
+.logs-detail-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.logs-detail-hint{flex:1 1 auto;min-width:0;color:#8b938a;font-size:10px;font-variant-numeric:tabular-nums;word-break:break-all}
+.logs-detail-bar .logs-copy{padding:0 8px;border:1px solid #dfe6da;border-radius:4px;color:#5c6a56}
+.logs-detail-empty{margin:0;color:#8b938a;font-size:11px}
+.logs-field-list{display:grid;gap:1px;margin:0;border:1px solid #e6e9e2;border-radius:6px;background:#fff;overflow:hidden}
+.logs-field{display:grid;grid-template-columns:minmax(96px,160px) minmax(0,1fr) auto;align-items:start;gap:10px;padding:6px 10px;background:#fff}
+.logs-field+.logs-field{border-top:1px solid #f0f2ed}
+.logs-field dt{color:#738071;font-family:"DM Sans",Consolas,monospace;font-size:10px;line-height:1.7;word-break:break-all}
+.logs-field dd{margin:0;min-width:0;color:#2f3d2f;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-word;user-select:text}
+.logs-field-json{margin:0;padding:0;max-height:260px;overflow:auto;background:none;font-family:"DM Sans",Consolas,monospace;font-size:10px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+.logs-field-error{color:#943f2c}
+.logs-field-copy{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 4px;border:1px solid transparent;border-radius:3px;background:none;color:#b3bcae;font-size:9px;cursor:pointer}
+.logs-field-copy:hover{border-color:#dfe6da;color:#4a5a44}
+.logs-raw-details{margin-top:8px;font-size:10px;color:#7c857b}
+.logs-raw-details summary{cursor:pointer}
+.logs-raw-details .logs-field-json{margin-top:6px;padding:8px 10px;border:1px solid #e6e9e2;border-radius:6px;background:#fff}
+.logs-actions{display:flex;align-items:center;gap:10px;margin-top:12px}
+/* 运维日志显示方式切换：结构化便于读字段，原始文本便于逐行核对文件本身。 */
+.logs-view-toggle{display:inline-flex;margin:10px 0 0;border:1px solid #dfe6da;border-radius:6px;overflow:hidden}
+.logs-view-toggle button{padding:5px 12px;border:0;background:#fff;color:#66735f;font-size:11px;cursor:pointer}
+.logs-view-toggle button+button{border-left:1px solid #dfe6da}
+.logs-view-toggle button.active{background:#e9f1e2;color:#2f4a2a;font-weight:600}
+.logs-ops-text{margin:12px 0 0;padding:14px;max-height:560px;overflow:auto;background:#f7f8f5;border:1px solid #e6e9e2;border-radius:8px;font-family:"DM Sans",Consolas,monospace;font-size:11px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+@media(max-width:900px){
+  .logs-filter-grid{grid-template-columns:1fr}
+  /* 窄屏把事件名藏掉：摘要已经包含同样的信息，留着会把摘要挤成零宽。 */
+  .logs-event{display:none}
+  .logs-title{flex-wrap:wrap;gap:2px 8px}
+  .logs-summary{white-space:normal}
+  .logs-field{grid-template-columns:minmax(80px,120px) minmax(0,1fr) auto}
+}

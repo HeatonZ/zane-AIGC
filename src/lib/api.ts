@@ -462,3 +462,14 @@ export function saveLocalExport(input: { revision: number; root: string }) {
   // Never retry a configuration write. A lost receipt must be reconciled with GET first.
   return request<import("../types").LocalExportSettings>("/api/v1/settings/local-export", { method: "PATCH", body: JSON.stringify(input) });
 }
+
+/** Read-only log window / ops-log tail. Read operations never retry a lost receipt blindly:
+ *  a 409 LOG_PAGE_CHANGED means the caller must re-read the first page, not replay the cursor. */
+export function loadSystemLogs(query: { level?: string; event?: string; excludeEvent?: string; q?: string; runId?: string; sceneId?: string; packageRunId?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => [key, String(value)]));
+  return request<import("../types").SystemLogPage>("/api/v1/maintenance/logs?" + params, { signal, cache: "no-store" });
+}
+export function loadOpsLog(query: { file: string; tailLines?: number; level?: string; q?: string }, signal?: AbortSignal) {
+  const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => [key, String(value)]));
+  return request<import("../types").OpsLogPage>("/api/v1/maintenance/logs/ops?" + params, { signal, cache: "no-store" });
+}

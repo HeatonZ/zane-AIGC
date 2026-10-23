@@ -6,6 +6,9 @@ import { createRunMediaExportRouter } from "./api/runMediaExportRoutes.js";
 import { RunMediaExportService } from "./services/runMediaExportService.js";
 import { createWorkbenchUpdateRouter } from "./api/workbenchUpdateRoutes.js";
 import { createMetricsRouter } from "./api/metricsRoutes.js";
+import { createSystemLogRouter } from "./api/systemLogRoutes.js";
+import { SystemLogService } from "./services/systemLogService.js";
+import { systemLogBuffer } from "./observability/logger.js";
 import { RunMetricsTracker } from "./services/runMetricsTracker.js";
 import { createHealthRouter, createWorkspaceRouter, createFilesRouter, createSettingsRouter, createComfyuiRouter, createIntegrationRouter } from "./api/systemRoutes.js";
 import { ProductionLifecycle } from "./runtime/productionLifecycle.js";
@@ -14,6 +17,8 @@ import { AI_CONTRACT_VERSION } from "./ai/operations.js";
 import { AccessService, runSubmitter } from "./services/accessService.js";
 import { UserPortalService } from "./services/userPortalService.js";
 import { createAuthRouter, createAccessRouter } from "./api/accessRoutes.js";
+import { CodeScenePackageService } from "./services/codeScenePackageService.js";
+import { createCodePackageRouter } from "./api/codePackageRoutes.js";
 import { createAiRouter } from "./api/aiRoutes.js";
 import { createCompressionMiddleware } from "./api/compression.js";
 import { createTaskRouter } from "./api/taskRoutes.js";
@@ -100,6 +105,16 @@ app.use(express.json({ limit: "16mb" }));
 const aiScenes = new AiSceneService(workspaceService, executors, assetService, readSettings);
 const accessService = new AccessService(metadataStore, workspaceService, process.env.ZANE_ADMIN_TOKEN ?? "", new LoginLimiter(loginLimitOptions));
 const portalService = new UserPortalService(accessService, aiScenes, runService);
+// 代码子工程（场景包）：磁盘工程 + 宿主框架。加载失败只影响该包，不影响工作台启动。
+// 运行入口与运行记录都在 createCodePackageRouter 里，执行与排队完全复用 runService。
+const codeScenePackages = new CodeScenePackageService({
+  store: metadataStore,
+  scenes: aiScenes,
+  runs: runService,
+  assets: assetService,
+  loadSettings: readSettings,
+  workbenchBaseUrl: () => localBackendUrl(host, port),
+});
 app.use((_req, res, next) => { res.locals.httpSecurityPolicy = accessService.securityPolicy(Boolean(res.locals.publicUserOnly)); next(); });
 app.use(createAuthRouter(accessService));
 app.use(accessService.middleware(async () => (await readSettings()).projectDirectory));
@@ -107,6 +122,8 @@ app.use(createTaskConcurrencyRouter(taskConcurrency));
 app.use(createLocalExportRouter(localExport));
 app.use(createWorkbenchUpdateRouter(localDirectory, process.env.ZANE_RELEASE_ID ?? "unversioned", isProduction));
 app.use(createMetricsRouter(runService, metadataStore, runMetricsTracker));
+app.use(createSystemLogRouter(new SystemLogService(systemLogBuffer, localDirectory)));
+app.use(createCodePackageRouter(codeScenePackages));
 app.use(createAccessRouter(accessService, portalService));
 app.use(createAiRouter(aiScenes, runService, readSettings, userId => { const user = accessService.find(userId); return user ? runSubmitter(user) : undefined; }));
 app.use(createTaskRouter(new TaskService(metadataStore, aiScenes, runService)));
@@ -177,6 +194,11 @@ app.use(createErrorHandler(isProduction, (error, status, requestId) => {
 const server = app.listen(port, host, () => {
   void (async () => {
     await runService.start();
+    // 场景包加载失败只记录在该包状态里，绝不阻塞工作台启动。
+    await codeScenePackages.loadAll().then(
+      result => log("info", "scene_packages.loaded", { loaded: result.loaded, failed: result.failed, packageIds: result.packages.filter(item => item.status === "ok").map(item => item.packageId) }),
+      error => log("warn", "scene_packages.load_failed", { error: error instanceof Error ? error.message : String(error) }),
+    );
     if (isProduction) {
       const address = server.address();
       const listeningPort = address && typeof address === "object" ? address.port : port;

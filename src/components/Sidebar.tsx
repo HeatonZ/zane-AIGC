@@ -10,6 +10,7 @@ import {
   ListChecks,
   Orbit,
   Package,
+  ScrollText,
   Sparkles,
   Workflow,
   Users,
@@ -63,6 +64,7 @@ export default function Sidebar({ page, sceneId, scenes, onNavigate, onOpenScene
         <button className={`nav-item ${page === "flows" ? "active" : ""}`} onClick={() => onNavigate("flows")} aria-label="流程配置" title="流程配置">
           <Workflow size={17} /><span>流程配置</span>
         </button>
+        <button className={`nav-item ${page === "logs" ? "active" : ""}`} onClick={() => onNavigate("logs")} aria-label="运行日志" title="运行日志"><ScrollText size={17} /><span>运行日志</span></button>
 
         <button className={`nav-item ${page === "users" ? "active" : ""}`} onClick={() => onNavigate("users")} aria-label="用户管理" title="用户管理"><Users size={17} /><span>用户管理</span></button>
         <button className={`nav-item ${page === "feedback" ? "active" : ""}`} onClick={() => onNavigate("feedback")} aria-label="系统反馈" title="系统反馈"><MessageSquare size={17} /><span>系统反馈</span></button>
