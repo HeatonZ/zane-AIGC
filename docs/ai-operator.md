@@ -2,7 +2,7 @@
 
 契约版本：1.7.13。面向使用工作台的 AI，不是让 AI 直接改数据库或代替人点击网页。
 本手册是伞式目录：会话级只下发本目录，正文按节读取。MCP 用 zane://guide/<节号>（如 zane://guide/9），HTTP 用 /api/v1/ai/guide?detail=<节号>；detail=full 一次返回目录、全部正文与历史变更记录，detail=changelog（MCP zane://guide/changelog）是历史版本小节，只在核对旧版本行为时读取。
-正文共 80017 字节、28 个节号（↳ 是父节的细分，父节正文已完整包含子节）；只读当前任务需要的那几节，不要把整本手册当成每次会话的入场券。
+正文共 80501 字节、28 个节号（↳ 是父节的细分，父节正文已完整包含子节）；只读当前任务需要的那几节，不要把整本手册当成每次会话的入场券。
 
 ## 最小铁律（摘要，细节见对应节）
 
@@ -41,7 +41,7 @@
 | 10.4 | 运行事件通知 Webhook（管理员，1.7.7）（整节，含下列子节） | 3480 | zane://guide/10.4 |
 | 10.4.1 | ↳ 入站转发：外部系统 → 工作台 → 目标 Webhook | 1519 | zane://guide/10.4.1 |
 | 11 | 接管验收清单 | 1623 | zane://guide/11 |
-| 13 | 场景包（1.7.0） | 5780 | zane://guide/13 |
+| 13 | 场景包（1.7.0） | 6264 | zane://guide/13 |
 | 12 | 积分与卡密（1.6.0） | 5424 | zane://guide/12 |
 
 机器契约：docs/ai-openapi.json（AI操作面与高级提交/媒体/SSE）；工具目录：docs/ai-tools.md；契约导航 zane://openapi/index（完整文档约0.6MB，按需读取）。本目录与 docs/ai-operator.md（目录 + 全部正文）同源，生成 npm run docs:ai，校验 npm run docs:ai:check。
@@ -403,6 +403,8 @@ core.code 的 fileAccess 会把受控根目录内的真实文件路径写进 tex
 **运行**：`submit_own_package` 一次预扣全部上限价，逐项串行提交为普通子运行（不各自扣费）。失败、取消或确认点即停。`confirmAfter` 项完成后进入 `waiting_confirm`：approve 继续、redo 重跑本项，前段不重复生成。结算按已完成项计费并退还差额。
 
 **用户面只给服务视图**：`get_own_package_run`/`list_own_package_runs` 只返回 `stage`、`progress`、确认点、失败重试入口与结算，不含组件名、步骤名、子运行ID或错误原文；产出用 `get_own_package_outputs`，本次运行的原始输入用 `get_own_package_run_inputs`。
+
+**工程状态只读**：`get_own_package_state` 原样返回包自己在运行期用 `framework.store.set` 写下的账（例如「这一集已出了哪几段」），宿主不投影、不改写；`key` 省略时返回最近更新的那条并回显实际读出的 `key`。值超过 1MB 报 400 而不是截断；只能读本人已授权包，未授权 403、包还没写过账 404（当作「没有」而不是错误）。写入口只有包自己的 `run()`，本工具绝不写。
 
 **原始输入可复用**：`get_own_package_run_inputs` 的字段取该次运行固化的包发布快照、值取提交时快照，之后改版或重新发布都不影响；分页、省略标记与媒体投影与 `get_own_run_inputs` 一致。返回值可直接作为 `prepare_own_package`/`submit_own_package` 的 `inputValues` 起点（媒体仍是本人固定 `assetId+assetVersion`），网页「再做一次」走的就是这条路径。
 

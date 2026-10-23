@@ -303,3 +303,105 @@ test("授权面：代码包 ID 可授予，CDK 自动授予覆盖代码包且不
   const grantable = await h.catalogue.grantablePackageIds();
   assert.deepEqual(grantable.filter((id) => id === "grantable"), ["grantable"], "同 ID 只能授予一次");
 });
+
+/** 行表单契约：`inputMode`/`itemFields` 必须原样到用户面，否则前端只能退回 JSON 文本域。 */
+test("用户面投影透传行表单契约：inputMode=object_array 的字段带完整 itemFields，其它字段不带", async (t) => {
+  const h = await harness(t);
+  const user = await h.createUser("formbuyer");
+  const itemFields = [
+    { key: "index", label: "镜号", type: "number", required: true, minimum: 1, maximum: 999 },
+    { key: "seconds", label: "这一镜秒数", type: "number", required: true, minimum: 1.3, maximum: 15 },
+    { key: "prompt", label: "H3 提示词", type: "text", required: true },
+    { key: "characters", label: "人物", type: "text", required: false },
+    { key: "scenes", label: "场景编号", type: "text", required: false },
+    { key: "props", label: "道具编号", type: "text", required: false },
+    { key: "continuity", label: "续接上一镜", type: "select", required: false, options: ["", "context"] },
+  ];
+  await writePackage(h.settings.projectDirectory, "drama", {
+    title: "短剧出片", version: "2.0.0",
+    executor: { sceneId: "demo", versionId: "version-a" },
+    inputs: [
+      { key: "segment", type: "text", required: true },
+      { key: "shots", type: "json", required: false, inputMode: "object_array", itemFields },
+      { key: "brief", type: "textarea", required: false },
+    ],
+  }, SUCCESS_CODE);
+  await h.code.loadAll();
+  await h.access.setPackages({ userId: user.user.id, revision: h.access.get(user.user.id)!.revision, packageIds: ["drama"] }, new Set(["drama"]));
+
+  const detail = await h.api("/api/v1/self/packages/drama", user.token);
+  assert.equal(detail.response.status, 200, JSON.stringify(detail.data));
+  const shots = (detail.data.fields as Array<Record<string, unknown>>).find((field) => field.key === "shots");
+  assert.ok(shots, "详情必须带 shots 字段：" + JSON.stringify(detail.data.fields));
+  assert.equal(shots.inputMode, "object_array");
+  // 行字段必须逐项完整（key/label/type/required + 范围 + 选项），少一项前端就少一个格子。
+  assert.deepEqual(shots.itemFields, itemFields);
+  // 没声明行表单的字段不能被顺手加上 inputMode：那会让普通文本字段变成表格。
+  for (const key of ["segment", "brief"]) {
+    const field = (detail.data.fields as Array<Record<string, unknown>>).find((item) => item.key === key);
+    assert.equal(field?.inputMode, undefined, key + " 不应带 inputMode");
+    assert.equal(field?.itemFields, undefined, key + " 不应带 itemFields");
+  }
+});
+
+/** 只读工程状态：包写进 framework.store 的账要能按身份读出来，写不进去、也读不到别人的。 */
+test("包工程状态只读接口：本人可读原样账，未授权 403，无账 404，key 可选且非法 key 400", async (t) => {
+  const h = await harness(t);
+  const owner = await h.createUser("stateowner");
+  const stranger = await h.createUser("statestranger");
+  const writeState = `export default function create(framework) {
+    return {
+      async run() {
+        await framework.store.set("episode", { activeEpisodeLabel: "我家猫有点大 #1", segments: ["s01", "s02"], bibleReady: true });
+        return { ok: true };
+      },
+    };
+  }`;
+  await writePackage(h.settings.projectDirectory, "stated", {
+    title: "有账的包", version: "1.0.0",
+    executor: { sceneId: "demo", versionId: "version-a" },
+    inputs: [],
+  }, writeState);
+  await writePackage(h.settings.projectDirectory, "blank", {
+    title: "没账的包", version: "1.0.0",
+    executor: { sceneId: "demo", versionId: "version-a" },
+    inputs: [],
+  }, SUCCESS_CODE);
+  await h.code.loadAll();
+  const revision = h.access.get(owner.user.id)!.revision;
+  await h.access.setPackages({ userId: owner.user.id, revision, packageIds: ["stated", "blank"] }, new Set(["stated", "blank"]));
+  await h.access.setPackages({ userId: stranger.user.id, revision: h.access.get(stranger.user.id)!.revision, packageIds: ["blank"] }, new Set(["blank"]));
+
+  // 先真跑一次，让包自己写账——不手工塞库，否则测的就不是「包写的账能读出来」。
+  const packageRunId = randomUUID();
+  assert.equal((await h.api("/api/v1/self/packages/stated/runs", owner.token, { inputValues: {}, packageRunId })).response.status, 202);
+  await until(() => ["completed", "failed", "cancelled"].includes(
+    h.store.getDocument<{ status: string }>(h.settings.projectDirectory, "codeScenePackageRuns", packageRunId)?.status ?? ""));
+
+  const state = await h.api("/api/v1/self/packages/stated/state", owner.token);
+  assert.equal(state.response.status, 200, JSON.stringify(state.data));
+  assert.equal(state.data.packageId, "stated");
+  assert.equal(state.data.key, "episode");
+  assert.equal(typeof state.data.revision, "number");
+  assert.deepEqual(state.data.value, { activeEpisodeLabel: "我家猫有点大 #1", segments: ["s01", "s02"], bibleReady: true });
+  // 按 key 指定同一条仍读得到；不存在的 key 是「这条账没有」，不是「服务没有」。
+  assert.equal((await h.api("/api/v1/self/packages/stated/state?key=episode", owner.token)).response.status, 200);
+  assert.equal((await h.api("/api/v1/self/packages/stated/state?key=nope", owner.token)).response.status, 404);
+  assert.equal((await h.api("/api/v1/self/packages/stated/state?key=" + encodeURIComponent("bad key!"), owner.token)).response.status, 400);
+
+  // 未授权的包：403（授权单元仍是 packageIds），读不到别人的账。
+  assert.equal((await h.api("/api/v1/self/packages/stated/state", stranger.token)).response.status, 403);
+  // 有权限但包还没写过账：404，让页面回落「整块不渲染」而不是报错。
+  const empty = await h.api("/api/v1/self/packages/blank/state", owner.token);
+  assert.equal(empty.response.status, 404, JSON.stringify(empty.data));
+  assert.equal(empty.data.code, "PACKAGE_STATE_NOT_FOUND");
+  // 只读：没有写入路由，POST 到同一路径不会改账。
+  const writeAttempt = await fetch(h.base + "/api/v1/self/packages/stated/state", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + owner.token, "Content-Type": "application/json" },
+    body: JSON.stringify({ value: { segments: ["s99"] } }),
+  });
+  await writeAttempt.text();
+  assert.ok([404, 405].includes(writeAttempt.status), "状态接口不得接受写入：" + writeAttempt.status);
+  assert.deepEqual((await h.api("/api/v1/self/packages/stated/state", owner.token)).data.value, { activeEpisodeLabel: "我家猫有点大 #1", segments: ["s01", "s02"], bibleReady: true });
+});

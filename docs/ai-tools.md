@@ -418,6 +418,14 @@ GET /api/v1/self/package-runs/{packageRunId}/outputs
 
 产出媒体地址。
 
+## get_own_package_state
+
+GET /api/v1/self/packages/{packageId}/state
+
+副作用：read
+
+读取本人授权包投影的工程状态（只读）：value 是包在运行期用 framework.store.set 写下的 JSON 原样返回，宿主不投影、不改写；key 省略时返回该包最近更新的那条账，响应 key 说明实际读出的是哪条。授权单元仍是 packageIds，未授权 403；值超过 1MB 报 400 而不是截断；不返回磁盘路径、入口文件或执行场景 ID。写入口只有包自己的 run()——本接口绝不接受写入。
+
 ## get_own_package_run_inputs
 
 GET /api/v1/self/package-runs/{packageRunId}/inputs

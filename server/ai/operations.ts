@@ -17,7 +17,7 @@ export { HERMES_OUTPUT_JSON_CONTRACT } from "../execution/hermesOutput.js";
 export { AI_MCP_TRANSPORT_CONTRACT } from "./mcpRuntimeContract.js";
 import * as z from "zod/v4";
 import { assetQuerySchema, assetPageSchema, assetVersionQuerySchema, ownAssetQuerySchema, saveAssetSchema, uploadAssetSchema, updateAssetSchema } from "../domain/assetLibraryContracts.js";
-import { accessPage, runListPage, runSearchText, userCreate, userUpdate, userAccess, passwordReset, ownScene, ownPreparation, ownSubmission, ownDraft, credentialCreate, credentialRevoke, runInputQuery, runActivityQuery, ownCreditLedgerQuery, ownRedeemCode, adminRedeemBatch, adminRedeemCodeKey, adminRedeemBatchKey, adminCreditAdjust, ownPackageQuery, ownPackagePrepare, ownPackageSubmit, ownPackageConfirmItem, packageRunKey, packageDraftCreate, packageDraftUpdate, packagePublish, packageAccess } from "./accessSchemas.js";
+import { accessPage, runListPage, runSearchText, userCreate, userUpdate, userAccess, passwordReset, ownScene, ownPreparation, ownSubmission, ownDraft, credentialCreate, credentialRevoke, runInputQuery, runActivityQuery, ownCreditLedgerQuery, ownRedeemCode, adminRedeemBatch, adminRedeemCodeKey, adminRedeemBatchKey, adminCreditAdjust, ownPackageQuery, ownPackageStateQuery, ownPackagePrepare, ownPackageSubmit, ownPackageConfirmItem, packageRunKey, packageDraftCreate, packageDraftUpdate, packagePublish, packageAccess } from "./accessSchemas.js";
 import { createScene, updateSceneDraft, revisionRequest, publishScene, restoreSceneDraft, saveOptionPreset, presetQuery, outputQuery, stepResultQuery, sceneQuery } from "./sceneSchemas.js";
 import { changes, id, runId, runStatuses, scenePreparation, sceneSubmission, source, stepChanges, feedbackMessage, values, capabilityQuery, hermesModelQuery } from "./schemas.js";
 
@@ -109,6 +109,7 @@ export const aiOperations: AiOperation[] = [
   self("list_own_package_runs", "/api/v1/self/package-runs", "GET", "本人服务运行分页：服务级进度、阶段与结算。", accessPage),
   self("get_own_package_run", "/api/v1/self/package-runs/{packageRunId}", "GET", "读取本人服务运行：进度、阶段与结算；确认点给出第几步与 itemId。不含内部组件与错误原文。", packageRunKey),
   self("get_own_package_outputs", "/api/v1/self/package-runs/{packageRunId}/outputs", "GET", "产出媒体地址。", packageRunKey),
+  self("get_own_package_state", "/api/v1/self/packages/{packageId}/state", "GET", "读取本人授权包投影的工程状态（只读）：value 是包在运行期用 framework.store.set 写下的 JSON 原样返回，宿主不投影、不改写；key 省略时返回该包最近更新的那条账，响应 key 说明实际读出的是哪条。授权单元仍是 packageIds，未授权 403；值超过 1MB 报 400 而不是截断；不返回磁盘路径、入口文件或执行场景 ID。写入口只有包自己的 run()——本接口绝不接受写入。", ownPackageStateQuery),
   self("get_own_package_run_inputs", "/api/v1/self/package-runs/{packageRunId}/inputs", "GET", "只读本人服务运行的原始输入：字段取该次运行固化的包发布快照、值取提交时快照，改版不影响。分页/省略/媒体投影同 get_own_run_inputs。返回值可直接作为 prepare_own_package/submit_own_package 的 inputValues。", packageRunKey.extend(runInputQuery.shape).strict()),
   self("confirm_own_package_item", "/api/v1/self/package-runs/{packageRunId}/items/{itemId}/confirm", "POST", "确认点：approve 继续、redo 重跑本项；失败态用 retry 重试失败项（费用沿用本次预扣）。", ownPackageConfirmItem.extend({ packageRunId: z.uuid(), itemId: id }).strict(), "execute", 202),
   self("cancel_own_package_run", "/api/v1/self/package-runs/{packageRunId}/cancel", "POST", "取消本人包运行：尽力取消在途子运行，按已完成项结算并退还差额。", packageRunKey, "write"),

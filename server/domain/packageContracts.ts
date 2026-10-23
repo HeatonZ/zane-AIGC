@@ -83,6 +83,12 @@ export interface PackagePresentation {
     emptyHint?: string;
     /** 底部最近几次产出的缩略条；省略=显示，false=隐藏。 */
     history?: boolean;
+    /**
+     * 结果区上方的只读工程状态摘要。包把 framework.store 里的工程账投影成一段文本或列表，
+     * 由用户面 `GET /api/v1/self/packages/{packageId}/state` 读取后渲染；读不到就整块不渲染。
+     * stateKey 选定包里的哪条工程账，省略时取该包最近更新的那条。
+     */
+    stateSummary?: { title?: string; format?: "list" | "text"; stateKey?: string };
   };
   /** 页面区块（有序）。省略时由 hero/highlights 自动合成默认页，旧包无需改配置。 */
   page?: PackagePageBlock[];
@@ -159,12 +165,22 @@ export function validatePresentation(raw: unknown): PackagePresentation | undefi
   const layout = value.layout as "page" | "workspace" | undefined;
   const workspaceRaw = asRecord(value.workspace);
   if (value.workspace !== undefined && !workspaceRaw) invalid("workspace（需要对象）");
+  // 状态摘要的展示位置与取哪个键写错就拒绝：静默丢一块，用户页上看不出来。
+  if (workspaceRaw?.stateSummary !== undefined && !asRecord(workspaceRaw.stateSummary)) invalid("workspace.stateSummary（需要对象）");
+  const stateSummaryRaw = asRecord(workspaceRaw?.stateSummary);
+  if (stateSummaryRaw?.format !== undefined && stateSummaryRaw.format !== "list" && stateSummaryRaw.format !== "text") invalid("workspace.stateSummary.format（list|text）");
+  const stateSummary = stateSummaryRaw ? {
+    ...(text(stateSummaryRaw.title, 80, "workspace.stateSummary.title") ? { title: text(stateSummaryRaw.title, 80, "workspace.stateSummary.title")! } : {}),
+    ...(stateSummaryRaw.format === "list" || stateSummaryRaw.format === "text" ? { format: stateSummaryRaw.format as "list" | "text" } : {}),
+    ...(text(stateSummaryRaw.stateKey, 200, "workspace.stateSummary.stateKey") ? { stateKey: text(stateSummaryRaw.stateKey, 200, "workspace.stateSummary.stateKey")! } : {}),
+  } : undefined;
   const workspace = workspaceRaw ? {
     ...(text(workspaceRaw.title, 80, "workspace.title") ? { title: text(workspaceRaw.title, 80, "workspace.title")! } : {}),
     ...(text(workspaceRaw.subtitle, 300, "workspace.subtitle") ? { subtitle: text(workspaceRaw.subtitle, 300, "workspace.subtitle")! } : {}),
     ...(text(workspaceRaw.resultTitle, 40, "workspace.resultTitle") ? { resultTitle: text(workspaceRaw.resultTitle, 40, "workspace.resultTitle")! } : {}),
     ...(text(workspaceRaw.emptyHint, 200, "workspace.emptyHint") ? { emptyHint: text(workspaceRaw.emptyHint, 200, "workspace.emptyHint")! } : {}),
     ...(typeof workspaceRaw.history === "boolean" ? { history: workspaceRaw.history } : {}),
+    ...(stateSummary && Object.keys(stateSummary).length ? { stateSummary } : {}),
   } : undefined;
   // 工作台布局自带表单与结果区，再配 page 会出现两套表单，直接拒绝而不是静默忽略。
   if (layout === "workspace" && page?.some(block => block.type === "form" || block.type === "results")) {

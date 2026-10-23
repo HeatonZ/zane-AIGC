@@ -362,6 +362,8 @@ const OPERATOR_GUIDE_BODY = [
   "",
   "**用户面只给服务视图**：`get_own_package_run`/`list_own_package_runs` 只返回 `stage`、`progress`、确认点、失败重试入口与结算，不含组件名、步骤名、子运行ID或错误原文；产出用 `get_own_package_outputs`，本次运行的原始输入用 `get_own_package_run_inputs`。",
   "",
+  "**工程状态只读**：`get_own_package_state` 原样返回包自己在运行期用 `framework.store.set` 写下的账（例如「这一集已出了哪几段」），宿主不投影、不改写；`key` 省略时返回最近更新的那条并回显实际读出的 `key`。值超过 1MB 报 400 而不是截断；只能读本人已授权包，未授权 403、包还没写过账 404（当作「没有」而不是错误）。写入口只有包自己的 `run()`，本工具绝不写。",
+  "",
   "**原始输入可复用**：`get_own_package_run_inputs` 的字段取该次运行固化的包发布快照、值取提交时快照，之后改版或重新发布都不影响；分页、省略标记与媒体投影与 `get_own_run_inputs` 一致。返回值可直接作为 `prepare_own_package`/`submit_own_package` 的 `inputValues` 起点（媒体仍是本人固定 `assetId+assetVersion`），网页「再做一次」走的就是这条路径。",
   "",
   "**授权单元是 `packageIds`**；组件场景不需要单独授权，只有组件授权而无包授权也不能提交。",

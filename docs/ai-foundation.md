@@ -1,6 +1,6 @@
 # AI 基础能力
 
-由 npm run docs:ai 生成；契约 1.7.13。当前 142 个业务操作，功能与请求定义同源。
+由 npm run docs:ai 生成；契约 1.7.13。当前 143 个业务操作，功能与请求定义同源。
 
 ## 功能覆盖
 
@@ -20,6 +20,7 @@
 | `get_own_package_run` | read |
 | `get_own_package_run_inputs` | read |
 | `get_own_package_outputs` | read |
+| `get_own_package_state` | read |
 | `confirm_own_package_item` | execute |
 | `cancel_own_package_run` | write |
 | `list_package_drafts` | read |

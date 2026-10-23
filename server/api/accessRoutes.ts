@@ -16,7 +16,7 @@ import { CATALOGUE_SUMMARY_OMISSION, catalogueDetailQuery, catalogueOperations }
 import { ownAssetQuerySchema } from "../domain/assetLibraryContracts.js";
 import type { CreditService } from "../services/creditService.js";
 import { creditLedgerQuery, redeemCodeRequest, createRedeemBatch, redeemCodeKey, redeemBatchKey, adjustUserCredits, voidRedeemCodeRequest, voidRedeemBatchRequest } from "../domain/creditContracts.js";
-import { signupRegister, ownPackageQuery, packageRunKey, packageAccess } from "../ai/accessSchemas.js";
+import { signupRegister, ownPackageQuery, ownPackageStateQuery, packageRunKey, packageAccess } from "../ai/accessSchemas.js";
 import type { PackageCatalogueService } from "../services/packageCatalogueService.js";
 import type { CdkLoginService } from "../services/cdkLoginService.js";
 const parsed = <S extends z.ZodType>(schema: S, value: unknown): z.output<S> => { const result = schema.safeParse(value); if (!result.success) throw new HttpError(400, result.error.issues.map(issue => issue.path.join(".") + ": " + issue.message).join("; "), "INVALID_ACCESS_REQUEST"); return result.data; };
@@ -158,6 +158,13 @@ export function createAccessRouter(access: AccessService, portal: UserPortalServ
   router.post("/api/v1/self/packages/:packageId/runs", async (req,res) => {
     if (!packages) throw new HttpError(503, "场景包服务未启用", "PACKAGES_DISABLED");
     res.status(202).json(await packages.submit(identity(res), String(req.params.packageId), req.body));
+  });
+  // 只读工程状态：包在 run() 里用 framework.store.set 写的账，这里原样投影给页面。
+  // 只有 GET，没有对应的写路由——写入入口只有包自己的运行期。
+  router.get("/api/v1/self/packages/:packageId/state", async (req,res) => {
+    if (!packages) throw new HttpError(503, "场景包服务未启用", "PACKAGES_DISABLED");
+    const input = parsed(ownPackageStateQuery, { packageId: req.params.packageId, ...(req.query.key === undefined ? {} : { key: req.query.key }) });
+    res.json(await packages.state(identity(res), input.packageId, input.key));
   });
   router.get("/api/v1/self/package-runs", async (req,res) => {
     if (!packages) throw new HttpError(503, "场景包服务未启用", "PACKAGES_DISABLED");

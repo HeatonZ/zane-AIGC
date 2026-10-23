@@ -25,6 +25,8 @@ export const adminRedeemCodeKey = redeemCodeKey;
 export const adminRedeemBatchKey = redeemBatchKey;
 export const adminCreditAdjust = adjustUserCredits;
 export const ownPackageQuery = z.object({ packageId: id, versionId: id.optional() }).strict();
+/** 只读工程状态：key 选定包里的哪条账，省略时取该包最近更新的那条。 */
+export const ownPackageStateQuery = z.object({ packageId: id, key: z.string().min(1).max(200).optional() }).strict();
 export const ownPackagePrepare = packagePrepareRequest;
 export const ownPackageSubmit = packageSubmitRequest;
 export const ownPackageConfirmItem = packageConfirmItemRequest;

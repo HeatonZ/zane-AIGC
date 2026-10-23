@@ -126,6 +126,18 @@ export class PackageCatalogueService {
   }
 
   /**
+   * 只读工程状态：只有代码子工程有 `framework.store`（包自己写的工程账）。
+   *
+   * 配置型包没有这条账，但这里**不能直接 404**：那会变成「存在但无权限」与「不存在」不可区分的探测口。
+   * 所以先走配置型的 `getAvailable`（内含授权与存在性检查），确有权限且确实存在时，才报「没有可显示的工程状态」。
+   */
+  async state(identity: Identity, packageId: string, key?: string) {
+    if (this.isCodePackage(packageId)) return { ...(await this.code!.readState(identity, packageId, key)), source: "code" as const };
+    await this.config.getAvailable(identity, packageId);
+    throw new HttpError(404, "这个服务还没有可显示的工程状态", "PACKAGE_STATE_NOT_FOUND", { packageId });
+  }
+
+  /**
    * 确认点：只有配置型包有「项完成后等确认」的概念。代码包的进度由包代码自己决定，
    * 宿主不给它引入第二套确认状态机，所以这里明确拒绝而不是静默成功。
    */

@@ -1301,6 +1301,8 @@ export class CodeScenePackageService {
         ...(field.maximum !== undefined && (field.type === "number" || isMediaWorkflowType(field.type)) ? { maximum: field.maximum } : {}),
         ...(field.options ? { options: field.options } : {}),
         ...(field.defaultValue !== undefined ? { defaultValue: field.defaultValue } : {}),
+        // 行表单契约（与场景输入同源）：不带这两个字段，用户端只能把对象数组退化成 JSON 文本域。
+        ...(field.inputMode ? { inputMode: field.inputMode, itemFields: field.itemFields ?? [] } : {}),
       }));
     const defaults = Object.fromEntries(fields.filter((field) => field.defaultValue !== undefined).map((field) => [field.key, field.defaultValue]));
     const presentation = this.safePresentation(project, packageId, loaded.manifest);
@@ -1330,6 +1332,37 @@ export class CodeScenePackageService {
       writeLog("warn", "scene_package.presentation_invalid", { packageId, error: this.safeError(error) });
       return undefined;
     }
+  }
+
+  /**
+   * 用户面只读工程状态：把包自己写进 framework.store 的那条账原样交给页面。
+   *
+   * 三条硬边界：
+   * - **按身份隔离**：授权单元是 packageIds，未授权直接 403。不能像内部 `storeGet` 那样以
+   *   @operator 身份代读——那条路径是包在自己的 run() 里读自己的账，对外暴露就成了越权读他人账。
+   * - **只读**：这里没有任何写入路径。写入口只有包在 run() 期间的 `framework.store.set`；
+   *   本接口连 expectedRevision 都不接受，不存在「顺手写一下」的入口。
+   * - **体积上限**：超 `MAX_STORE_VALUE_BYTES` 报 400 而不是截断——被截断的 JSON 在页面上
+   *   会显示成半截数据，比不显示更误导。
+   */
+  async readState(identity: Identity, packageId: string, key?: string) {
+    if (!this.deps.access) throw new HttpError(503, "场景包授权服务未启用", "PACKAGES_DISABLED");
+    this.deps.access.authorizePackage(identity, packageId);
+    this.requireRunnable(packageId);
+    if (key !== undefined && !STORE_KEY_PATTERN.test(key)) throw new HttpError(400, "存储键无效", "INVALID_PACKAGE_STORE_KEY", { key });
+    const project = await this.projectDirectory();
+    if (!project) throw new HttpError(409, "请先配置项目目录", "PROJECT_NOT_CONFIGURED");
+    // listDocuments 已按 updated_at DESC 排：不带 key 时取到的第一条就是该包最近更新的那条账。
+    const documents = this.deps.store.listDocuments<{ packageId: string; key: string; revision: number; value: JsonValue }>(project, PACKAGE_STORE_COLLECTION)
+      .filter((document) => document.packageId === packageId);
+    const chosen = key === undefined ? documents[0] : documents.find((document) => document.key === key);
+    if (!chosen) throw new HttpError(404, "这个服务还没有可显示的工程状态", "PACKAGE_STATE_NOT_FOUND", { packageId, ...(key === undefined ? {} : { key }) });
+    const value = chosen.value ?? null;
+    const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    if (bytes > MAX_STORE_VALUE_BYTES) {
+      throw new HttpError(400, "工程状态超过可读取的大小上限", "PACKAGE_STATE_TOO_LARGE", { packageId, key: chosen.key, bytes, limit: MAX_STORE_VALUE_BYTES });
+    }
+    return { packageId, key: chosen.key, revision: chosen.revision, value, nextAction: "render_package_state" as const };
   }
 
   /** 本人的服务运行列表（新的在前）。 */
