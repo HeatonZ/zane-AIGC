@@ -296,11 +296,6 @@
 .sws-head-copy h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
 .sws-head-copy p { margin: 0; color: #6b736b; font-size: 12.5px; line-height: 1.5; }
 .sws-head-meta { display: flex; align-items: center; gap: 8px; flex: none; }
-.sws-credit {
-  padding: 4px 10px; border-radius: 999px;
-  background: var(--svc-accent-soft, #e7f0eb); color: var(--svc-accent, #2f6b4f);
-  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
-}
 .sws-toggle {
   padding: 5px 11px; border: 1px solid #d6d7d1; border-radius: 999px;
   background: #fff; color: #6b736b; font: inherit; font-size: 12px; cursor: pointer;
