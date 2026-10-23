@@ -19,14 +19,26 @@ async function harness(t: Parameters<typeof temporaryDirectory>[0]) {
   const access = new AccessService(store, workspace);
   const credits = new CreditService(store);
   credits.bindIdentity(access);
-  const granted: string[][] = [];
+  // 生产里可授权集合不止一个包：只有两个包时，「只授一个却拿到全部」的泄漏才看得见。
+  const allGrantable = ["ai_image", "drama_episode"];
+  const grants: Array<string[] | undefined> = [];
   const cdk = new CdkLoginService(
     store,
     async input => (await access.create({ ...input, role: "user" })).user,
-    async userId => { const account = access.get(userId); granted.push(["granted:" + userId]); return access.setPackages({ userId, revision: account.revision, packageIds: ["ai_image"] }, new Set(["ai_image"])); },
-    () => ["ai_image"],
+    // 忠实模拟 server/index.ts 的注入：把收到的列表写进账户。第三个参数为 undefined 表示
+    // 旧实现（忽略入参、按全量可授权集合授权）——回归用例必须在旧形态下也能跑起来并失败。
+    async (userId, _revision, packageIds) => {
+      grants.push(packageIds);
+      const ids = packageIds ?? allGrantable;
+      const account = access.get(userId);
+      // 旧形态下入参 revision 会被忽略；测试桩统一按账号当前 revision 写入，避免把并发语义混进回归点。
+      const grant = ids.filter(id => allGrantable.includes(id));
+      if (!grant.length) return undefined;
+      return access.setPackages({ userId, revision: account.revision, packageIds: grant }, new Set(grant), undefined, "@cdk");
+    },
+    () => [],
   );
-  return { store, workspace, access, credits, cdk, granted };
+  return { store, workspace, access, credits, cdk, grants };
 }
 
 test("CDK 登录：新卡开账户、绑定的服务自动授权、余额到账", async t => {
@@ -51,7 +63,8 @@ test("CDK 登录：新卡开账户、绑定的服务自动授权、余额到账"
   assert.equal(account.displayName, "小美");
   assert.deepEqual(account.packageIds, ["ai_image"]);
   assert.equal(h.credits.balance(identity.userId).balance, 5);
-  assert.ok(h.granted.length >= 1);
+  assert.equal(h.grants.length, 1, "开号只授权一次");
+  assert.deepEqual(h.grants[0], ["ai_image"], "第三个参数就是卡绑定的包");
 
   // 会话可以正常签发（与密码登录同一条路径）。
   const session = h.access.issueSession(identity.userId);
@@ -83,14 +96,28 @@ test("CDK 登录：无效卡、过期卡、作废卡都被拒绝且不建账户"
   assert.equal(h.access.list({}).items.length, 0, "失败的登录不应留下账户");
 });
 
-test("CDK 登录：未绑定服务的卡按默认集合授权", async t => {
+test("CDK 登录：只绑定一个服务的卡只拿到那一个包，不泄漏其它可授权包", async t => {
+  const h = await harness(t);
+  // 故意选非首个（不是最可能被当成默认值）的包：忽略入参按全量授权的旧实现在这里必然失败。
+  const code = h.credits.createBatch({ batchId: "b-bound-episode", name: "剧集", faceValue: 5, count: 1, packageId: "drama_episode" }).codes[0];
+  const identity = await h.cdk.login(code);
+  assert.equal(identity.packageId, "drama_episode");
+  assert.deepEqual(h.access.get(identity.userId).packageIds, ["drama_episode"], "账户只应有卡绑定的那一个包");
+  assert.equal(h.grants.length, 1, "开号只授权一次");
+  assert.deepEqual(h.grants[0], ["drama_episode"], "第三个参数必须是卡绑定的包");
+  assert.ok(!(h.grants[0] ?? []).includes("ai_image"), "不能顺带授予其它可授权包");
+});
+
+test("CDK 登录：未绑定服务的卡按生产默认集合（空）授权，不发起授权调用", async t => {
   const h = await harness(t);
   const code = h.credits.createBatch({ batchId: "b5", name: "通用", faceValue: 2, count: 1 }).codes[0];
   const inspected = h.cdk.inspect(code);
   assert.equal(inspected.packageId, undefined);
   const identity = await h.cdk.login(code);
   assert.equal(identity.packageId, undefined);
-  assert.deepEqual(h.access.get(identity.userId).packageIds, ["ai_image"], "走默认授权集合");
+  // server/index.ts 的 defaultPackageIds 返回 []：不绑服务的卡不自动开任何包。
+  assert.deepEqual(h.access.get(identity.userId).packageIds, [], "默认集合为空");
+  assert.equal(h.grants.length, 0, "默认集合为空时不应发起授权调用");
 });
 
 test("卡作废后：最后一枚有效卡消失即停用用户并让旧会话失效；兑换新卡后恢复", async t => {

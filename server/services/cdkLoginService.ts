@@ -30,7 +30,7 @@ export class CdkLoginService {
   constructor(
     private readonly store: SqliteStore,
     private readonly createAccount: (input: { userId: string; username: string; displayName: string; password: string }) => Promise<{ id: string; revision: number }>,
-    private readonly grantPackages: (userId: string, revision: number) => Promise<unknown>,
+    private readonly grantPackages: (userId: string, revision: number, packageIds: string[]) => Promise<unknown>,
     private readonly defaultPackageIds: () => string[],
   ) {}
 
@@ -88,7 +88,7 @@ export class CdkLoginService {
     const packageIds = record.packageId ? [record.packageId] : this.defaultPackageIds();
     if (packageIds.length) {
       const account = this.store.getDocument<{ revision: number }>("@zane-system", "users", userId);
-      if (account) await this.grantPackages(userId, account.revision).catch(error => log("warn", "cdk.grant_failed", { userId, error: String(error) }));
+      if (account) await this.grantPackages(userId, account.revision, packageIds).catch(error => log("warn", "cdk.grant_failed", { userId, error: String(error) }));
     }
     return {
       userId, cardId: record.codeId, created: true, faceValue: record.faceValue,

@@ -157,11 +157,14 @@ const packageCatalogue = new PackageCatalogueService(packageService, codeScenePa
 const cdkLoginService = new CdkLoginService(
   metadataStore,
   input => accessService.create({ ...input, role: "user" }).then(result => result.user),
-  async (userId) => {
-    const account = accessService.get(userId);
-    const grantable = await packageCatalogue.grantablePackageIds();
-    if (!grantable.length) return undefined;
-    return accessService.setPackages({ userId, revision: account.revision, packageIds: grantable }, new Set(grantable), undefined, "@cdk");
+  async (userId, revision, packageIds) => {
+    const known = new Set(await packageCatalogue.grantablePackageIds());
+    // 卡上声明的包必须在可授权集合里，否则视为无效授权（不静默放行）
+    const invalid = packageIds.filter(id => !known.has(id));
+    if (invalid.length) { log("warn", "cdk.grant_unknown_package", { userId, invalid }); }
+    const grant = packageIds.filter(id => known.has(id));
+    if (!grant.length) return undefined;
+    return accessService.setPackages({ userId, revision, packageIds: grant }, new Set(grant), undefined, "@cdk");
   },
   () => [],
 );
